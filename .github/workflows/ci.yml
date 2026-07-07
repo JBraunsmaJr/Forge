@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Unit tests ──────────────────────────────────────────────────────────────
+  # Fast — no Docker, no infrastructure. Runs in ~30 seconds.
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: |
+          go test \
+            ./internal/cache/... \
+            ./internal/compiler/... \
+            ./internal/localenv/... \
+            ./internal/policy/... \
+            ./internal/secrets/... \
+            -race \
+            -count=1 \
+            -coverprofile=coverage.out \
+            -covermode=atomic
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+
+  # ── Build check ─────────────────────────────────────────────────────────────
+  # Verify the binary compiles on Linux and Windows.
+  build:
+    name: Build (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 \
+          go build -ldflags="-s -w" -o /dev/null ./cmd/forge
+
+  # ── Integration tests ────────────────────────────────────────────────────────
+  # Spins up the full Forge stack via Docker Compose and runs end-to-end tests.
+  # Requires Docker (available on ubuntu-latest GitHub-hosted runners).
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Only run integration tests on pushes, not on every PR commit,
+    # to keep PR feedback fast. Remove the if: to always run.
+    if: github.event_name == 'push'
+    needs: [unit-tests, build]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Pull base images (parallel, speeds up compose build)
+        run: |
+          docker pull postgres:16-alpine &
+          docker pull hashicorp/vault:latest &
+          docker pull minio/minio:latest &
+          docker pull alpine:latest &
+          docker pull python:3.12-slim &
+          wait
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Run integration tests
+        run: |
+          go test ./tests/integration/... \
+            -v \
+            -timeout=15m \
+            -count=1
+        env:
+          # Integration tests manage their own compose stack.
+          # Set this to skip if Docker is unavailable.
+          INTEGRATION_SKIP: "false"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f compose.yml \
+            -f tests/integration/compose.test.yml \
+            logs --no-color --tail=200 || true
+
+      - name: Tear down stack
+        if: always()
+        run: |
+          docker compose \
+            -f compose.yml \
+            -f tests/integration/compose.test.yml \
+            down -v --remove-orphans || true

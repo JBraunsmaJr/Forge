@@ -1,0 +1,19 @@
+name: Main-Workflow
+
+steps:
+  # Stage 1
+  # Execute tests
+  - id: unit-tests
+    name: Unit Tests
+    image: golang:1.26-alpine
+    timeout: 5m
+    run: |
+      go test ./...
+
+  - id: build-image
+    name: Build Image
+    image: docker:24-cli
+    docker_socket: true
+    depends_on: [unit-tests]
+    timeout: 10m
+    run: docker build -t forge -f Dockerfile .

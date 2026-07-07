@@ -1,0 +1,56 @@
+# examples/.forge/monorepo-smart-ci.yml
+#
+# Monorepo CI with runtime change detection.
+#
+# The traditional CI problem:
+#   a) Build everything on every commit — slow and wasteful
+#   b) Per-service workflow files with paths: filters — brittle, hard to maintain
+#   c) Neither approach handles "shared/ changed → rebuild everything" cleanly
+#
+# The Forge approach: one generator step runs a Python script that calls git diff,
+# identifies changed services, and emits exactly the right jobs. The script is a
+# real Python file in the repo — readable, testable, with IDE support.
+#
+# Script: examples/scripts/ci/detect-changes.py
+#   - Compares HEAD against BASE_REF (defaults to HEAD~1)
+#   - If shared/ changed, rebuilds all services
+#   - Otherwise rebuilds only services with changed files
+#   - Emits lint + test + build + push steps per affected service
+
+name: monorepo-smart-ci
+
+steps:
+
+  # ── Detect which services changed and generate their CI steps ────────────────
+  - id: change-detector
+    type: generator
+    image: python:3.12-slim
+    timeout: 5m
+    script: examples/scripts/ci/detect-changes.py
+    env:
+      REGISTRY: registry.example.com
+      GIT_SHA: "${GIT_SHA:-dev}"
+      BASE_REF: "${BASE_REF:-HEAD~1}"
+
+  # ── Integration tests: fan in after all service builds ───────────────────────
+  # Runs only after ALL generated build + push steps complete for every
+  # affected service. depends_on the generator step, not each generated step —
+  # Forge resolves the full transitive closure automatically.
+  - id: integration-tests
+    image: golang:1.24-alpine
+    depends_on: [change-detector]
+    timeout: 20m
+    run: |
+      echo "Running integration tests against freshly built services..."
+      go test ./integration/... -tags=integration -timeout=15m
+
+  # ── Notify ────────────────────────────────────────────────────────────────────
+  - id: notify
+    image: curlimages/curl:latest
+    depends_on: [integration-tests]
+    secrets: [SLACK_WEBHOOK]
+    timeout: 1m
+    run: |
+      curl -sf -X POST "$SLACK_WEBHOOK" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\": \"✓ Monorepo CI passed for ${GIT_SHA:-dev}\"}"

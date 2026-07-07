@@ -1,0 +1,195 @@
+# docker-compose.yml — Forge CI/CD full dev stack
+#
+# Starts:  Postgres · Vault · Scheduler · 2 Agents · Init
+#
+# Quick start:
+#   docker compose up --build -d
+#   docker compose logs init          # watch setup progress
+#
+# Tear down (remove data):
+#   docker compose down -v
+#
+# The scheduler admin token is preset to the value of FORGE_ROOT_TOKEN
+# (defaults to "forge-dev-admin-token" — fine for local dev, change for staging).
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9091"
+    environment:
+      MINIO_ROOT_USER: forgeadmin
+      MINIO_ROOT_PASSWORD: forgepassword
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks: [forge]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       forge
+      POSTGRES_USER:     forge
+      POSTGRES_PASSWORD: forge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready only checks the server process — it passes before the forge
+      # user and database are fully created. Use psql to actually connect to
+      # the forge database so depends_on: service_healthy is a real guarantee.
+      test:     ["CMD-SHELL", "PGPASSWORD=forge psql -h localhost -U forge -d forge -c 'SELECT 1' -q 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout:  5s
+      retries:  10
+    restart: unless-stopped
+    networks: [forge]
+
+  vault:
+    image: hashicorp/vault:latest
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID:    forge-dev-token
+      VAULT_DEV_LISTEN_ADDRESS:   0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      # Vault's /v1/sys/health returns 200 when active and unsealed.
+      # Dev mode starts unsealed, so this passes within a few seconds.
+      test:     ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8200/v1/sys/health"]
+      interval: 5s
+      timeout:  3s
+      retries:  10
+      start_period: 5s
+    restart: unless-stopped
+    networks: [forge]
+
+  # ── Forge scheduler ─────────────────────────────────────────────────────────
+
+  scheduler:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+    command: ["scheduler"]
+    environment:
+      FORGE_DB_URL:     postgres://forge:forge@postgres:5432/forge?sslmode=disable
+      # Pre-set a known admin token for reproducible dev environments.
+      # Change this (or remove it to auto-generate) for staging/production.
+      FORGE_ROOT_TOKEN: ${FORGE_ROOT_TOKEN:-forge-dev-admin-token}
+      FORGE_GIT_CACHE:  /var/lib/forge/git-cache
+      FORGE_INTERNAL_URL: http://scheduler:8080
+
+      FORGE_BASE_URL: http://localhost:8080
+      FORGE_ARTIFACT_STORE: s3
+      FORGE_S3_ENDPOINT: http://minio:9000
+      FORGE_S3_BUCKET: forge-artifacts
+      FORGE_S3_REGION: us-east-1
+      FORGE_S3_ACCESS_KEY: forgeadmin
+      FORGE_S3_SECRET_KEY: forgepassword
+    ports:
+      - "8080:8080"
+    # Mount /tmp from the host so webhook-triggered workspaces are visible
+    # to the host Docker daemon when it mounts them into job containers.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+      - git_cache:/var/lib/forge/git-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test:          ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      interval:      5s
+      timeout:       3s
+      retries:       15
+      start_period:  60s   # time for postgres wait + migrations before failures count
+    restart: unless-stopped
+    networks: [forge]
+
+  # ── Forge agents ────────────────────────────────────────────────────────────
+  # Two agents so parallel-step pipelines actually run in parallel.
+  # Each exposes a different host port for its WebSocket debug terminal.
+  #
+  # Docker socket: agents call `docker run / docker exec` on the HOST daemon
+  # to launch job containers. The socket gives them access to the host Docker.
+  #
+  # /tmp bind-mount: job workspaces live in /tmp. Because the path is the same
+  # inside the agent container and on the host, the HOST Docker daemon can find
+  # and mount them when launching job containers.
+
+  # ── Forge agents ─────────────────────────────────────────────────────────────
+  # A single scalable service. Scale with:
+  #   docker compose up --scale agent=4 -d
+  # Each agent auto-detects its Docker-network IP and registers it with the
+  # scheduler. Browser debug terminals route through the scheduler proxy —
+  # agents do NOT need public-facing ports.
+  agent:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+    command: ["agent", "http://scheduler:8080"]
+    environment:
+      FORGE_API_TOKEN:      ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
+      FORGE_VAULT_ADDR:     http://vault:8200
+      FORGE_VAULT_TOKEN:    forge-dev-token
+      FORGE_AGENT_WS_PORT:  "8082"   # internal listen port (not exposed publicly)
+      FORGE_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge  # expands to e.g. forge_forge or myproject_forge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+    working_dir: /tmp
+    depends_on:
+      scheduler:
+        condition: service_started   # entrypoint waits for scheduler TCP, not healthcheck
+      vault:
+        condition: service_started
+    restart: unless-stopped
+    networks: [forge]
+    # No ports: block — all browser traffic goes through the scheduler proxy
+
+  # ── One-shot init ────────────────────────────────────────────────────────────
+  # Runs once after the stack is healthy. Creates the default org, registers
+  # security policies, seeds Vault secrets. Idempotent — safe to re-run.
+
+  init:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/bash"]
+    command:    ["/scripts/init.sh"]
+    environment:
+      FORGE_API_TOKEN:  ${FORGE_ROOT_TOKEN:-forge-dev-admin-token}
+      FORGE_VAULT_ADDR: http://vault:8200
+      FORGE_VAULT_TOKEN: forge-dev-token
+      SCHEDULER_URL:    http://scheduler:8080
+    volumes:
+      - ./scripts:/scripts:ro
+    depends_on:
+      scheduler:
+        condition: service_healthy
+    restart: "no"
+    networks: [forge]
+
+volumes:
+  postgres_data:
+  git_cache:
+  minio_data:
+
+networks:
+  # Explicit user-defined bridge network.
+  # User-defined networks (unlike the default bridge) provide automatic DNS
+  # so containers can reach each other by service name (e.g. "postgres", "vault").
+  forge:
+    driver: bridge

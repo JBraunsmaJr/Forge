@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forge CI</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:       #0f1117;
+            --surface:  #1a1d27;
+            --surface2: #22263a;
+            --border:   #2e3248;
+            --text:     #e2e4f0;
+            --muted:    #6b7094;
+            --accent:   #6e6df0;
+            --green:    #3ecf8e;
+            --amber:    #f59e0b;
+            --red:      #f87171;
+            --blue:     #60a5fa;
+            --gray:     #4b5280;
+            --font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+        }
+
+        body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif;
+            font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+        /* ── Header ── */
+        header { background: var(--surface); border-bottom: 1px solid var(--border);
+            padding: 0 20px; height: 52px; display: flex; align-items: center; gap: 16px;
+            flex-shrink: 0; }
+        header h1 { font-size: 16px; font-weight: 700; letter-spacing: .5px; color: var(--accent); }
+        #conn-status { margin-left: auto; font-size: 12px; color: var(--muted); display: flex;
+            align-items: center; gap: 6px; }
+        #conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+        #conn-dot.off { background: var(--red); }
+
+        /* ── Layout ── */
+        #layout { display: flex; flex: 1; overflow: hidden; }
+
+        /* ── Sidebar ── */
+        aside { width: 280px; background: var(--surface); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; flex-shrink: 0; }
+        aside h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--muted);
+            text-transform: uppercase; padding: 16px 16px 8px; }
+        #run-list { flex: 1; overflow-y: auto; }
+        .run-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer;
+            transition: background .15s; }
+        .run-item:hover { background: var(--surface2); }
+        .run-item.active { background: var(--surface2); border-left: 3px solid var(--accent); }
+        .run-item-name { font-weight: 600; font-size: 13px; margin-bottom: 4px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .run-item-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+        .badge { padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: .5px; }
+        .badge-running { background: #1a2f4a; color: var(--blue); }
+        .badge-passed  { background: #0d2e20; color: var(--green); }
+        .badge-failed  { background: #2e1414; color: var(--red); }
+        .badge-pending, .badge-queued { background: var(--surface2); color: var(--muted); }
+        #empty-state { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+
+        /* ── Main panel ── */
+        main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+        /* ── DAG panel ── */
+        #dag-panel { flex: 1; position: relative; overflow: hidden; }
+        #dag-panel h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--muted);
+            text-transform: uppercase; padding: 14px 20px 10px; border-bottom: 1px solid var(--border); }
+        #dag-scroll { overflow: auto; height: calc(100% - 45px); padding: 24px; }
+        #dag-svg { display: block; }
+        #dag-empty { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: var(--muted); text-align: center; font-size: 13px; }
+
+        /* DAG node styles */
+        .dag-node { cursor: pointer; }
+        .dag-node rect { transition: filter .15s; rx: 8; }
+        .dag-node:hover rect { filter: brightness(1.25); }
+        .dag-node.selected rect { stroke-width: 2.5; }
+        .dag-label { font-family: system-ui, sans-serif; font-size: 13px; font-weight: 600;
+            pointer-events: none; }
+        .dag-sub { font-family: system-ui, sans-serif; font-size: 11px; pointer-events: none; }
+
+        /* ── Log panel ── */
+        #log-panel { height: 240px; border-top: 1px solid var(--border); background: var(--surface);
+            #artifact-panel { border-top: 1px solid var(--border); background: var(--surface);
+                display: none; flex-direction: column; }
+            #artifact-panel.visible { display: flex; }
+            #artifact-header { display: flex; align-items: center; gap: 10px; padding: 6px 16px;
+                border-bottom: 1px solid var(--border); flex-shrink: 0; }
+            #artifact-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px;
+                color: var(--muted); text-transform: uppercase; }
+            #artifact-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+            #artifact-body { padding: 8px 16px; font-size: 12px; font-family: var(--font-mono); }
+            #artifact-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+            .artifact-row { display: flex; align-items: center; gap: 12px; padding: 4px 0;
+                border-bottom: 1px solid var(--border); }
+            .artifact-row:last-child { border-bottom: none; }
+            .artifact-name { color: var(--text); flex: 1; }
+            .artifact-size { color: var(--muted); font-size: 11px; }
+            .artifact-dl { color: var(--accent); text-decoration: none; font-size: 11px; }
+            .artifact-dl:hover { text-decoration: underline; }
+            display: flex; flex-direction: column; flex-shrink: 0; }
+        #log-header { display: flex; align-items: center; gap: 10px; padding: 8px 16px;
+            border-bottom: 1px solid var(--border); flex-shrink: 0; }
+        #log-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--muted);
+            text-transform: uppercase; }
+        #log-job-id { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+        #log-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+        .log-line { display: flex; gap: 12px; padding: 2px 16px; font-family: var(--font-mono);
+            font-size: 12px; line-height: 1.6; }
+        .log-line:hover { background: var(--surface2); }
+        .log-ts { color: var(--muted); flex-shrink: 0; }
+        .log-level { font-weight: 700; flex-shrink: 0; width: 38px; }
+        .log-level.INFO  { color: var(--green); }
+        .log-level.WARN  { color: var(--amber); }
+        .log-level.ERROR { color: var(--red); }
+        .log-msg { color: var(--text); white-space: pre-wrap; word-break: break-all; }
+        #log-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px;
+            font-family: system-ui, sans-serif; }
+
+        /* ── Debug panel (xterm terminal) ── */
+        #debug-panel { border-top: 1px solid var(--border); background: #0d0d0d; flex-shrink: 0;
+            display: none; flex-direction: column; height: 340px; }
+        #debug-panel.visible { display: flex; }
+        #debug-header { display: flex; align-items: center; gap: 10px; padding: 6px 14px;
+            border-bottom: 1px solid #222; flex-shrink: 0; background: #111; }
+        #debug-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px;
+            color: #666; text-transform: uppercase; }
+        #debug-status { font-size: 11px; margin-left: auto; }
+        #debug-status.starting { color: var(--amber); }
+        #debug-status.ready    { color: var(--green); }
+        #debug-status.closed   { color: #555; }
+        #debug-ttl { font-size: 11px; color: #555; font-family: var(--font-mono); }
+        #debug-close-btn { background: none; border: 1px solid #333; color: #555;
+            border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; }
+        #debug-close-btn:hover { border-color: var(--red); color: var(--red); }
+        #debug-term-wrap { flex: 1; overflow: hidden; padding: 4px; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>⚒ Forge</h1>
+    <span id="conn-status"><span id="conn-dot"></span><span id="conn-label">idle</span></span>
+</header>
+
+<div id="layout">
+    <aside>
+        <h2>Runs</h2>
+        <div id="run-list"><div id="empty-state">No runs yet.<br>Submit a pipeline to start.</div></div>
+    </aside>
+    <main>
+        <div id="dag-panel">
+            <h2>Pipeline DAG — <span id="dag-run-name">no run selected</span></h2>
+            <div id="dag-scroll">
+                <div id="dag-empty">Select a run from the sidebar to view its pipeline graph.</div>
+                <svg id="dag-svg" style="display:none"></svg>
+            </div>
+        </div>
+        <div id="log-panel">
+            <div id="log-header">
+                <h2>Logs</h2>
+                <span id="log-job-id"></span>
+            </div>
+            <div id="log-body">
+                <div id="log-empty">Click a job node to view its logs.</div>
+            </div>
+        </div>
+        <div id="artifact-panel">
+            <div id="artifact-header">
+                <h2>Artifacts</h2>
+                <span id="artifact-count"></span>
+            </div>
+            <div id="artifact-body">
+                <div id="artifact-empty">No artifacts for this run.</div>
+            </div>
+        </div>
+        <div id="debug-panel">
+            <div id="debug-header">
+                <h2>Debug Terminal</h2>
+                <span id="debug-status" class="starting">● connecting…</span>
+                <span id="debug-ttl"></span>
+                <button id="debug-close-btn" onclick="closeDebug()">✕ Close</button>
+            </div>
+            <div id="debug-term-wrap"></div>
+        </div>
+    </main>
+</div>
+
+<script>
+    // ── Constants ──────────────────────────────────────────────────────────────────
+    const NODE_W = 160, NODE_H = 52, COL_GAP = 90, ROW_GAP = 24, PAD = 32;
+    const STATUS_COLORS = {
+        passed:   { fill: '#0d2e20', stroke: '#3ecf8e', text: '#3ecf8e', sub: '#2a8c60' },
+        failed:   { fill: '#2e1414', stroke: '#f87171', text: '#f87171', sub: '#a84a4a' },
+        running:  { fill: '#1a2040', stroke: '#60a5fa', text: '#60a5fa', sub: '#3a6a9a' },
+        queued:   { fill: '#1e2035', stroke: '#6b7094', text: '#9da3cc', sub: '#4b5280' },
+        pending:  { fill: '#1a1d27', stroke: '#3a3f5c', text: '#6b7094', sub: '#3a3f5c' },
+        canceled: { fill: '#1a1d27', stroke: '#3a3f5c', text: '#4b5280', sub: '#3a3f5c' },
+    };
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    // ── State ─────────────────────────────────────────────────────────────────────
+    let state = { activeRunID: null, selectedJobID: null, detail: null, sse: null };
+
+    // ── Auth ──────────────────────────────────────────────────────────────────────
+    const TOKEN_KEY = 'forge_token';
+    function getToken()  { return localStorage.getItem(TOKEN_KEY) || ''; }
+    function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+
+    function authHeaders(extra) {
+        const h = { ...extra };
+        const t = getToken();
+        if (t) h['Authorization'] = 'Bearer ' + t;
+        return h;
+    }
+
+    // For EventSource/WebSocket which cannot send custom headers.
+    function authUrl(url) {
+        const t = getToken();
+        if (!t) return url;
+        return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t);
+    }
+
+    async function fetchAuth(url, opts = {}) {
+        const resp = await fetch(url, { ...opts, headers: authHeaders(opts.headers || {}) });
+        if (resp.status === 401) { showTokenPrompt(); return null; }
+        return resp;
+    }
+
+    function showTokenPrompt() {
+        let modal = document.getElementById('forge-auth-modal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'forge-auth-modal';
+            modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:9999;font-family:system-ui,sans-serif';
+            modal.innerHTML = `
+      <div style="background:#16162a;border:1px solid #7c6af7;border-radius:10px;padding:32px 36px;width:440px;max-width:92vw">
+        <h2 style="margin:0 0 6px;color:#e0e0e0;font-size:16px;font-weight:600">🔐 Forge — Authentication Required</h2>
+        <p style="margin:0 0 20px;color:#777;font-size:13px;line-height:1.6">
+          Enter your API token. Create one with:<br>
+          <code style="color:#a78bfa;background:#0d0d1a;padding:2px 6px;border-radius:3px">forge token create dev</code>
+        </p>
+        <input id="forge-token-input" type="password" placeholder="fgt_…"
+          style="width:100%;box-sizing:border-box;background:#0d0d1a;border:1px solid #333;border-radius:5px;
+                 padding:10px 12px;color:#e0e0e0;font-family:monospace;font-size:13px;outline:none;margin-bottom:14px"
+          onkeydown="if(event.key==='Enter')_submitToken()"/>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button onclick="_submitToken()"
+            style="background:#7c6af7;color:#fff;border:none;border-radius:5px;padding:8px 22px;cursor:pointer;font-size:13px;font-weight:600">
+            Connect
+          </button>
+        </div>
+      </div>`;
+            document.body.appendChild(modal);
+            setTimeout(() => document.getElementById('forge-token-input')?.focus(), 50);
+        }
+        modal.style.display = 'flex';
+    }
+
+    window._submitToken = function() {
+        const val = document.getElementById('forge-token-input')?.value?.trim();
+        if (!val) return;
+        setToken(val);
+        document.getElementById('forge-auth-modal')?.remove();
+        location.reload(); // Restart SSE connections with the new token.
+    };
+
+    // ── API ───────────────────────────────────────────────────────────────────────
+    const api = {
+        listRuns:  ()    => fetchAuth('/api/v1/runs').then(r => r?.json()).catch(() => null),
+        runDetail: (id)  => fetchAuth(`/api/v1/runs/${id}/detail`).then(r => r?.json()).catch(() => null),
+        jobLogs:   (id)  => fetchAuth(`/api/v1/jobs/${id}/logs`).then(r => r?.json()).catch(() => null),
+    };
+
+    // ── DAG layout ────────────────────────────────────────────────────────────────
+    function computeLayout(jobs) {
+        // 1. Compute depth of each step (longest path from a root).
+        const depth = {};
+        const getDepth = (stepID) => {
+            if (stepID in depth) return depth[stepID];
+            const job = jobs.find(j => j.step_id === stepID);
+            if (!job || !job.depends_on?.length) return (depth[stepID] = 0);
+            return (depth[stepID] = 1 + Math.max(...job.depends_on.map(getDepth)));
+        };
+        jobs.forEach(j => getDepth(j.step_id));
+
+        // 2. Group jobs into columns by depth.
+        const cols = {};
+        jobs.forEach(j => {
+            const d = depth[j.step_id] ?? 0;
+            (cols[d] = cols[d] || []).push(j);
+        });
+
+        // 3. Assign (x, y) to each job.
+        const positions = {};
+        const colKeys = Object.keys(cols).map(Number).sort((a, b) => a - b);
+        let x = PAD;
+        colKeys.forEach(col => {
+            const colJobs = cols[col];
+            const totalH = colJobs.length * NODE_H + (colJobs.length - 1) * ROW_GAP;
+            let y = PAD;
+            colJobs.forEach(j => {
+                positions[j.job_id] = { x, y };
+                y += NODE_H + ROW_GAP;
+            });
+            x += NODE_W + COL_GAP;
+        });
+
+        const svgW = x - COL_GAP + PAD;
+        const maxH = Math.max(...Object.values(positions).map(p => p.y + NODE_H)) + PAD;
+        return { positions, svgW, svgH: maxH };
+    }
+
+    // ── SVG helpers ───────────────────────────────────────────────────────────────
+    function el(tag, attrs = {}, children = []) {
+        const e = document.createElementNS(SVG_NS, tag);
+        Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
+        children.forEach(c => e.appendChild(c));
+        return e;
+    }
+
+    function statusBadge(status) {
+        const labels = { passed:'passed', failed:'failed', running:'running…',
+            queued:'queued', pending:'pending', canceled:'canceled' };
+        return labels[status] || status;
+    }
+
+    function fmtDuration(ms) {
+        if (!ms) return '';
+        if (ms < 1000) return `${ms}ms`;
+        return `${(ms/1000).toFixed(1)}s`;
+    }
+
+    // ── DAG rendering ─────────────────────────────────────────────────────────────
+    function renderDAG(detail) {
+        const svg = document.getElementById('dag-svg');
+        const empty = document.getElementById('dag-empty');
+        svg.innerHTML = '';
+
+        if (!detail?.jobs?.length) {
+            svg.style.display = 'none';
+            empty.style.display = '';
+            return;
+        }
+        svg.style.display = 'block';
+        empty.style.display = 'none';
+
+        const { positions, svgW, svgH } = computeLayout(detail.jobs);
+        svg.setAttribute('width', svgW);
+        svg.setAttribute('height', svgH);
+        svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+
+        // Build a map from step_id → job for edge drawing.
+        const byStep = {};
+        detail.jobs.forEach(j => byStep[j.step_id] = j);
+
+        // Draw edges first (so they appear behind nodes).
+        const edgeLayer = el('g');
+        detail.jobs.forEach(j => {
+            const to = positions[j.job_id];
+            if (!to) return;
+            (j.depends_on || []).forEach(depStep => {
+                const depJob = byStep[depStep];
+                if (!depJob) return;
+                const from = positions[depJob.job_id];
+                if (!from) return;
+
+                // Draw a smooth cubic bezier from the right edge of source
+                // to the left edge of target.
+                const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
+                const x2 = to.x,            y2 = to.y   + NODE_H / 2;
+                const cx = (x1 + x2) / 2;
+
+                const c = STATUS_COLORS[depJob.status] || STATUS_COLORS.pending;
+                edgeLayer.appendChild(el('path', {
+                    d: `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`,
+                    fill: 'none', stroke: c.stroke, 'stroke-width': '1.5',
+                    'stroke-opacity': '0.5',
+                    'marker-end': `url(#arrow-${depJob.status})`,
+                }));
+            });
+        });
+        svg.appendChild(edgeLayer);
+
+        // Arrow markers (one per status color).
+        const defs = el('defs');
+        Object.entries(STATUS_COLORS).forEach(([status, c]) => {
+            const marker = el('marker', {
+                id: `arrow-${status}`, viewBox: '0 0 10 10', refX: '8', refY: '5',
+                markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse',
+            });
+            marker.appendChild(el('path', {
+                d: 'M2 1L8 5L2 9', fill: 'none', stroke: c.stroke,
+                'stroke-width': '1.5', 'stroke-linecap': 'round',
+            }));
+            defs.appendChild(marker);
+        });
+        svg.insertBefore(defs, edgeLayer);
+
+        // Draw nodes.
+        const nodeLayer = el('g');
+        detail.jobs.forEach(j => {
+            const pos = positions[j.job_id];
+            if (!pos) return;
+            const c = STATUS_COLORS[j.status] || STATUS_COLORS.pending;
+            const isSelected = j.job_id === state.selectedJobID;
+
+            const group = el('g', { class: 'dag-node' + (isSelected ? ' selected' : '') });
+
+            group.appendChild(el('rect', {
+                x: pos.x, y: pos.y, width: NODE_W, height: NODE_H, rx: '8',
+                fill: c.fill, stroke: c.stroke,
+                'stroke-width': isSelected ? '2.5' : '1',
+            }));
+
+            const label = el('text', {
+                class: 'dag-label', x: pos.x + 12, y: pos.y + 20,
+                fill: c.text,
+            });
+            label.textContent = j.step_id;
+            group.appendChild(label);
+
+            // Show a shield badge on policy-injected steps.
+            // When present, compress the layout so title / badge / status all fit cleanly:
+            //   Normal:  title y+20,              status y+36
+            //   Policy:  title y+14, badge y+26,  status y+38
+            if (j.policy_source) {
+                label.setAttribute('y', pos.y + 14); // shift title up to make room
+
+                const badge = el('text', {
+                    class: 'dag-sub', x: pos.x + 12, y: pos.y + 26,
+                    fill: '#a78bfa', 'font-size': '9px',
+                });
+                badge.textContent = '🛡 ' + j.policy_source;
+                group.appendChild(badge);
+            }
+
+            const sub = el('text', {
+                class: 'dag-sub', x: pos.x + 12,
+                y: j.policy_source ? pos.y + 38 : pos.y + 36,
+                fill: c.sub,
+            });
+            const dur = fmtDuration(j.duration_ms);
+            sub.textContent = statusBadge(j.status) + (dur ? ` · ${dur}` : '');
+            group.appendChild(sub);
+
+            group.addEventListener('click', () => selectJob(j));
+            nodeLayer.appendChild(group);
+        });
+        svg.appendChild(nodeLayer);
+
+        // Debug buttons rendered in a separate top layer — completely outside the
+        // node groups so there's no parent click handler to interfere with.
+        const debugLayer = el('g');
+        detail.jobs.forEach(j => {
+            if (j.status !== 'failed') return;
+            const pos = positions[j.job_id];
+            if (!pos) return;
+
+            // Transparent hit rect — more reliable than text-only hit area in SVG.
+            const hitW = 58, hitH = 18;
+            const hitX = pos.x + NODE_W - hitW - 4;
+            const hitY = pos.y + NODE_H - hitH - 6;
+
+            const btn = el('text', {
+                x: pos.x + NODE_W - 8, y: pos.y + NODE_H - 10,
+                'text-anchor': 'end', fill: '#818cf8',
+                'font-size': '11px', 'font-family': 'system-ui,sans-serif',
+            });
+            btn.textContent = 'Debug →';
+
+            const hit = el('rect', {
+                x: hitX, y: hitY, width: hitW, height: hitH,
+                fill: 'transparent', style: 'cursor:pointer',
+            });
+            hit.addEventListener('click', (e) => { e.stopPropagation(); openDebug(j); });
+
+            debugLayer.appendChild(btn);
+            debugLayer.appendChild(hit);
+        });
+        svg.appendChild(debugLayer);
+    }
+
+    // ── Run selection ─────────────────────────────────────────────────────────────
+    async function selectRun(runID) {
+        document.getElementById('artifact-panel').classList.remove('visible');
+        document.getElementById('artifact-body').innerHTML = '<div id="artifact-empty">Loading...</div>';
+        // Close any existing SSE connection.
+        if (state.sse) { state.sse.close(); state.sse = null; }
+
+        state.activeRunID   = runID;
+        state.selectedJobID = null;
+        state.detail        = null;
+
+        setConnStatus('connecting');
+        clearLogs();
+        renderRunList(); // update active highlight immediately
+
+        // Fetch initial detail.
+        const detail = await api.runDetail(runID).catch(() => null);
+        if (!detail) { setConnStatus('error'); return; }
+
+        state.detail = detail;
+        const policyBadges = (detail.applied_policies || [])
+            .map(p => `<span style="background:#2e1f5e;color:#a78bfa;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700">🛡 ${p}</span>`)
+            .join(' ');
+        document.getElementById('dag-run-name').innerHTML =
+            escHtml(detail.name) + (policyBadges ? ' &nbsp;' + policyBadges : '');
+        renderDAG(detail);
+
+        // Open SSE stream for live updates.
+        const sse = new EventSource(authUrl(`/api/v1/runs/${runID}/events`));
+        state.sse = sse;
+
+        sse.onopen    = () => setConnStatus('live');
+        sse.onerror   = () => {
+            setConnStatus('reconnecting');
+            // If the connection dropped unexpectedly (not from us calling sse.close()),
+            // schedule a reconnect. EventSource auto-retries but doesn't update our state.
+            if (debugState.sessionID === null) { // don't clobber an active debug session
+                setTimeout(() => {
+                    if (state.activeRunID && state.sse === sse && sse.readyState === EventSource.CLOSED) {
+                        selectRun(state.activeRunID);
+                    }
+                }, 3000);
+            }
+        };
+        sse.onmessage = (e) => {
+            const updated = JSON.parse(e.data);
+            state.detail = updated;
+            renderDAG(updated);
+            renderRunList();
+
+            // Auto-open log streaming for any job that just became running.
+            // This means users see real-time logs without needing to click the node.
+            for (const job of (updated.jobs || [])) {
+                if (job.status === 'running') {
+                    // Auto-select and open log stream if:
+                    //  a) no job is currently selected, OR
+                    //  b) this is the job the user already has selected (re-open if closed)
+                    if (!state.selectedJobID || state.selectedJobID === job.job_id) {
+                        if (!_logSse || _logSse.readyState === EventSource.CLOSED) {
+                            state.selectedJobID = job.job_id;
+                            renderDAG(updated); // update selection highlight
+                            document.getElementById('log-job-id').textContent = job.step_id;
+                            document.getElementById('log-body').innerHTML = '';
+                            openLogSSE(job.job_id);
+                        }
+                    }
+                    break; // only auto-follow the first running job
+                }
+            }
+
+            // If the user has a job selected and that job just finished,
+            // close the live log stream and show the final stored logs.
+            if (state.selectedJobID) {
+                const job = updated.jobs?.find(j => j.job_id === state.selectedJobID);
+                if (job && (job.status === 'passed' || job.status === 'failed')) {
+                    closeLogStream();
+                    document.getElementById('log-job-id').textContent = job.step_id;
+                    document.getElementById('log-body').innerHTML =
+                        '<div style="color:var(--muted);padding:12px 16px;font-size:12px;font-family:var(--font-mono)">Loading logs…</div>';
+                    api.jobLogs(job.job_id)
+                        .then(logs => renderLogs(logs, job))
+                        .catch(() => renderLogs(null, job));
+                }
+            }
+
+            if (updated.status === 'passed' || updated.status === 'failed') {
+                setConnStatus('done');
+                sse.close();
+                loadArtifacts(state.activeRunID);
+            }
+        };
+    }
+
+    // ── Job / log selection ───────────────────────────────────────────────────────
+    let _logSse = null;
+
+    function closeLogStream() {
+        if (_logSse) { _logSse.close(); _logSse = null; }
+    }
+
+    // Opens an SSE connection for real-time log streaming from a running job.
+    // The server sends existing logs first (catch-up), then new lines as they arrive.
+    function openLogSSE(jobID) {
+        closeLogStream();
+        _logSse = new EventSource(authUrl(`/api/v1/jobs/${jobID}/logs/stream`));
+        _logSse.onmessage = (e) => {
+            // Discard events that fire after closeLogStream() has already been called.
+            // EventSource.close() prevents new data but can't dequeue already-received
+            // events from the JavaScript event loop — this guard handles that.
+            if (!_logSse) return;
+
+            const evt = JSON.parse(e.data);
+            const body = document.getElementById('log-body');
+            const line = document.createElement('div');
+            line.className = 'log-line';
+
+            const ts = document.createElement('span');
+            ts.className = 'log-ts';
+            ts.textContent = new Date(evt.ts).toLocaleTimeString('en', {
+                hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+            });
+            const lv = document.createElement('span');
+            lv.className = `log-level ${evt.level}`;
+            lv.textContent = evt.level;
+            const msg = document.createElement('span');
+            msg.className = 'log-msg';
+            msg.textContent = evt.message;
+
+            line.appendChild(ts); line.appendChild(lv); line.appendChild(msg);
+            body.appendChild(line);
+            body.scrollTop = body.scrollHeight;
+        };
+        _logSse.onerror = () => {};
+    }
+
+    async function selectJob(job) {
+        state.selectedJobID = job.job_id;
+        renderDAG(state.detail);
+        document.getElementById('log-job-id').textContent = job.step_id;
+
+        const statusMsg = {
+            pending:  'Job is waiting for its dependencies to complete.',
+            queued:   'Job is queued — waiting for an available agent.',
+            canceled: 'Job was canceled before it ran.',
+        };
+
+        if (statusMsg[job.status]) {
+            closeLogStream();
+            document.getElementById('log-body').innerHTML =
+                `<div id="log-empty">${statusMsg[job.status]}</div>`;
+            return;
+        }
+
+        if (job.status === 'running') {
+            document.getElementById('log-body').innerHTML = '';
+            openLogSSE(job.job_id);
+            return;
+        }
+
+        // Completed — fetch stored logs.
+        closeLogStream();
+        document.getElementById('log-body').innerHTML =
+            '<div style="color:var(--muted);padding:12px 16px;font-size:12px;font-family:var(--font-mono)">Loading logs…</div>';
+        const logs = await api.jobLogs(job.job_id).catch(() => null);
+        renderLogs(logs, job);
+    }
+
+
+    // ── Artifact panel ───────────────────────────────────────────────────────
+    async function loadArtifacts(runID) {
+        if (!runID) return;
+        const resp = await fetchAuth(`/api/v1/runs/${runID}/artifacts`).catch(() => null);
+        if (!resp) return;
+        const artifacts = await resp.json().catch(() => []);
+
+        const panel = document.getElementById('artifact-panel');
+        const body  = document.getElementById('artifact-body');
+        const count = document.getElementById('artifact-count');
+
+        if (!artifacts || artifacts.length === 0) {
+            panel.classList.remove('visible');
+            return;
+        }
+
+        panel.classList.add('visible');
+        count.textContent = `${artifacts.length} file${artifacts.length !== 1 ? 's' : ''}`;
+        body.innerHTML = '';
+
+        artifacts.forEach(a => {
+            const row  = document.createElement('div');
+            row.className = 'artifact-row';
+
+            const name = document.createElement('span');
+            name.className = 'artifact-name';
+            name.textContent = a.name + (a.name !== a.filename ? ` (${a.filename})` : '');
+
+            const size = document.createElement('span');
+            size.className = 'artifact-size';
+            size.textContent = formatBytes(a.size_bytes);
+
+            const dl = document.createElement('a');
+            dl.className = 'artifact-dl';
+            dl.textContent = '↓ download';
+            dl.href = authUrl(a.download_url);
+            dl.download = a.filename;
+
+            row.appendChild(name); row.appendChild(size); row.appendChild(dl);
+            body.appendChild(row);
+        });
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024, sizes = ['B','KB','MB','GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function renderLogs(logs, job) {
+        const body = document.getElementById('log-body');
+        body.innerHTML = '';
+
+        if (logs === null || logs === undefined) {
+            body.innerHTML = '<div id="log-empty">Could not load logs.</div>';
+            return;
+        }
+        if (logs.length === 0) {
+            body.innerHTML = `<div id="log-empty">No logs stored for this job${
+                job.status === 'running' ? ' — still running' : ''
+            }.</div>`;
+            return;
+        }
+
+        const frag = document.createDocumentFragment();
+        logs.forEach(ev => {
+            const line = document.createElement('div');
+            line.className = 'log-line';
+
+            const ts = document.createElement('span');
+            ts.className = 'log-ts';
+            ts.textContent = new Date(ev.ts).toLocaleTimeString('en', { hour12: false,
+                hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            const level = document.createElement('span');
+            level.className = `log-level ${ev.level}`;
+            level.textContent = ev.level;
+
+            const msg = document.createElement('span');
+            msg.className = 'log-msg';
+            msg.textContent = ev.message;
+
+            line.appendChild(ts);
+            line.appendChild(level);
+            line.appendChild(msg);
+            frag.appendChild(line);
+        });
+        body.appendChild(frag);
+    }
+
+    function clearLogs() {
+        document.getElementById('log-job-id').textContent = '';
+        document.getElementById('log-body').innerHTML =
+            '<div id="log-empty">Click a job node to view its logs.</div>';
+    }
+
+    // ── Run list ──────────────────────────────────────────────────────────────────
+    let _runs = [];
+
+    async function refreshRunList() {
+        const runs = await api.listRuns().catch(() => null);
+        if (!runs) return;
+        _runs = runs;
+        renderRunList();
+
+        // If no run is actively selected (or the selected run has finished and SSE closed),
+        // auto-select the newest run that is currently running.
+        const activeRunDone = !state.activeRunID ||
+            (state.detail && (state.detail.status === 'passed' || state.detail.status === 'failed'));
+
+        if (activeRunDone) {
+            const newest = runs.find(r => r.status !== 'passed' && r.status !== 'failed');
+            if (newest && newest.run_id !== state.activeRunID) {
+                selectRun(newest.run_id);
+            }
+        }
+    }
+
+    function renderRunList() {
+        const el = document.getElementById('run-list');
+        if (!_runs.length) {
+            el.innerHTML = '<div id="empty-state">No runs yet.<br>Submit a pipeline to start.</div>';
+            return;
+        }
+
+        // Merge server data with any live detail we have in state.
+        const items = _runs.map(r => {
+            if (r.run_id === state.activeRunID && state.detail) {
+                return { ...r, status: state.detail.status };
+            }
+            return r;
+        });
+
+        el.innerHTML = '';
+        items.forEach(r => {
+            const item = document.createElement('div');
+            item.className = 'run-item' + (r.run_id === state.activeRunID ? ' active' : '');
+            item.innerHTML = `
+      <div class="run-item-name">${escHtml(r.name)}</div>
+      <div class="run-item-meta">
+        <span class="badge badge-${r.status}">${r.status}</span>
+        <span>${r.job_count} job${r.job_count !== 1 ? 's' : ''}</span>
+        <span>${timeAgo(r.created_at)}</span>
+      </div>`;
+            item.addEventListener('click', () => selectRun(r.run_id));
+            el.appendChild(item);
+        });
+    }
+
+    // ── Connection status ─────────────────────────────────────────────────────────
+    function setConnStatus(status) {
+        const dot   = document.getElementById('conn-dot');
+        const label = document.getElementById('conn-label');
+        const states = {
+            idle:         ['off',    'idle'],
+            connecting:   ['off',    'connecting…'],
+            live:         ['',       'live'],
+            reconnecting: ['off',    'reconnecting…'],
+            done:         ['',       'complete'],
+            error:        ['off',    'error'],
+        };
+        const [cls, text] = states[status] || ['off', status];
+        dot.className   = cls;
+        label.textContent = text;
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────────
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function timeAgo(iso) {
+        const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+        if (s < 60)   return `${s}s ago`;
+        if (s < 3600) return `${Math.floor(s/60)}m ago`;
+        return `${Math.floor(s/3600)}h ago`;
+    }
+
+    // ── Debug session (xterm.js terminal) ────────────────────────────────────────
+
+    let debugState = { sessionID: null, sse: null, ws: null, term: null, fitAddon: null, ttlInterval: null };
+
+    async function openDebug(job) {
+        await closeDebug();
+
+        const panel = document.getElementById('debug-panel');
+        panel.classList.add('visible');
+        setDebugStatus('starting', '● starting container…');
+
+        // Create debug session via scheduler.
+        const resp = await fetchAuth('/api/v1/debug', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id: job.job_id }),
+        }).catch(() => null);
+
+        if (!resp?.ok) {
+            setDebugStatus('closed', '✗ failed to create session');
+            return;
+        }
+
+        const info = await resp.json();
+        debugState.sessionID = info.session_id;
+
+        // Open scheduler SSE to learn when the container is ready and get the WS URL.
+        const sse = new EventSource(authUrl(`/api/v1/debug/${info.session_id}/stream`));
+        debugState.sse = sse;
+
+        sse.onmessage = (e) => {
+            const evt = JSON.parse(e.data);
+            if (evt.type === 'status' && evt.status === 'starting') {
+                setDebugStatus('starting', '● starting…');
+            }
+            if (evt.type === 'ttl') {
+                startTTLTimer(evt.expires_in_s);
+            }
+            if (evt.type === 'ready') {
+                setDebugStatus('ready', '● ready');
+                startTTLTimer(info.expires_in_s);
+                // Connect the xterm terminal directly to the agent's WebSocket.
+                // Connect via scheduler proxy — no direct agent URL needed
+                openTerminalWS(info.session_id);
+            }
+            if (evt.type === 'closed') {
+                setDebugStatus('closed', '○ closed');
+                if (debugState.term) debugState.term.write('\r\n\x1b[33mSession closed.\x1b[0m\r\n');
+                clearInterval(debugState.ttlInterval);
+                sse.close();
+            }
+        };
+        sse.onerror = () => setDebugStatus('starting', '⟳ reconnecting…');
+    }
+
+    function openTerminalWS(wsBaseURL, sessionID) {
+        // Initialise xterm.js terminal.
+        const wrap = document.getElementById('debug-term-wrap');
+        wrap.innerHTML = ''; // clear any previous terminal
+
+        const term = new Terminal({
+            theme: {
+                background: '#0d0d0d',
+                foreground: '#e0e0e0',
+                cursor:     '#7c6af7',
+            },
+            fontFamily: 'Menlo, Consolas, "Courier New", monospace',
+            fontSize:   13,
+            lineHeight: 1.3,
+            cursorBlink: true,
+            allowProposedApi: true,
+        });
+
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(wrap);
+        fitAddon.fit();
+
+        debugState.term     = term;
+        debugState.fitAddon = fitAddon;
+
+        // Connect to agent WebSocket — pass initial size as query params.
+        const cols = term.cols;
+        const rows = term.rows;
+        // Always connect through the scheduler — it proxies to whichever agent owns the session.
+        // This works regardless of how many agents are running or where they are.
+        const scheme = location.protocol === "https:" ? "wss" : "ws";
+        const wsURL  = authUrl(`${scheme}://${location.host}/api/v1/debug/${sessionID}/ws?cols=${cols}&rows=${rows}`);
+
+        const ws = new WebSocket(wsURL);
+        ws.binaryType = 'arraybuffer';
+        debugState.ws = ws;
+
+        ws.onopen = () => {
+            setDebugStatus('ready', '● connected');
+            term.focus();
+        };
+
+        // Container output → xterm.
+        ws.onmessage = (e) => {
+            if (e.data instanceof ArrayBuffer) {
+                term.write(new Uint8Array(e.data));
+            } else {
+                term.write(e.data);
+            }
+        };
+
+        ws.onerror = () => setDebugStatus('closed', '✗ connection error');
+        ws.onclose = () => setDebugStatus('closed', '○ disconnected');
+
+        // Keystrokes → WebSocket (raw bytes).
+        term.onData((data) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        });
+
+        // Terminal resize → send control message to agent.
+        term.onResize(({ cols, rows }) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+            }
+        });
+
+        // Re-fit when panel resizes (ResizeObserver is widely supported).
+        const ro = new ResizeObserver(() => fitAddon.fit());
+        ro.observe(wrap);
+    }
+
+    async function closeDebug() {
+        if (!debugState.sessionID) return;
+        const id = debugState.sessionID;
+        debugState.sessionID = null;
+
+        if (debugState.sse)  { debugState.sse.close();  debugState.sse = null;  }
+        if (debugState.ws)   { debugState.ws.close();   debugState.ws = null;   }
+        if (debugState.term) { debugState.term.dispose(); debugState.term = null; }
+        clearInterval(debugState.ttlInterval);
+        document.getElementById('debug-panel').classList.remove('visible');
+
+        await fetchAuth(`/api/v1/debug/${id}`, { method: 'DELETE' }).catch(() => null);
+    }
+
+    function setDebugStatus(cls, text) {
+        const el = document.getElementById('debug-status');
+        el.className = cls;
+        el.textContent = text;
+    }
+
+    function startTTLTimer(seconds) {
+        let remaining = seconds;
+        const el = document.getElementById('debug-ttl');
+        clearInterval(debugState.ttlInterval);
+        debugState.ttlInterval = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) { clearInterval(debugState.ttlInterval); el.textContent = 'expired'; return; }
+            const m = Math.floor(remaining / 60);
+            const s = remaining % 60;
+            el.textContent = `TTL ${m}:${String(s).padStart(2, '0')}`;
+        }, 1000);
+    }
+
+    // Remove old command-input helpers that are no longer needed.
+    function runDebugCmd() {}
+    function cancelDebugCmd() {}
+    function setCommandRunning() {}
+
+    // ── Bootstrap ─────────────────────────────────────────────────────────────────
+    refreshRunList();
+    setInterval(refreshRunList, 5000); // poll run list every 5s
+</script>
+</body>
+</html>
