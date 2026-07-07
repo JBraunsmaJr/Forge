@@ -1,0 +1,50 @@
+# examples/.forge/dynamic-matrix.yml
+#
+# Dynamic cross-platform build matrix.
+#
+# The traditional CI problem: GitHub Actions requires you to declare matrix
+# values in static YAML before the pipeline runs. A new target means editing
+# every workflow file. Skipping a target at runtime is not supported.
+#
+# The Forge approach: a generator step runs a real Python script that reads
+# platforms.json and emits exactly the jobs needed. Add a platform to the
+# JSON file and the pipeline adapts — no YAML changes required.
+#
+# Script: examples/scripts/ci/generate-matrix.py
+#   - Reads .forge/platforms.json (or uses defaults)
+#   - Emits one build + one test step per platform, all in parallel
+#   - Writes .forge/artifact-manifest.json so the release step knows artifact names
+
+name: dynamic-matrix-build
+
+steps:
+
+  # ── Generate the build matrix at runtime ────────────────────────────────────
+  # The script is a versioned Python file in the repo — IDE support, linting,
+  # independent testing. No logic buried in YAML strings.
+  - id: matrix-generator
+    type: generator
+    image: python:3.12-slim
+    timeout: 2m
+    script: examples/scripts/ci/generate-matrix.py
+
+  # ── Release: fan in after all platform builds ────────────────────────────────
+  # depends_on: [matrix-generator] means "wait for the generator AND all of
+  # its emitted children". This is the fan-in point for the entire matrix.
+  - id: release
+    image: alpine:latest
+    depends_on: [matrix-generator]
+    timeout: 10m
+    run: |
+      echo "=== Release phase: all platform builds passed ==="
+      manifest=$(cat /workspace/.forge/artifact-manifest.json 2>/dev/null || echo '{}')
+      echo "Platforms: $(echo "$manifest" | grep -o '"os"' | wc -l)"
+
+      mkdir -p release/
+      sha256sum dist/myapp-* 2>/dev/null > release/checksums.sha256 || true
+      echo "Checksums:"
+      cat release/checksums.sha256
+    artifacts:
+      upload:
+        - path: release/checksums.sha256
+          name: release-checksums

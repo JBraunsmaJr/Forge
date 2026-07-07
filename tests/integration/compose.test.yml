@@ -1,0 +1,31 @@
+# tests/integration/compose.test.yml
+#
+# Overrides compose.yml for integration testing.
+# Run with: docker compose -p forge-it -f compose.yml -f tests/integration/compose.test.yml up --build -d
+#
+# The integration test suite (suite_test.go) always uses project name "forge-it"
+# via -p, so the Docker network is always "forge-it_forge" and
+# FORGE_DOCKER_NETWORK is set accordingly.
+
+services:
+  scheduler:
+    environment:
+      FORGE_ROOT_TOKEN: it-admin-token-forge
+      FORGE_RUN_RETENTION_DAYS: "1"
+      # Use local filesystem for artifacts — no MinIO bucket setup needed.
+      # The init service is disabled, so the MinIO bucket would not exist.
+      FORGE_ARTIFACT_STORE: local
+      FORGE_ARTIFACT_DIR: /data/artifacts
+
+  agent:
+    environment:
+      FORGE_API_TOKEN: it-admin-token-forge
+      # Network name = compose project name + "_" + network name from compose.yml.
+      # Since startStack uses -p forge-it, the network is always forge-it_forge.
+      FORGE_DOCKER_NETWORK: forge-it_forge
+    deploy:
+      replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
+
+  init:
+    profiles:
+      - disabled

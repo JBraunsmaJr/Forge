@@ -1,0 +1,10 @@
+{
+  "name": "security-policy-steps",
+  "steps": [
+    {
+      "id": "security-scan",
+      "image": "alpine:latest",
+      "run": "echo '[SECURITY] Scanning for vulnerabilities...' && sleep 1 && echo '[SECURITY] No issues found.'"
+    }
+  ]
+}

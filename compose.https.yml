@@ -1,0 +1,76 @@
+# docker-compose.https.yml
+#
+# Extends compose.yml to add Caddy as an HTTPS reverse proxy.
+#
+# Usage:
+#   docker compose -f compose.yml -f docker-compose.https.yml up -d
+#
+# Or add to .env:
+#   COMPOSE_FILE=compose.yml:docker-compose.https.yml
+# Then just: docker compose up -d
+#
+# Required .env additions:
+#   FORGE_DOMAIN=yourname.duckdns.org
+#   DUCKDNS_TOKEN=your-token-here
+#   ACME_EMAIL=you@example.com
+
+services:
+
+  # ── Caddy reverse proxy ─────────────────────────────────────────────────────
+  caddy:
+    build:
+      context:    caddy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks: [forge]
+    ports:
+      - "80:80"     # HTTP → HTTPS redirect
+      - "443:443"   # HTTPS — forward this port on your router
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # stores issued certificates — do not delete
+      - caddy_config:/config
+    environment:
+      FORGE_DOMAIN:  ${FORGE_DOMAIN:?FORGE_DOMAIN must be set, e.g. myforge.duckdns.org}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN:?DUCKDNS_TOKEN must be set from duckdns.org}
+      ACME_EMAIL:    ${ACME_EMAIL:?ACME_EMAIL must be set for Let's Encrypt}
+    depends_on:
+      - scheduler
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+
+  # ── DuckDNS DDNS updater ────────────────────────────────────────────────────
+  # Keeps yourname.duckdns.org pointed at your current home IP.
+  # Runs every 5 minutes. Check with: docker compose logs duckdns-updater
+  duckdns-updater:
+    image: lscr.io/linuxserver/duckdns:latest
+    environment:
+      SUBDOMAINS: ${DUCKDNS_SUBDOMAIN:?DUCKDNS_SUBDOMAIN must be set}
+      TOKEN:      ${DUCKDNS_TOKEN}
+      LOG_FILE:   "false"
+    restart: unless-stopped
+    networks: [forge]
+
+  # ── Override scheduler: tell it the public HTTPS URL ────────────────────────
+  scheduler:
+    environment:
+      FORGE_BASE_URL: https://${FORGE_DOMAIN}
+    # !reset replaces the ports list from compose.yml rather than appending.
+    # Without this, both "8080:8080" and "127.0.0.1:8080:8080" would be
+    # applied simultaneously, causing a host port conflict.
+    ports: !reset
+      - "127.0.0.1:8080:8080"   # local-only — external traffic goes through Caddy
+
+  # ── Agents: no changes needed ─────────────────────────────────────────────
+  # Agents no longer expose WebSocket ports. The scheduler proxies debug
+  # terminal connections to agents using their internal Docker-network IPs.
+  # Scale freely: docker compose up --scale agent=N -d
+  #
+  # No agent service overrides required here.
+
+volumes:
+  caddy_data:    # TLS certificates and ACME account — persist this
+  caddy_config:

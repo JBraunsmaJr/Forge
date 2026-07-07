@@ -1,0 +1,82 @@
+# examples/.forge/library-release.yml
+#
+# Cross-team pipeline chaining: library publish → consumer integration tests.
+#
+# In GitHub Actions, triggering downstream repos requires repository_dispatch
+# events, polling external status checks, and no unified view of results.
+#
+# In Forge:
+#   1. Build the library and upload it as an artifact
+#   2. A generator step (external script) discovers which services use this
+#      library and emits one child pipeline step per consumer — all parallel
+#   3. Team A's publish step only runs if every consumer integration test passes
+#
+# The discover-consumers script reads a registry file in the repo.
+# Adding a new consumer: edit consumer-registry.json. No pipeline changes needed.
+#
+# Script: examples/scripts/ci/discover-consumers.py
+
+name: library-release
+
+steps:
+
+  # ── Test and build the library ────────────────────────────────────────────────
+  - id: test-library
+    image: golang:1.24-alpine
+    timeout: 10m
+    run: |
+      go test ./... -race -coverprofile=coverage.out
+      go tool cover -func=coverage.out | grep total:
+
+  - id: build-library
+    image: golang:1.24-alpine
+    depends_on: [test-library]
+    timeout: 5m
+    run: |
+      VERSION="${GIT_TAG:-$(git describe --tags --always 2>/dev/null || echo dev)}"
+      mkdir -p dist
+      tar czf "dist/core-lib-${VERSION}.tar.gz" \
+        go.mod go.sum $(find . -name '*.go' ! -path '*/vendor/*')
+      echo "Packaged: dist/core-lib-${VERSION}.tar.gz ($(du -sh dist/*.tar.gz | cut -f1))"
+    artifacts:
+      upload:
+        - path: dist/core-lib-*.tar.gz
+          name: library-archive
+
+  # ── Discover consumers and trigger their integration tests ────────────────────
+  # The script reads .forge/consumer-registry.json (or uses defaults) and
+  # emits one type:pipeline step per consumer — all running in parallel.
+  # This step won't release the "fan-in" lock until every child pipeline passes.
+  - id: discover-consumers
+    type: generator
+    image: python:3.12-slim
+    depends_on: [build-library]
+    timeout: 5m
+    script: examples/scripts/ci/discover-consumers.py
+    env:
+      GIT_TAG: "${GIT_TAG:-dev}"
+
+  # ── Publish — only runs if all downstream tests passed ───────────────────────
+  - id: publish
+    image: golang:1.24-alpine
+    depends_on: [discover-consumers]
+    timeout: 5m
+    secrets: [GOPRIVATE_TOKEN]
+    run: |
+      VERSION="${GIT_TAG:-dev}"
+      echo "All consumer integration tests passed."
+      echo "Publishing core-lib@${VERSION} to private registry..."
+      # GONOSUMCHECK='*' GOFLAGS="-mod=mod" go publish ...
+      echo "✓ core-lib@${VERSION} published"
+
+  # ── Notify ────────────────────────────────────────────────────────────────────
+  - id: notify-release
+    image: curlimages/curl:latest
+    depends_on: [publish]
+    secrets: [SLACK_WEBHOOK]
+    timeout: 1m
+    run: |
+      VERSION="${GIT_TAG:-dev}"
+      curl -sf -X POST "$SLACK_WEBHOOK" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"🚀 core-lib@${VERSION} published. All downstream tests passed.\"}"

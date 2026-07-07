@@ -1,0 +1,6 @@
+.forge/cache
+.forge/logs
+dist
+forge.exe
+.idea
+.env
