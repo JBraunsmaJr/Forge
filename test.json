@@ -1,0 +1,7 @@
+{"name": "forge-ci", "steps": [{"id": "checkout", "name": "Verify workspace", "image": "alpine:latest", "run": "echo \'Workspace:\' && ls /workspace
+ && echo \'Go files:\' $(find /workspace -name \'*.go\' | wc -l)"}, {"id": "lint", "name": "Vet Go code", "image": "golang:1.26-alpine", "run": "cd /workspace && go vet ./... && echo \'Vet passed\'", "d
+epends_on": ["checkout"], "inputs": ["**/*.go", "go.mod"], "timeout": "5m"}, {"id": "test", "name": "Run tests", "image": "golang:1.26-alpine", "run": "cd /workspace && go test ./... -timeout 5m", "depe
+nds_on": ["checkout"], "inputs": ["**/*.go", "go.mod"], "timeout": "10m"}, {"id": "test-failure", "name": "Test failure", "image": "alpine:latest", "run": "exit 1", "depends_on": ["checkout"]}, {"id": "
+build", "name": "Build forge binary", "image": "golang:1.26-alpine", "run": "cd /workspace && mkdir -p dist && go build -o dist/forge ./cmd/forge && ls -lh dist/forge", "env": {"CGO_ENABLED": "0", "GOOS
+": "linux"}, "depends_on": ["test"], "inputs": ["**/*.go", "go.mod"], "timeout": "10m"}, {"id": "deploy", "depends_on": ["build"], "image": "alpine:latest", "run": "if [ -n \\"$GITHUB_TOKEN\\" ]; then e
+cho \'secret IS set, length:\'; echo -n \\"$GITHUB_TOKEN\\" | wc -c; else echo \'secret NOT set\'; fi", "secrets": ["GITHUB_TOKEN"]}]}
