@@ -1,0 +1,24 @@
+{
+  "name": "dynamic-pipeline-demo",
+  "steps": [
+    {
+      "id": "setup",
+      "image": "alpine:latest",
+      "run": "echo 'Pipeline starting...'"
+    },
+    {
+      "id": "generate-tests",
+      "name": "Generate test matrix",
+      "type": "generator",
+      "image": "alpine:latest",
+      "depends_on": ["setup"],
+      "run": "printf '[{\"id\":\"test-unit\",\"image\":\"alpine:latest\",\"run\":\"echo running unit tests && sleep 1 && echo unit tests passed\",\"depends_on\":[\"generate-tests\"]},{\"id\":\"test-integration\",\"image\":\"alpine:latest\",\"run\":\"echo running integration tests && sleep 1 && echo integration tests passed\",\"depends_on\":[\"generate-tests\"]},{\"id\":\"test-e2e\",\"image\":\"alpine:latest\",\"run\":\"echo running e2e tests && sleep 1 && echo e2e tests passed\",\"depends_on\":[\"generate-tests\"]}]'"
+    },
+    {
+      "id": "deploy",
+      "image": "alpine:latest",
+      "depends_on": ["generate-tests"],
+      "run": "echo 'All tests passed, deploying...'"
+    }
+  ]
+}

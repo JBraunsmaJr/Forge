@@ -1,0 +1,85 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+name: library-release
+
+steps:
+
+  - id: test-library
+    image: golang:1.24-alpine
+    timeout: 10m
+    run: |
+      go test ./... -race -coverprofile=coverage.out
+      go tool cover -func=coverage.out | grep total:
+
+  - id: build-library
+    image: golang:1.24-alpine
+    depends_on: [test-library]
+    timeout: 5m
+    run: |
+      VERSION="${GIT_TAG:-$(git describe --tags --always 2>/dev/null || echo dev)}"
+      mkdir -p dist
+      tar czf "dist/core-lib-${VERSION}.tar.gz" \
+        go.mod go.sum $(find . -name '*.go' ! -path '*/vendor/*')
+      echo "Packaged: dist/core-lib-${VERSION}.tar.gz ($(du -sh dist/*.tar.gz | cut -f1))"
+    artifacts:
+      upload:
+        - path: dist/core-lib-*.tar.gz
+          name: library-archive
+
+
+
+
+  - id: discover-consumers
+    type: generator
+    image: python:3.12-slim
+    depends_on: [build-library]
+    timeout: 5m
+    script: examples/scripts/ci/discover-consumers.py
+    env:
+      GIT_TAG: "${GIT_TAG:-dev}"
+
+  - id: publish
+    image: golang:1.24-alpine
+    depends_on: [discover-consumers]
+    timeout: 5m
+    secrets: [GOPRIVATE_TOKEN]
+    run: |
+      VERSION="${GIT_TAG:-dev}"
+      echo "All consumer integration tests passed."
+      echo "Publishing core-lib@${VERSION} to private registry..."
+
+      echo "✓ core-lib@${VERSION} published"
+
+  - id: notify-release
+    image: curlimages/curl:latest
+    depends_on: [publish]
+    secrets: [SLACK_WEBHOOK]
+    timeout: 1m
+    run: |
+      VERSION="${GIT_TAG:-dev}"
+      curl -sf -X POST "$SLACK_WEBHOOK" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"🚀 core-lib@${VERSION} published. All downstream tests passed.\"}"
+
+  - id: cleanup
+    image: alpine:latest
+    always_run: true
+    run: |
+      echo "Cleaning up local build artifacts..."
+      rm -rf dist/

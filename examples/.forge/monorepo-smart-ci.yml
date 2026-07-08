@@ -1,0 +1,65 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+name: monorepo-smart-ci
+
+steps:
+
+  - id: change-detector
+    type: generator
+    image: python:3.12-slim
+    timeout: 5m
+    script: examples/scripts/ci/detect-changes.py
+    env:
+      REGISTRY: registry.example.com
+      GIT_SHA: "${GIT_SHA:-dev}"
+      BASE_REF: "${BASE_REF:-HEAD~1}"
+
+
+
+
+  - id: integration-tests
+    image: golang:1.24-alpine
+    depends_on: [change-detector]
+    timeout: 20m
+    run: |
+      echo "Running integration tests against freshly built services..."
+      go test ./integration/... -tags=integration -timeout=15m
+
+  - id: notify-success
+    image: curlimages/curl:latest
+    depends_on: [integration-tests]
+    condition: success()
+    secrets: [SLACK_WEBHOOK]
+    timeout: 1m
+    run: |
+      curl -sf -X POST "$SLACK_WEBHOOK" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\": \"✅ Monorepo CI passed for ${GIT_SHA:-dev}\"}"
+
+  - id: notify-failure
+    image: curlimages/curl:latest
+    depends_on: [change-detector, integration-tests]
+    condition: failure()
+    secrets: [SLACK_WEBHOOK]
+    timeout: 1m
+    run: |
+      curl -sf -X POST "$SLACK_WEBHOOK" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\": \"❌ Monorepo CI failed for ${GIT_SHA:-dev}\"}"

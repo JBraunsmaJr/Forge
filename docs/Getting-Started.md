@@ -1,0 +1,309 @@
+# Getting Started with Forge
+
+This guide walks through every deployment mode from "run one pipeline on my laptop" to "team-wide distributed CI/CD." Pick the one that matches where you are.
+
+---
+
+## Prerequisites
+
+| Tool                                                  | Version | Purpose                           |
+|-------------------------------------------------------|---------|-----------------------------------|
+| [Go](https://go.dev/dl/)                              | 1.22+   | Building the Forge binary         |
+| [Docker Desktop](https://docs.docker.com/get-docker/) | Latest  | Running job containers            |
+| [Git](https://git-scm.com/)                           | Any     | Webhook git caching               |
+| PostgreSQL                                            | 16+     | Job queue (distributed mode only) |
+
+---
+
+## Mode 1: Local Runs
+
+No infrastructure needed. The `forge run` command executes a pipeline directly on your machine using your local Docker daemon.
+
+```bash
+# Build
+git clone https://github.com/JBraunsmaJr/forge
+cd forge
+go build -o forge ./cmd/forge
+
+# Run a pipeline
+./forge run examples/docker-ci.json
+
+# Validate without running
+./forge validate examples/docker-ci.json
+```
+
+**What happens:** Forge compiles the pipeline, builds the DAG, and executes each step in a Docker container sequentially (respecting dependencies). Logs stream to your terminal. Artifacts are stored locally at `.forge/artifacts/`.
+
+**Limitations:** Local mode is single-machine and sequential. For parallel execution across multiple agents, use distributed mode.
+
+---
+
+## Mode 2: Single-Machine Distributed Stack
+
+One machine runs the scheduler and one or more agents. This is the most common setup for small teams.
+
+### Step 1: Start PostgreSQL
+
+```bash
+docker run -d --name forge-db \
+  -p 5432:5432 \
+  -e POSTGRES_DB=forge \
+  -e POSTGRES_USER=forge \
+  -e POSTGRES_PASSWORD=forge \
+  postgres:16-alpine
+```
+
+### Step 2: Start Vault (for secrets)
+
+```bash
+docker run -d --name forge-vault \
+  -p 8200:8200 \
+  -e VAULT_DEV_ROOT_TOKEN_ID=forge-dev-token \
+  -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+  hashicorp/vault
+```
+
+### Step 3: Build Forge
+
+```bash
+go build -o forge ./cmd/forge      # Linux/Mac
+go build -o forge.exe ./cmd/forge  # Windows (PowerShell)
+```
+
+### Step 4: Start the Scheduler
+
+```powershell
+$env:FORGE_DB_URL = "postgres://forge:forge@localhost:5432/forge?sslmode=disable"
+./forge.exe scheduler
+```
+
+On first start, the scheduler creates an admin token and prints it **once**:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ First run — root admin token created                     │
+│                                                          │
+│ Token:  fgt_a3b4c5d6e7f8...                             │
+│                                                          │
+│ ⚠ This is shown ONCE. Store it securely.                │
+└──────────────────────────────────────────────────────────┘
+
+Set for this session:
+  $env:FORGE_API_TOKEN = 'fgt_a3b4c5d6e7f8...'
+```
+
+Save this token. Open http://localhost:8080 and enter it when prompted.
+
+### Step 5: Create an Agent Token
+
+Agents should use a token with the `agent` role (limited to job queue operations):
+
+```powershell
+$env:FORGE_API_TOKEN = 'fgt_...'   # your admin token
+./forge.exe token create my-agent --role agent
+
+# Output:
+#   Token (shown once — store this now):
+#   fgt_<agent-token>
+```
+
+### Step 6: Start an Agent
+
+```powershell
+$env:FORGE_API_TOKEN   = 'fgt_<agent-token>'
+$env:FORGE_VAULT_ADDR  = "http://localhost:8200"
+$env:FORGE_VAULT_TOKEN = "forge-dev-token"
+
+./forge.exe agent
+```
+
+### Step 7: Create a Default Org and Submit a Pipeline
+
+```powershell
+$env:FORGE_API_TOKEN = 'fgt_<admin-token>'
+
+# Create an org (groups policies and projects)
+./forge.exe org create default
+
+# Submit a pipeline
+$env:FORGE_ORG = '<org-id-from-above>'
+./forge.exe submit examples/docker-ci.json
+```
+
+Open http://localhost:8080 to watch the pipeline run in real time.
+
+---
+
+## Mode 3: Docker Compose Stack (Recommended for Teams)
+
+The compose stack provides everything pre-configured: scheduler, 2 agents, PostgreSQL, Vault, and MinIO (S3-compatible artifact storage).
+
+### Step 1: Configure
+
+```bash
+cp .env.example .env
+# Edit .env if needed — defaults work for local use
+```
+
+`.env.example` contains:
+```bash
+# Admin token (preset for reproducible dev environments)
+FORGE_ROOT_TOKEN=forge-dev-admin-token
+
+# Agent WebSocket host (change to your LAN IP for remote browser access)
+FORGE_AGENT_HOST=localhost
+```
+
+### Step 2: Start the Stack
+
+```bash
+docker compose up --build -d
+```
+
+This builds the Forge image, starts all services, and runs the `init` container which:
+- Creates a `default` org
+- Registers the container-security and language-security policies
+- Seeds example Vault secrets
+- Prints a ready summary
+
+Watch initialization:
+```bash
+docker compose logs -f init
+```
+
+### Step 3: Connect
+
+| Service       | URL                   | Credentials                                |
+|---------------|-----------------------|--------------------------------------------|
+| Forge Web UI  | http://localhost:8080 | Token: `forge-dev-admin-token`             |
+| Vault UI      | http://localhost:8200 | Token: `forge-dev-token`                   |
+| MinIO Console | http://localhost:9001 | User: `forgeadmin` / Pass: `forgepassword` |
+
+### Step 4: Submit from Outside the Stack
+
+Install the Forge CLI binary on your development machine and point it at the compose stack:
+
+```powershell
+$env:FORGE_API_TOKEN = 'forge-dev-admin-token'
+$env:FORGE_ORG       = '<org-id-from-init-output>'
+
+# Submit a pipeline from your local repo
+./forge.exe submit .forge/pipeline.yml
+```
+
+### Stopping and Resetting
+
+```bash
+# Stop (preserves data)
+docker compose down
+
+# Full reset (wipes PostgreSQL and MinIO data)
+docker compose down -v
+```
+
+---
+
+## Mode 4: Production Deployment
+
+For production, replace the compose stack's preset tokens with randomly generated ones and connect to production infrastructure.
+
+### Environment Variables to Change
+
+```bash
+# Remove FORGE_ROOT_TOKEN — the scheduler auto-generates a token on first start
+# FORGE_ROOT_TOKEN=               # comment this out
+
+# Point to production Vault
+FORGE_VAULT_ADDR=https://vault.internal.example.com
+FORGE_VAULT_TOKEN=<production-vault-token>
+
+# Point to production S3
+FORGE_ARTIFACT_STORE=s3
+FORGE_S3_ENDPOINT=                        # empty = AWS S3
+FORGE_S3_BUCKET=my-forge-artifacts
+FORGE_S3_REGION=us-east-1
+FORGE_S3_ACCESS_KEY=<access-key>
+FORGE_S3_SECRET_KEY=<secret-key>
+
+# Scheduler public URL (for artifact download links)
+FORGE_BASE_URL=https://forge.internal.example.com
+```
+
+### TLS / Reverse Proxy
+
+Run a reverse proxy (nginx, Caddy, Traefik) in front of the scheduler. Forge itself does not handle TLS.
+
+Caddy example:
+```
+forge.internal.example.com {
+  reverse_proxy scheduler:8080
+}
+```
+
+### Agent WebSocket for Debug Sessions
+
+Agent debug terminals require the browser to connect directly to each agent's WebSocket server. For production with agents behind a firewall:
+
+1. Set `FORGE_AGENT_WS_ADDR` to the agent's externally reachable address.
+2. Or run the agent with `--ws-addr 0.0.0.0:8082` and expose that port.
+3. Ensure your network allows direct browser → agent WebSocket connections.
+
+---
+
+## Setting Up Secrets
+
+Secrets are stored in Vault and fetched by agents at execution time. They are never stored in the scheduler or database.
+
+```powershell
+$env:FORGE_VAULT_ADDR  = "http://localhost:8200"
+$env:FORGE_VAULT_TOKEN = "forge-dev-token"
+
+# Global secrets (available to all runs)
+./forge.exe secret set GITHUB_TOKEN ghp_...
+
+# Org-scoped (shared by all projects in the org)
+./forge.exe secret set DATADOG_API_KEY key123 --org <org-id>
+
+# Project-scoped (highest priority, overrides org and global)
+./forge.exe secret set DEPLOY_TOKEN ghp_... --project <project-id>
+```
+
+Reference secrets in your pipeline:
+```yaml
+- id: deploy
+  image: alpine:latest
+  secrets: [DEPLOY_TOKEN, DATADOG_API_KEY]
+  run: echo "Token: $DEPLOY_TOKEN"  # injected as env var
+```
+
+---
+
+## Connecting a Repository (Webhooks)
+
+Register a repository to trigger pipelines automatically on `git push`:
+
+```powershell
+# Register the project
+./forge.exe project add my-service https://github.com/myorg/my-service.git
+
+# Output:
+#   GitHub webhook URL:
+#   http://your-server:8080/api/v1/webhook/github/<project-id>
+#   Webhook secret: forge_wh_...
+```
+
+In GitHub: **Settings → Webhooks → Add webhook**
+- Payload URL: the URL printed above
+- Secret: the secret printed above
+- Events: Just the push event
+
+For testing without HTTPS, use the **Manual Trigger** button in the Web UI on the project page.
+
+---
+
+## Next Steps
+
+- [Pipeline Reference](pipeline-reference.md) — learn every pipeline field
+- [Examples Guide](examples.md) — dynamic matrices, monorepos, pipeline chaining
+- [Policy Engine](policies.md) — enforce org-wide security rules
+- [Debug Sessions](debugging.md) — live terminal for failing jobs

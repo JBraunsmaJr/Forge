@@ -1,0 +1,48 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+name: dynamic-matrix-build
+
+steps:
+
+
+
+  - id: matrix-generator
+    type: generator
+    image: python:3.12-slim
+    timeout: 2m
+    script: examples/scripts/ci/generate-matrix.py
+
+
+
+  - id: release
+    image: alpine:latest
+    depends_on: [matrix-generator]
+    timeout: 10m
+    run: |
+      echo "=== Release phase: all platform builds passed ==="
+      manifest=$(cat /workspace/.forge/artifact-manifest.json 2>/dev/null || echo '{}')
+      echo "Platforms: $(echo "$manifest" | grep -o '"os"' | wc -l)"
+
+      mkdir -p release/
+      sha256sum dist/myapp-* 2>/dev/null > release/checksums.sha256 || true
+      echo "Checksums:"
+      cat release/checksums.sha256
+    artifacts:
+      upload:
+        - path: release/checksums.sha256
+          name: release-checksums

@@ -1,0 +1,31 @@
+
+
+
+
+
+
+
+
+
+services:
+  scheduler:
+    environment:
+      FORGE_ROOT_TOKEN: it-admin-token-forge
+      FORGE_RUN_RETENTION_DAYS: "1"
+      FORGE_ARTIFACT_STORE: local
+      FORGE_ARTIFACT_DIR: /data/artifacts
+      FORGE_VAULT_ADDR: http://vault:8200
+      FORGE_VAULT_TOKEN: forge-dev-token
+
+  agent:
+    environment:
+      FORGE_API_TOKEN: it-admin-token-forge
+
+
+      FORGE_DOCKER_NETWORK: forge-it_forge
+    deploy:
+      replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
+
+  init:
+    profiles:
+      - disabled

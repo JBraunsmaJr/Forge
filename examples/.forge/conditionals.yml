@@ -1,0 +1,63 @@
+
+
+
+
+
+
+
+
+name: conditional-logic-demo
+
+steps:
+
+  - id: unit-tests
+    image: golang:1.26-alpine
+    run: |
+      echo "Running unit tests..."
+
+
+  - id: integration-tests
+    image: golang:1.26-alpine
+    depends_on: [unit-tests]
+    run: |
+      echo "Running integration tests..."
+
+
+  - id: notify-success
+    image: curlimages/curl:latest
+    depends_on: [integration-tests]
+    condition: success() # Only runs if integration-tests passed
+    run: |
+      echo "✅ Tests passed! Sending notification..."
+
+  - id: notify-failure
+    image: curlimages/curl:latest
+    depends_on: [unit-tests, integration-tests]
+    condition: failure() # Runs only if one of the dependencies failed
+    run: |
+      echo "❌ Build failed! Sending alert..."
+
+  - id: publish-report
+    image: node:20-alpine
+    depends_on: [unit-tests, integration-tests]
+    condition: always() # Runs regardless of whether tests passed or failed
+    run: |
+      echo "📊 Generating build report..."
+
+  - id: cleanup
+    image: alpine:latest
+    always_run: true # Shortcut for condition: always()
+    run: |
+      echo "🧹 Cleaning up temporary resources..."
+
+
+
+
+  - id: deploy-preview
+    image: alpine:latest
+    run: |
+      if [ "$FORGE_EVENT" = "pull_request" ] || [ "$FORGE_EVENT" = "merge_request" ]; then
+        echo "🚀 Deploying preview for PR/MR #$FORGE_PR_NUMBER..."
+      else
+        echo "⏭️ Skipping preview: Not a pull request/merge request event (Event: $FORGE_EVENT)"
+      fi

@@ -1,0 +1,163 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+name: progressive-deploy
+
+steps:
+
+  - id: build
+    image: golang:1.24-alpine
+    timeout: 15m
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      GOARCH: amd64
+    run: |
+      echo "Building application..."
+      go build -ldflags="-s -w -X main.version=${GIT_SHA:-dev}" -o dist/app ./cmd/app
+      echo "Build size: $(du -sh dist/app)"
+    artifacts:
+      upload:
+        - path: dist/app
+          name: app-binary
+
+
+
+
+  - id: containerize
+    image: docker:24-cli
+    docker_socket: true
+    depends_on: [build]
+    timeout: 10m
+    artifacts:
+      download:
+        - name: app-binary
+          dest: dist/app
+    run: |
+      chmod +x dist/app
+      docker build -t "myapp:${GIT_SHA:-dev}" .
+      docker save "myapp:${GIT_SHA:-dev}" | gzip > dist/myapp-image.tar.gz
+      echo "Image size: $(du -sh dist/myapp-image.tar.gz)"
+    artifacts:
+      upload:
+        - path: dist/myapp-image.tar.gz
+          name: container-image
+
+
+
+
+  - id: deploy-staging
+    type: pipeline
+    pipeline: .forge/deploy.yml     # child pipeline file in this repo
+    wait: true                      # block until staging deploy completes
+    depends_on: [containerize]
+    variables:
+      ENVIRONMENT: staging
+      NAMESPACE: myapp-staging
+      REPLICAS: "2"
+      GIT_SHA: "${GIT_SHA:-dev}"
+
+    artifacts_send:
+      - container-image
+
+    artifacts_receive:
+      - deployed-endpoint
+
+  - id: smoke-tests
+    image: python:3.12-slim
+    depends_on: [deploy-staging]
+    timeout: 10m
+    artifacts:
+      download:
+        - name: deployed-endpoint
+          dest: /tmp/endpoint.txt
+    run: |
+      pip install --quiet httpx pytest
+
+      ENDPOINT=$(cat /tmp/endpoint.txt)
+      echo "Running smoke tests against: $ENDPOINT"
+
+      python3 - <<'PYEOF'
+      import httpx, sys, os
+
+      base = open("/tmp/endpoint.txt").read().strip()
+
+      checks = [
+          ("health check",    f"{base}/health",    200),
+          ("readiness probe", f"{base}/ready",     200),
+          ("metrics endpoint",f"{base}/metrics",   200),
+          ("api version",     f"{base}/api/v1/",   200),
+      ]
+
+      failed = []
+      for name, url, expected_status in checks:
+          resp = httpx.get(url, timeout=10)
+          if resp.status_code != expected_status:
+              failed.append(f"{name}: expected {expected_status}, got {resp.status_code}")
+              print(f"  ✗ {name}: {resp.status_code}", file=sys.stderr)
+          else:
+              print(f"  ✓ {name}: {resp.status_code}")
+
+      if failed:
+          print(f"\n{len(failed)} smoke test(s) failed:", file=sys.stderr)
+          for f in failed:
+              print(f"  - {f}", file=sys.stderr)
+          sys.exit(1)
+
+      print(f"\nAll {len(checks)} smoke tests passed.")
+      PYEOF
+
+
+
+  - id: deploy-production
+    type: pipeline
+    pipeline: .forge/deploy.yml
+    wait: true
+    depends_on: [smoke-tests]
+    variables:
+      ENVIRONMENT: production
+      NAMESPACE: myapp-production
+      REPLICAS: "10"
+      GIT_SHA: "${GIT_SHA:-dev}"
+    artifacts_send:
+      - container-image
+    artifacts_receive:
+      - deployed-endpoint
+
+  - id: verify-production
+    image: curlimages/curl:latest
+    depends_on: [deploy-production]
+    timeout: 5m
+    artifacts:
+      download:
+        - name: deployed-endpoint
+          dest: /tmp/prod-endpoint.txt
+    run: |
+      ENDPOINT=$(cat /tmp/prod-endpoint.txt)
+      echo "Verifying production deploy at: $ENDPOINT"
+      curl -sf "$ENDPOINT/health" || { echo "Production health check failed!"; exit 1; }
+      echo "✓ Production deploy verified"

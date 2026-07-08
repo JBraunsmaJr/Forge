@@ -1,0 +1,100 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+name: deploy
+
+steps:
+
+  - id: load-image
+    image: docker:24-cli
+    docker_socket: true
+    timeout: 10m
+    artifacts:
+      download:
+        - name: container-image
+          dest: /tmp/myapp-image.tar.gz
+    run: |
+      echo "Loading container image for ${ENVIRONMENT}..."
+      docker load < /tmp/myapp-image.tar.gz
+      docker tag "myapp:${GIT_SHA}" "${REGISTRY}/myapp:${GIT_SHA}"
+    env:
+      REGISTRY: registry.example.com
+
+  - id: push-image
+    image: docker:24-cli
+    docker_socket: true
+    depends_on: [load-image]
+    timeout: 5m
+    secrets: [REGISTRY_TOKEN]
+    run: |
+      echo "$REGISTRY_TOKEN" | docker login registry.example.com -u ci --password-stdin
+      docker push "${REGISTRY}/myapp:${GIT_SHA}"
+      echo "✓ Image pushed: ${REGISTRY}/myapp:${GIT_SHA}"
+    env:
+      REGISTRY: registry.example.com
+
+  - id: helm-deploy
+    image: alpine/helm:latest
+    depends_on: [push-image]
+    timeout: 10m
+    secrets: [KUBECONFIG_B64]
+    run: |
+      echo "$KUBECONFIG_B64" | base64 -d > /tmp/kubeconfig
+      export KUBECONFIG=/tmp/kubeconfig
+
+      helm upgrade --install myapp ./helm/myapp \
+        --namespace "$NAMESPACE" \
+        --create-namespace \
+        --set "image.tag=${GIT_SHA}" \
+        --set "replicaCount=${REPLICAS}" \
+        --set "environment=${ENVIRONMENT}" \
+        --wait \
+        --timeout 5m
+
+      echo "✓ Deployed myapp:${GIT_SHA} to ${ENVIRONMENT} (${REPLICAS} replicas)"
+
+  - id: get-endpoint
+    image: bitnami/kubectl:latest
+    depends_on: [helm-deploy]
+    timeout: 3m
+    secrets: [KUBECONFIG_B64]
+    run: |
+      echo "$KUBECONFIG_B64" | base64 -d > /tmp/kubeconfig
+      export KUBECONFIG=/tmp/kubeconfig
+
+      for i in $(seq 1 30); do
+        ENDPOINT=$(kubectl get svc myapp -n "$NAMESPACE" \
+          -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+        [ -n "$ENDPOINT" ] && break
+        sleep 5
+      done
+
+      if [ -z "$ENDPOINT" ]; then
+          echo "ERROR: Could not get endpoint for ${ENVIRONMENT}" >&2
+          exit 1
+      fi
+
+      echo "http://$ENDPOINT" > /workspace/deployed-endpoint.txt
+      echo "✓ Endpoint: http://$ENDPOINT"
+    artifacts:
+      upload:
+        - path: /workspace/deployed-endpoint.txt
+          name: deployed-endpoint
+
+  - id: notify-failure
+    image: curlimages/curl:latest
+    depends_on: [helm-deploy, get-endpoint]
+    condition: failure()
+    run: |
+      echo "❌ Deployment to ${ENVIRONMENT} failed!"
