@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS projects (
     org_id         TEXT        REFERENCES orgs(id) ON DELETE SET NULL,
     name           TEXT        NOT NULL,
     repo_url       TEXT        NOT NULL UNIQUE,
-    pipeline_path  TEXT        NOT NULL DEFAULT '.forge/pipeline.json',
+    pipeline_path  TEXT        NOT NULL DEFAULT '',
     webhook_secret TEXT        NOT NULL,
     scm_token      TEXT        NOT NULL DEFAULT '',
     -- branch_filter: JSON array of branch names/globs. Empty = all branches.

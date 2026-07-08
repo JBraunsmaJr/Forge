@@ -24,9 +24,6 @@ func (p *ProjectStore) CreateProject(orgID string, req api.CreateProjectRequest)
 	secret := newID()
 
 	pipelinePath := req.PipelinePath
-	if pipelinePath == "" {
-		pipelinePath = ".forge/pipeline.json"
-	}
 
 	// Use nil for org_id when empty — the column allows NULL.
 	// Passing an empty string would violate the foreign-key constraint.

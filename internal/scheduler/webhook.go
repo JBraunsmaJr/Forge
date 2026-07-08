@@ -320,12 +320,31 @@ func (s *Server) triggerWebhookRun(
 	}
 
 	pipelinePath := proj.PipelinePath
-	if pipelinePath == "" {
-		pipelinePath = ".forge/pipeline.json"
-	}
-	pipelineJSON, err := s.gitCache.ReadFile(repoURL, commitSHA, pipelinePath)
-	if err != nil {
-		return "", fmt.Errorf("reading pipeline file %s from cache: %w", pipelinePath, err)
+	var pipelineJSON []byte
+	var err error
+
+	// If no path is specified, or if the legacy default path is used, we try multiple possible locations.
+	if pipelinePath == "" || pipelinePath == ".forge/pipeline.json" {
+		defaults := []string{".forge/pipeline.yml", ".forge/pipeline.yaml", ".forge/pipeline.json"}
+		found := false
+		var lastErr error
+		for _, p := range defaults {
+			pipelineJSON, err = s.gitCache.ReadFile(repoURL, commitSHA, p)
+			if err == nil {
+				pipelinePath = p
+				found = true
+				break
+			}
+			lastErr = err
+		}
+		if !found {
+			return "", fmt.Errorf("pipeline file not found at any of the default locations (.forge/pipeline.{yml,yaml,json}). Last error: %w", lastErr)
+		}
+	} else {
+		pipelineJSON, err = s.gitCache.ReadFile(repoURL, commitSHA, pipelinePath)
+		if err != nil {
+			return "", fmt.Errorf("reading pipeline file %s from cache: %w", pipelinePath, err)
+		}
 	}
 
 	tmp, err := os.CreateTemp("", "forge-pipeline-*.json")

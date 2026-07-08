@@ -14,6 +14,7 @@
     
     let showCreate = false;
     let triggeringId: string | null = null;
+    let triggering = false;
     let triggerBranch = 'main';
     let branches: string[] = [];
     let loadingBranches = false;
@@ -74,10 +75,22 @@
     }
 
     async function trigger(id: string) {
-        if (!triggerBranch) return;
-        const res = await api.triggerProject(id, triggerBranch);
-        if (res) {
-            currentView.set('runs');
+        if (!triggerBranch || triggering) return;
+        triggering = true;
+        error = '';
+        try {
+            const res = await api.triggerProject(id, triggerBranch);
+            if (res) {
+                triggeringId = null;
+                currentView.set('runs');
+            } else {
+                error = 'Failed to trigger pipeline. Make sure the branch exists and contains a valid pipeline file.';
+            }
+        } catch (e) {
+            console.error("Trigger failed:", e);
+            error = 'An error occurred while triggering the pipeline.';
+        } finally {
+            triggering = false;
         }
     }
 
@@ -86,17 +99,26 @@
         triggerBranch = 'main';
         branches = [];
         loadingBranches = true;
+        error = '';
         try {
             const res = await api.listBranches(project.id);
-            if (res) {
+            if (res && triggeringId === project.id) {
                 branches = res.branches;
                 triggerBranch = res.default;
             }
         } catch (e) {
             console.error("Failed to load branches:", e);
         } finally {
-            loadingBranches = false;
+            if (triggeringId === project.id) {
+                loadingBranches = false;
+            }
         }
+    }
+
+    function cancelTrigger() {
+        triggeringId = null;
+        loadingBranches = false;
+        triggering = false;
     }
 
     onMount(loadData);
@@ -221,8 +243,10 @@
                                 {:else}
                                     <input type="text" bind:value={triggerBranch} placeholder="branch" on:keydown={(e) => e.key === 'Enter' && trigger(project.id)} />
                                 {/if}
-                                <button class="btn-confirm" on:click={() => trigger(project.id)} disabled={loadingBranches}>Go</button>
-                                <button class="btn-cancel" on:click={() => triggeringId = null}>&times;</button>
+                                <button class="btn-confirm" on:click={() => trigger(project.id)} disabled={loadingBranches || triggering}>
+                                    {triggering ? '...' : 'Go'}
+                                </button>
+                                <button class="btn-cancel" on:click={cancelTrigger}>&times;</button>
                             </div>
                         {:else}
                             <button class="btn-icon btn-trigger" on:click={() => openTrigger(project)} title="Trigger Pipeline">

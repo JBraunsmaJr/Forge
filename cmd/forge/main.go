@@ -84,7 +84,7 @@ func main() {
 
 func runCommand() {
 
-	pipelinePath := ".forge/pipeline.json"
+	pipelinePath := ""
 	var secretFlags []string
 	var envFile string
 
@@ -103,6 +103,19 @@ func runCommand() {
 			envFile = strings.TrimPrefix(args[i], "--env-file=")
 		case !strings.HasPrefix(args[i], "-"):
 			pipelinePath = args[i]
+		}
+	}
+
+	if pipelinePath == "" {
+		defaults := []string{".forge/pipeline.yml", ".forge/pipeline.yaml", ".forge/pipeline.json"}
+		for _, p := range defaults {
+			if _, err := os.Stat(p); err == nil {
+				pipelinePath = p
+				break
+			}
+		}
+		if pipelinePath == "" {
+			pipelinePath = ".forge/pipeline.yml" // fallback for error message
 		}
 	}
 
@@ -203,10 +216,24 @@ func runCommand() {
 }
 
 func validateCommand() {
-	pipelinePath := ".forge/pipeline.json"
+	pipelinePath := ""
 	if len(os.Args) >= 3 {
 		pipelinePath = os.Args[2]
 	}
+
+	if pipelinePath == "" {
+		defaults := []string{".forge/pipeline.yml", ".forge/pipeline.yaml", ".forge/pipeline.json"}
+		for _, p := range defaults {
+			if _, err := os.Stat(p); err == nil {
+				pipelinePath = p
+				break
+			}
+		}
+		if pipelinePath == "" {
+			pipelinePath = ".forge/pipeline.yml" // fallback
+		}
+	}
+
 	_, err := compiler.Compile(pipelinePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ invalid: %v\n", err)
@@ -340,7 +367,7 @@ func agentCommand() {
 
 func submitCommand() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: forge submit <pipeline.json> [scheduler-url]")
+		fmt.Fprintln(os.Stderr, "usage: forge submit <pipeline-file> [scheduler-url]")
 		os.Exit(1)
 	}
 	pipelinePath := os.Args[2]
@@ -1488,16 +1515,16 @@ func printUsage() {
 	fmt.Print(`forge — a CI/CD pipeline runner
 
 Local execution:
-  forge run [pipeline.json]              run a pipeline locally
+  forge run [pipeline.yml]               run a pipeline locally
     --secret KEY=VALUE                   inject a secret value (repeatable)
     --env-file .secrets.env              load secrets from a .env file
     (auto) .env                          auto-loaded from current directory
-  forge validate [pipeline.json]         validate without running
+  forge validate [pipeline.yml]          validate without running
 
 Distributed execution:
   forge scheduler [addr]                 start the scheduler (default :8080)
   forge agent [scheduler-url]            start a worker agent
-  forge submit <pipeline.json>           submit a pipeline to the scheduler
+  forge submit <pipeline.yml>            submit a pipeline to the scheduler
   forge trigger <project-id>             manually trigger a project pipeline
   forge status <run-id>                  check a run's status
 
