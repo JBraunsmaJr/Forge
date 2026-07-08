@@ -8,6 +8,8 @@
 
 ---
 
+![main](./assets/screenshots/main.png)
+
 ## The Problem with Existing CI/CD Systems
 
 Every team eventually hits the same wall with GitHub Actions, GitLab CI, and CircleCI:
@@ -75,11 +77,15 @@ One pipeline can trigger another, pass artifacts into it, and wait for results. 
 
 ### Debug failing jobs with a real terminal
 
+![live-term](./assets/screenshots/live-terminal.png)
+
 When a job fails, open a live terminal session directly into the container in the exact failing environment. No guessing from logs — just `cd` into the workspace and investigate.
 
 ### Policy injection for security at scale
 
 Define security policies (Trivy scans, govulncheck, etc.) at the org level. They inject automatically into every pipeline without pipeline authors knowing. Change a policy in one place, it applies everywhere.
+
+![manage-policies](./assets/screenshots/manage-policies.png)
 
 ---
 
@@ -277,3 +283,9 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 ## License
 
 Forge is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+![manage-projects](./assets/screenshots/manage-projects.png)
+
+![manage-orgs](./assets/screenshots/manage-orgs-secrets.png)
+
+![manage-tokens](./assets/screenshots/manage-tokens.png)
