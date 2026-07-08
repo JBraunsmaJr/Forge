@@ -53,6 +53,8 @@ ls -lh dist/
 dlv debug ./cmd/myapp
 ```
 
+![terminal](./../assets/screenshots/live-terminal.png)
+
 ### TTL and Timeout
 
 Sessions expire after 15 minutes of inactivity (configurable). The TTL countdown is shown in the terminal header. Each command you run resets the countdown.
