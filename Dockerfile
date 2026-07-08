@@ -51,6 +51,7 @@ RUN apk add --no-cache \
 
 COPY --from=builder /forge /forge
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Healthchecks are defined per-service in compose.yml, not here.
 # Defining HEALTHCHECK in the Dockerfile applies it to every container using
