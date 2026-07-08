@@ -136,10 +136,19 @@ The **scheduler** accepts pipeline submissions, applies org policies, stores job
 ```bash
 git clone https://github.com/JBraunsmaJr/forge
 cd forge
+
+# 1. Build the Web UI
+cd ui && npm install && npm run build
+cd ..
+
+# 2. Build the Go binary
 go build -o forge ./cmd/forge      # Linux/Mac
 # go build -o forge.exe ./cmd/forge  # Windows
 
-# Run a pipeline directly on your machine
+# Alternatively, use the Makefile:
+# make build
+
+# 3. Run a pipeline directly on your machine
 ./forge run examples/docker-ci.json
 ```
 

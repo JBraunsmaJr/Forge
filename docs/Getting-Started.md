@@ -9,6 +9,7 @@ This guide walks through every deployment mode from "run one pipeline on my lapt
 | Tool                                                  | Version | Purpose                           |
 |-------------------------------------------------------|---------|-----------------------------------|
 | [Go](https://go.dev/dl/)                              | 1.22+   | Building the Forge binary         |
+| [Node.js](https://nodejs.org/)                       | 20+     | Building the Web UI assets        |
 | [Docker Desktop](https://docs.docker.com/get-docker/) | Latest  | Running job containers            |
 | [Git](https://git-scm.com/)                           | Any     | Webhook git caching               |
 | PostgreSQL                                            | 16+     | Job queue (distributed mode only) |
@@ -23,6 +24,12 @@ No infrastructure needed. The `forge run` command executes a pipeline directly o
 # Build
 git clone https://github.com/JBraunsmaJr/forge
 cd forge
+
+# 1. Build Web UI
+cd ui && npm install && npm run build
+cd ..
+
+# 2. Build Forge
 go build -o forge ./cmd/forge
 
 # Run a pipeline
@@ -66,6 +73,11 @@ docker run -d --name forge-vault \
 ### Step 3: Build Forge
 
 ```bash
+# Build UI
+cd ui && npm install && npm run build
+cd ..
+
+# Build Binary
 go build -o forge ./cmd/forge      # Linux/Mac
 go build -o forge.exe ./cmd/forge  # Windows (PowerShell)
 ```
