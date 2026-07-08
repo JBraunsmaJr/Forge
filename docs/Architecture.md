@@ -6,47 +6,49 @@ This document describes how Forge works under the hood — useful for operators 
 
 ## Components
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                             Forge Stack                                  │
-│                                                                          │
-│  ┌───────────┐  ┌───────────┐  ┌────────────┐  ┌────────────────────┐  │
-│  │ forge CLI │  │  Web UI   │  │   GitHub   │  │     Webhooks       │  │
-│  │ (submit,  │  │ (browser) │  │   GitLab   │  │ (HMAC-verified)    │  │
-│  │  status,  │  │           │  │   SCM      │  │                    │  │
-│  │  secret)  │  └─────┬─────┘  └─────┬──────┘  └─────────┬──────── ┘  │
-│  └─────┬─────┘        │              │                    │             │
-│        └──────────────┼──────────────┘                    │             │
-│                       ▼                                   ▼             │
-│               ┌───────────────────────────────────────────────┐         │
-│               │                  Scheduler                    │  :8080  │
-│               │                                               │         │
-│               │  ┌───────────┐  ┌────────────┐  ┌─────────┐ │         │
-│               │  │  Policy   │  │  Artifact  │  │  Auth   │ │         │
-│               │  │  Engine   │  │  Server    │  │  Layer  │ │         │
-│               │  └───────────┘  └────────────┘  └─────────┘ │         │
-│               └───────┬───────────────────────────────────────┘         │
-│                       │                                                  │
-│          ┌────────────┼────────────┐                                    │
-│          ▼            ▼            ▼                                    │
-│    ┌──────────┐ ┌──────────┐ ┌──────────┐                              │
-│    │PostgreSQL│ │  Vault   │ │MinIO/S3  │                              │
-│    │(job queue│ │(secrets) │ │(artifact │                              │
-│    │ + state) │ │          │ │ storage) │                              │
-│    └──────────┘ └──────────┘ └────┬─────┘                              │
-│                                   │                                     │
-│                 ┌─────────────────┤                                    │
-│                 ▼                 ▼                                     │
-│          ┌──────────┐      ┌──────────┐                               │
-│          │ Agent 1  │      │ Agent 2  │                               │
-│          │  :8082   │      │  :8083   │   (scale to N agents)         │
-│          │          │      │          │                               │
-│          │ docker   │      │ docker   │   jobs run in containers      │
-│          │ run/exec │      │ run/exec │   on the agent's Docker       │
-│          └──────────┘      └──────────┘   daemon                     │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph "Forge Stack"
+        subgraph IG ["Ingress"]
+            CLI[forge CLI<br/>submit, status, secret]
+            UI[Web UI<br/>browser]
+            SCM[GitHub/GitLab<br/>SCM]
+            Webhooks[Webhooks<br/>HMAC-verified]
+        end
 
-Browser → Agent WebSocket (debug terminal — direct connection, no scheduler hop)
+        Scheduler["Scheduler (:8080)"]
+        
+        subgraph IS ["Internal Services"]
+            Policy[Policy Engine]
+            Artifact[Artifact Server]
+            Auth[Auth Layer]
+        end
+
+        subgraph PS ["Persistence & Secrets"]
+            DB[(PostgreSQL<br/>job queue + state)]
+            Vault[Vault<br/>secrets]
+            S3[MinIO/S3<br/>artifact storage]
+        end
+
+        subgraph EX ["Execution"]
+            Agent1["Agent 1 (:8082)"]
+            Agent2["Agent 2 (:8083)"]
+            AgentN[...]
+        end
+    end
+
+    IG --> Scheduler
+    Scheduler --- IS
+    Scheduler --> PS
+    
+    Agent1 -- "Polls" --> Scheduler
+    Agent2 -- "Polls" --> Scheduler
+    
+    Agent1 -- "Secrets" --> Vault
+    Agent2 -- "Secrets" --> Vault
+    
+    Agent1 -- "Artifacts" --> S3
+    Agent2 -- "Artifacts" --> S3
 ```
 
 ---

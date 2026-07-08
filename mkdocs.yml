@@ -1,0 +1,63 @@
+site_name: Forge Documentation
+site_description: "The programmable CI/CD engine for modern teams"
+site_url: https://JBraunsmaJr.github.io/forge/
+repo_url: https://github.com/JBraunsmaJr/forge
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+    - search.share
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      media: "(prefers-color-scheme: light)"
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      media: "(prefers-color-scheme: dark)"
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.mermaid_format
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: Getting-Started.md
+  - Architecture: Architecture.md
+  - Configuration: Configuration.md
+  - CLI Reference: Cli-Reference.md
+  - Pipeline Reference: Pipeline-Reference.md
+  - Examples: Examples.md
+  - Secrets: Secrets.md
+  - Policies: Policies.md
+  - Debugging: Debugging.md

@@ -176,29 +176,13 @@ The deploy logic lives in `.forge/deploy.yml`. It's called three times — once 
 
 ### Artifact flow
 
-```
-[build] ──────────────────────────────────────────────────────────────────────►
-                           app-binary artifact
-                                  │
-                                  ▼
-[containerize] ─────────────────────────────────────────────────────────────►
-                           container-image artifact
-                                  │
-                    ┌─────────────▼─────────────┐
-                    │      deploy-staging        │ (child pipeline)
-                    │  downloads: container-image│
-                    │  uploads: deployed-endpoint│
-                    └─────────────┬─────────────┘
-                                  │ deployed-endpoint artifact (staging URL)
-                                  ▼
-[smoke-tests] ─────────────────────────────────────────────────────────────►
-                           (tests staging URL)
-                                  │
-                    ┌─────────────▼─────────────┐
-                    │    deploy-production       │ (same child pipeline)
-                    │  downloads: container-image│
-                    │  uploads: deployed-endpoint│
-                    └───────────────────────────┘
+```mermaid
+graph LR
+    Build[build] -- "app-binary" --> Containerize[containerize]
+    Containerize -- "container-image" --> Staging[deploy-staging<br/>child pipeline]
+    Staging -- "deployed-endpoint" --> Smoke[smoke-tests]
+    Smoke -- "tests staging URL" --> Production[deploy-production<br/>child pipeline]
+    Containerize -- "container-image" --> Production
 ```
 
 ### The child deploy pipeline
