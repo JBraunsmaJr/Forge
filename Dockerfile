@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # ── Stage 1: Build UI ──────────────────────────────────────────────────────────
 FROM node:22-alpine AS ui-builder
 WORKDIR /ui
@@ -23,7 +22,6 @@ ENV GONOSUMDB=*
 ENV GOINSECURE=*
 RUN go mod download
 
-# Build the binary.
 COPY . .
 # Copy the built UI assets from the ui-builder stage
 COPY --from=ui-builder /internal/scheduler/web/dist ./internal/scheduler/web/dist
@@ -39,6 +37,7 @@ FROM alpine:3.20
 # bash              — for init script and entrypoint
 # git               — git operations in some pipeline steps
 # netcat-openbsd    — TCP wait in docker-entrypoint.sh before connecting to DB
+
 RUN apk add --no-cache \
         docker-cli \
         ca-certificates \
@@ -52,9 +51,5 @@ RUN apk add --no-cache \
 COPY --from=builder /forge /forge
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
-
-# Healthchecks are defined per-service in compose.yml, not here.
-# Defining HEALTHCHECK in the Dockerfile applies it to every container using
-# this image (scheduler, agent, init), but only the scheduler serves HTTP.
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
