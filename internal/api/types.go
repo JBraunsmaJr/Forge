@@ -31,6 +31,7 @@ type JobSpec struct {
 	Inputs            []string               `json:"inputs"`
 	Timeout           time.Duration          `json:"timeout_ns"`
 	SecretNames       []string               `json:"secret_names"`
+	DockerSocket      bool                   `json:"docker_socket,omitempty"`
 	Type              string                 `json:"type"` // "task" | "generator"
 	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
 	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
@@ -65,6 +66,7 @@ type StepDef struct {
 	Inputs       []string          `json:"inputs"`
 	Timeout      time.Duration     `json:"timeout_ns"`
 	SecretNames  []string          `json:"secret_names"`
+	DockerSocket bool              `json:"docker_socket,omitempty"`
 	Condition    string            `json:"condition,omitempty"`
 	AlwaysRun    bool              `json:"always_run,omitempty"`
 	Type         string            `json:"type"`
@@ -188,6 +190,7 @@ type DebugJobSpec struct {
 	WorkspaceDir string            `json:"workspace_dir"`
 	ProjectID    string            `json:"project_id,omitempty"`
 	CommitSHA    string            `json:"commit_sha,omitempty"`
+	DockerSocket bool              `json:"docker_socket,omitempty"`
 }
 
 // DebugCommand is a command queued by the browser to run in the debug container.

@@ -392,15 +392,16 @@ func submitCommand() {
 	steps := make([]api.StepDef, len(p.Steps))
 	for i, s := range p.Steps {
 		steps[i] = api.StepDef{
-			ID:          s.ID,
-			Image:       s.Image,
-			Command:     s.Command,
-			WorkDir:     s.WorkDir,
-			Env:         s.Env,
-			DependsOn:   s.DependsOn,
-			Inputs:      s.Inputs,
-			Timeout:     s.Timeout,
-			SecretNames: s.Secrets, // names only values never leave the agent.
+			ID:           s.ID,
+			Image:        s.Image,
+			Command:      s.Command,
+			WorkDir:      s.WorkDir,
+			Env:          s.Env,
+			DependsOn:    s.DependsOn,
+			Inputs:       s.Inputs,
+			Timeout:      s.Timeout,
+			SecretNames:  s.Secrets, // names only values never leave the agent.
+			DockerSocket: s.DockerSocket,
 		}
 	}
 

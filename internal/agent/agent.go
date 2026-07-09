@@ -182,16 +182,17 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	// Convert API Spec -> pipeline.Step
 	step := &pipeline.Step{
-		ID:      spec.StepID,
-		Name:    spec.StepID,
-		Image:   spec.Image,
-		Command: spec.Command,
-		WorkDir: spec.WorkDir,
-		Env:     spec.Env,
-		Inputs:  spec.Inputs,
-		Timeout: spec.Timeout,
-		Secrets: spec.SecretNames,
-		Type:    spec.Type,
+		ID:           spec.StepID,
+		Name:         spec.StepID,
+		Image:        spec.Image,
+		Command:      spec.Command,
+		WorkDir:      spec.WorkDir,
+		Env:          spec.Env,
+		Inputs:       spec.Inputs,
+		Timeout:      spec.Timeout,
+		Secrets:      spec.SecretNames,
+		DockerSocket: spec.DockerSocket,
+		Type:         spec.Type,
 	}
 
 	/*
@@ -571,6 +572,10 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		"--label", "forge.debug=true",
 		"--workdir", spec.WorkDir,
 		"--volume", workspaceDir + ":/workspace:rw",
+	}
+	if spec.DockerSocket {
+		args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock")
+		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
 	}
 	if spec.WorkDir == "" {
 		args[3] = "/workspace"

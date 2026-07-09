@@ -362,18 +362,19 @@ func (s *Server) triggerWebhookRun(
 		injectSCMMetadata(env, meta)
 
 		steps[i] = api.StepDef{
-			ID:          s.ID,
-			Image:       s.Image,
-			Command:     s.Command,
-			WorkDir:     s.WorkDir,
-			Env:         env,
-			DependsOn:   s.DependsOn,
-			Inputs:      s.Inputs,
-			Timeout:     s.Timeout,
-			SecretNames: s.Secrets,
-			Condition:   s.Condition,
-			AlwaysRun:   s.AlwaysRun,
-			Type:        s.Type,
+			ID:           s.ID,
+			Image:        s.Image,
+			Command:      s.Command,
+			WorkDir:      s.WorkDir,
+			Env:          env,
+			DependsOn:    s.DependsOn,
+			Inputs:       s.Inputs,
+			Timeout:      s.Timeout,
+			SecretNames:  s.Secrets,
+			DockerSocket: s.DockerSocket,
+			Condition:    s.Condition,
+			AlwaysRun:    s.AlwaysRun,
+			Type:         s.Type,
 		}
 	}
 
@@ -417,6 +418,10 @@ func (s *Server) triggerWebhookRun(
 		}
 	}
 	steps = append([]api.StepDef{checkoutStep}, steps...)
+
+	if err := validateSteps(steps); err != nil {
+		return "", fmt.Errorf("invalid pipeline after policy injection: %w", err)
+	}
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 

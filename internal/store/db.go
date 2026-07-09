@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     timeout_ns       BIGINT      NOT NULL DEFAULT 1800000000000,
     depends_on       JSONB       NOT NULL DEFAULT '[]',
     secret_names     JSONB       NOT NULL DEFAULT '[]',
+    docker_socket    BOOLEAN     NOT NULL DEFAULT FALSE,
     policy_source    TEXT        NOT NULL DEFAULT '',
     condition        TEXT        NOT NULL DEFAULT '',
     always_run       BOOLEAN     NOT NULL DEFAULT FALSE,
@@ -107,6 +108,7 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS emitted_step_ids JSONB NOT NULL DEFAUL
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS policy_source TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS condition TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS always_run BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS docker_socket BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS jobs_run_id_idx ON jobs(run_id);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);

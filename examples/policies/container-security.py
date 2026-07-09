@@ -56,7 +56,10 @@ def main():
                 "workdir": "/workspace",
             })
 
+    scan_ids = set(scan_map.values())
     for step in result:
+        if step["id"] in scan_ids:
+            continue
         if step.get("depends_on"):
             step["depends_on"] = [
                 scan_map.get(dep, dep)

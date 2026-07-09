@@ -265,6 +265,7 @@ func buildDockerArgs(step *pipeline.Step, workspaceDir string) []string {
 
 	if step.DockerSocket {
 		args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock")
+		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
 	}
 
 	for k, v := range step.Env {

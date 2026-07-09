@@ -35,10 +35,9 @@ func (s *Server) handleCreateDebugSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	image, workDir, workspaceDir, projectID, commitSHA := s.store.GetJobDetails(req.JobID)
+	image, workDir, workspaceDir, projectID, commitSHA, dockerSocket := s.store.GetJobDetails(req.JobID)
 	env := s.store.GetJobEnv(req.JobID)
-
-	info := s.debug.CreateSession(req.JobID, image, workDir, env, workspaceDir, projectID, commitSHA)
+	info := s.debug.CreateSession(req.JobID, image, workDir, env, workspaceDir, projectID, commitSHA, dockerSocket)
 	fmt.Printf("[scheduler] debug session %s created for job %s\n", info.SessionID[:8], req.JobID[:8])
 	writeJSON(w, http.StatusCreated, info)
 }

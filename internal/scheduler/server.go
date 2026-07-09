@@ -617,6 +617,11 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := validateSteps(steps); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline: %v", err))
+		return
+	}
+
 	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.CommitSHA, steps, appliedPolicies)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1028,6 +1033,11 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateSteps(steps); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
+		return
+	}
+
 	newRunID, err := s.store.SubmitRun("rerun: "+name, workspaceDir, orgID, projectID, commitSHA, steps, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1109,4 +1119,58 @@ func (s *Server) handleFlakySteps(w http.ResponseWriter, r *http.Request) {
 		results = []api.FlakyStep{}
 	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+func validateSteps(steps []api.StepDef) error {
+	// 1. Check for duplicate IDs
+	ids := make(map[string]struct{})
+	for _, s := range steps {
+		if s.ID == "" {
+			continue // compiler fills these in, but policies might not.
+		}
+		if _, ok := ids[s.ID]; ok {
+			return fmt.Errorf("duplicate step ID: %s", s.ID)
+		}
+		ids[s.ID] = struct{}{}
+	}
+
+	// 2. Check for cycles and missing dependencies
+	visited := make(map[string]bool)
+	onStack := make(map[string]bool)
+
+	adj := make(map[string][]string)
+	for _, s := range steps {
+		adj[s.ID] = s.DependsOn
+	}
+
+	var check func(string) error
+	check = func(u string) error {
+		visited[u] = true
+		onStack[u] = true
+		for _, v := range adj[u] {
+			if _, ok := adj[v]; !ok {
+				return fmt.Errorf("step %s depends on non-existent step %s", u, v)
+			}
+			if onStack[v] {
+				return fmt.Errorf("cycle detected: step %s is part of a dependency loop", v)
+			}
+			if !visited[v] {
+				if err := check(v); err != nil {
+					return err
+				}
+			}
+		}
+		onStack[u] = false
+		return nil
+	}
+
+	for _, s := range steps {
+		if !visited[s.ID] {
+			if err := check(s.ID); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
