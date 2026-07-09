@@ -83,6 +83,9 @@ func main() {
 }
 
 func runCommand() {
+	// Clean up any dangling containers from previous runs.
+	executor.Cleanup()
+	defer executor.Cleanup()
 
 	pipelinePath := ""
 	var secretFlags []string

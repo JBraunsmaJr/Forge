@@ -14,10 +14,14 @@ import glob
 
 WORKSPACE = "/workspace"
 
+def workspace_find(f):
+    matches = [match for match in glob.glob(f"**/{f}", root_dir=WORKSPACE, recursive=True)
+               if os.path.isfile(os.path.join(WORKSPACE, match))]
+    return matches[0] if matches else None
+
 def workspace_has(*files):
     for f in files:
-        if any(match for match in glob.glob(f"**/{f}", root_dir=WORKSPACE, recursive=True)
-               if os.path.isfile(os.path.join(WORKSPACE, match))):
+        if workspace_find(f):
             return True
     return False
 
@@ -42,8 +46,9 @@ def main():
     # ---------------------------------- Python ----------------------------------
     if workspace_has("requirements.txt", "Pipfile", "pyproject.toml"):
         if "pip-audit" not in existing_ids:
-            req_file = "/workspace/requirements.txt"
-            if workspace_has("requirements.txt"):
+            req_match = workspace_find("requirements.txt")
+            if req_match:
+                req_file = os.path.join(WORKSPACE, req_match)
                 injected.append({
                     "id":      "pip-audit",
                     "image":   "python:3.11-slim",
@@ -56,27 +61,33 @@ def main():
     # ---------------------------------- Go ----------------------------------
     if workspace_has("go.mod"):
         if "govulncheck" not in existing_ids:
-            injected.append({
-                "id":      "govulncheck",
-                "image":   "golang:1.26-alpine",
-                # govulncheck must be installed first; wrap in sh -c for &&
-                "command": ["sh", "-c",
-                            "go install golang.org/x/vuln/cmd/govulncheck@latest"
-                            " && govulncheck ./..."],
-                "depends_on": [],
-                "workdir": "/workspace",
-            })
+            go_match = workspace_find("go.mod")
+            if go_match:
+                go_dir = os.path.dirname(os.path.join(WORKSPACE, go_match))
+                injected.append({
+                    "id":      "govulncheck",
+                    "image":   "golang:1.26-alpine",
+                    # govulncheck must be installed first; wrap in sh -c for &&
+                    "command": ["sh", "-c",
+                                "go install golang.org/x/vuln/cmd/govulncheck@latest"
+                                " && govulncheck ./..."],
+                    "depends_on": [],
+                    "workdir": go_dir,
+                })
 
     # ---------------------------------- Node.js ----------------------------------
     if workspace_has("package.json"):
         if "npm-audit" not in existing_ids:
-            injected.append({
-                "id":      "npm-audit",
-                "image":   "node:20-alpine",
-                "command": ["npm", "audit", "--audit-level=high"],
-                "depends_on": [],
-                "workdir": "/workspace",
-            })
+            pkg_match = workspace_find("package.json")
+            if pkg_match:
+                pkg_dir = os.path.dirname(os.path.join(WORKSPACE, pkg_match))
+                injected.append({
+                    "id":      "npm-audit",
+                    "image":   "node:20-alpine",
+                    "command": ["npm", "audit", "--audit-level=high"],
+                    "depends_on": [],
+                    "workdir": pkg_dir,
+                })
 
     if not injected:
         print(json.dumps(steps))

@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -74,6 +76,10 @@ func (a *Agent) wsPort() string {
 // Run starts the agent's poll loop. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
 	fmt.Printf("[agent %s] starting, scheduler: %s\n", a.id[:8], a.schedulerURL)
+
+	// Clean up any dangling containers from previous runs.
+	executor.Cleanup()
+	defer executor.Cleanup()
 
 	// Start the WebSocket terminal server so browsers can connect directly.
 	go a.runTerminalServer(ctx)
@@ -147,6 +153,22 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		return fmt.Errorf("creating job workspace: %w", err)
 	}
 	defer os.RemoveAll(jobWorkspace)
+
+	/*
+		If the job belongs to a repository (ProjectID + CommitSHA are set),
+		perform an automatic checkout if the workspace is empty.
+		This ensures that injected steps (like security scans) and user steps
+		always have the source code available without explicit checkout steps
+		needing to share state via artifacts.
+	*/
+	if spec.ProjectID != "" && spec.CommitSHA != "" {
+		files, _ := os.ReadDir(jobWorkspace)
+		if len(files) == 0 {
+			fmt.Printf("[agent %s] workspace empty, performing checkout for %s @ %s\n",
+				a.id[:8], spec.ProjectID, spec.CommitSHA)
+			a.performDebugCheckout(ctx, jobWorkspace, spec.ProjectID, spec.CommitSHA)
+		}
+	}
 
 	// Build Executor
 	exec, err := executor.New(jobWorkspace,
@@ -529,15 +551,24 @@ func (a *Agent) debugLoop(ctx context.Context) {
 
 // handleDebugSession starts a debug container and relays commands until closed.
 func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) {
-	workspaceDir := spec.WorkspaceDir
-	if workspaceDir == "" {
-		// Use agent-local workspace if scheduler didn't provide one (e.g. webhook runs).
-		workspaceDir = filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
-		os.MkdirAll(workspaceDir, 0755)
+	// Always use an isolated workspace for each debug session to avoid Bug 2.
+	workspaceDir := filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+	os.MkdirAll(workspaceDir, 0755)
+
+	// Bug 1: If the workspace is empty and we have repo info, perform a checkout.
+	if spec.ProjectID != "" && spec.CommitSHA != "" {
+		files, _ := os.ReadDir(workspaceDir)
+		if len(files) == 0 {
+			fmt.Printf("[agent %s] workspace empty, performing checkout for %s @ %s\n",
+				a.id[:8], spec.ProjectID[:8], spec.CommitSHA[:8])
+			a.performDebugCheckout(ctx, workspaceDir, spec.ProjectID, spec.CommitSHA)
+		}
 	}
 
 	args := []string{
 		"run", "--rm", "-d",
+		"--label", "forge.managed=true",
+		"--label", "forge.debug=true",
 		"--workdir", spec.WorkDir,
 		"--volume", workspaceDir + ":/workspace:rw",
 	}
@@ -1302,6 +1333,66 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 	io.Copy(io.Discard, confirmResp.Body)
 	confirmResp.Body.Close()
 	return nil
+}
+
+func (a *Agent) performDebugCheckout(ctx context.Context, dir, projectID, commitSHA string) {
+	url := fmt.Sprintf("%s/api/v1/source/%s?commit=%s", a.schedulerURL, projectID, commitSHA)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		fmt.Printf("[agent %s] checkout failed: %v\n", a.id[:8], err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+a.apiToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("[agent %s] checkout failed: %v\n", a.id[:8], err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("[agent %s] checkout failed: status %d\n", a.id[:8], resp.StatusCode)
+		return
+	}
+
+	gzr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		fmt.Printf("[agent %s] checkout failed (gzip): %v\n", a.id[:8], err)
+		return
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Printf("[agent %s] checkout failed (tar): %v\n", a.id[:8], err)
+			return
+		}
+
+		target := filepath.Join(dir, header.Name)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			os.MkdirAll(target, 0755)
+		case tar.TypeReg:
+			os.MkdirAll(filepath.Dir(target), 0755)
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			if err != nil {
+				fmt.Printf("[agent %s] checkout failed (file): %v\n", a.id[:8], err)
+				return
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				fmt.Printf("[agent %s] checkout failed (copy): %v\n", a.id[:8], err)
+				return
+			}
+			f.Close()
+		}
+	}
 }
 
 func (a *Agent) downloadFile(downloadURL, dest string) error {

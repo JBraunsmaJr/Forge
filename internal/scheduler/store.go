@@ -21,14 +21,14 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID string, steps []api.StepDef, appliedPolicies []string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, steps, appliedPolicies)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, commitSHA string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, commitSHA, steps, appliedPolicies)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, commitSHA string, steps []api.StepDef, appliedPolicies []string) (string, error) {
 
 	policiesJSON, _ := json.Marshal(appliedPolicies)
 
@@ -44,9 +44,9 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID stri
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID,
+		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, commit_sha)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, commitSHA,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -196,9 +196,9 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	json.Unmarshal([]byte(artifactDownloadsJSON), &artifactDownloads)
 
 	// Fetch org_id and project_id from the parent run for secret scoping.
-	var orgID, projectID string
-	s.db.QueryRow(`SELECT COALESCE(org_id,''), COALESCE(project_id,'') FROM runs WHERE id=$1`, runID).
-		Scan(&orgID, &projectID)
+	var orgID, projectID, commitSHA string
+	s.db.QueryRow(`SELECT COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(commit_sha,'') FROM runs WHERE id=$1`, runID).
+		Scan(&orgID, &projectID, &commitSHA)
 
 	return &api.JobSpec{
 		JobID:             jobID,
@@ -215,6 +215,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		Type:              stepType,
 		OrgID:             orgID,
 		ProjectID:         projectID,
+		CommitSHA:         commitSHA,
 		PipelineRef:       pipelineRef,
 		ArtifactUploads:   artifactUploads,
 		ArtifactDownloads: artifactDownloads,
@@ -522,8 +523,12 @@ func (s *Store) RunStatus(runID string) (*api.RunStatus, bool) {
 		statuses = append(statuses, api.JobStatus(status))
 		ids = append(ids, id)
 	}
-	if len(ids) == 0 {
-		return nil, false
+
+	if statuses == nil {
+		statuses = []api.JobStatus{}
+	}
+	if ids == nil {
+		ids = []string{}
 	}
 
 	var name string
@@ -593,15 +598,24 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 
 // RunDetail returns the full run state for the DAG view.
 func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
-	var name string
+	detail := &api.RunDetail{RunID: runID}
 	var policiesJSON []byte
-	var createdAt time.Time
-	var orgID, projectID sql.NullString
+	var orgID, projectID, commitSHA sql.NullString
 	err := s.db.QueryRow(
-		`SELECT name, applied_policies, created_at, org_id, project_id FROM runs WHERE id=$1`, runID,
-	).Scan(&name, &policiesJSON, &createdAt, &orgID, &projectID)
+		`SELECT name, applied_policies, created_at, org_id, project_id, commit_sha FROM runs WHERE id=$1`, runID,
+	).Scan(&detail.Name, &policiesJSON, &detail.CreatedAt, &orgID, &projectID, &commitSHA)
 	if err != nil {
 		return nil, false
+	}
+
+	if orgID.Valid {
+		detail.OrgID = orgID.String
+	}
+	if projectID.Valid {
+		detail.ProjectID = projectID.String
+	}
+	if commitSHA.Valid {
+		detail.CommitSHA = commitSHA.String
 	}
 
 	var appliedPolicies []string
@@ -631,16 +645,14 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		statuses = append(statuses, j.Status)
 	}
 
-	return &api.RunDetail{
-		RunID:           runID,
-		Name:            name,
-		Status:          overallStatus(statuses),
-		CreatedAt:       createdAt,
-		Jobs:            jobs,
-		AppliedPolicies: appliedPolicies,
-		OrgID:           orgID.String,
-		ProjectID:       projectID.String,
-	}, true
+	if jobs == nil {
+		jobs = []api.JobDetail{}
+	}
+	detail.Jobs = jobs
+	detail.AppliedPolicies = appliedPolicies
+	detail.Status = overallStatus(statuses)
+
+	return detail, true
 }
 
 // GetJobLogs returns stored log events for a job.
@@ -681,15 +693,15 @@ func (s *Store) RunDetailByJobID(jobID string) (*api.RunDetail, bool) {
 	return s.RunDetail(runID)
 }
 
-// GetJobDetails returns image/workdir/workspaceDir for a debug session.
-func (s *Store) GetJobDetails(jobID string) (image, unused, workDir, workspaceDir string) {
+// GetJobDetails returns image/workdir/workspaceDir and repo info for a debug session.
+func (s *Store) GetJobDetails(jobID string) (image, workDir, workspaceDir, projectID, commitSHA string) {
 	var runID string
 	s.db.QueryRow(
 		`SELECT image, work_dir, run_id FROM jobs WHERE id=$1`, jobID,
 	).Scan(&image, &workDir, &runID)
 	s.db.QueryRow(
-		`SELECT workspace_dir FROM runs WHERE id=$1`, runID,
-	).Scan(&workspaceDir)
+		`SELECT workspace_dir, project_id, commit_sha FROM runs WHERE id=$1`, runID,
+	).Scan(&workspaceDir, &projectID, &commitSHA)
 	return
 }
 
@@ -812,14 +824,14 @@ func (s *Store) GetJobStepID(jobID string) string {
 
 // RerunSteps returns the original step definitions and workspace dir for a run
 // so it can be resubmitted as a new run.
-func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir string, err error) {
-	err = s.db.QueryRow(`SELECT name, workspace_dir FROM runs WHERE id=$1`, runID).
-		Scan(&name, &workspaceDir)
+func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, commitSHA string, err error) {
+	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(commit_sha,'') FROM runs WHERE id=$1`, runID).
+		Scan(&name, &workspaceDir, &orgID, &projectID, &commitSHA)
 	if err == sql.ErrNoRows {
-		return "", nil, "", fmt.Errorf("run %s not found", runID)
+		return "", nil, "", "", "", "", fmt.Errorf("run %s not found", runID)
 	}
 	if err != nil {
-		return "", nil, "", err
+		return "", nil, "", "", "", "", err
 	}
 
 	rows, err := s.db.Query(`
@@ -830,7 +842,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       COALESCE(artifact_downloads::text, '[]')
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
-		return "", nil, "", err
+		return "", nil, "", "", "", "", err
 	}
 	defer rows.Close()
 
@@ -877,7 +889,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			ArtifactDownloads: artifactDownloads,
 		})
 	}
-	return name, steps, workspaceDir, nil
+	return name, steps, workspaceDir, orgID, projectID, commitSHA, nil
 }
 
 // RecordStepResult stores a step outcome for flaky detection analysis.

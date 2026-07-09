@@ -7,7 +7,9 @@ steps:
     name: Unit Tests
     image: golang:1.26-alpine
     timeout: 5m
+    docker_socket: true
     run: |
+      apk add --no-cache python3
       go test ./...
 
   - id: build-image

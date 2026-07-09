@@ -1,6 +1,8 @@
 .forge/cache
 .forge/logs
-dist
-forge.exe
+/dist
+/forge.exe
+internal/scheduler/web/dist/*
+!internal/scheduler/web/dist/.gitkeep
 .idea
 .env

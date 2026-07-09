@@ -18,6 +18,8 @@ type debugSession struct {
 	workDir      string
 	env          map[string]string
 	workspaceDir string
+	projectID    string
+	commitSHA    string
 
 	status        string
 	agentID       string
@@ -46,7 +48,7 @@ func newDebugStore() *DebugStore {
 // CreateSession opens a new debug session for a failed job. The caller provides
 // the job's spec (image, env, workspace) so the agent can recreate the exact environment.
 func (d *DebugStore) CreateSession(jobID, image, workDir string,
-	env map[string]string, workspaceDir string) *api.DebugSessionInfo {
+	env map[string]string, workspaceDir, projectID, commitSHA string) *api.DebugSessionInfo {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -60,6 +62,8 @@ func (d *DebugStore) CreateSession(jobID, image, workDir string,
 		workDir:      workDir,
 		env:          env,
 		workspaceDir: workspaceDir,
+		projectID:    projectID,
+		commitSHA:    commitSHA,
 		status:       "starting",
 		subscribers:  make(map[chan string]struct{}),
 		createdAt:    now,
@@ -87,6 +91,8 @@ func (d *DebugStore) LeaseNext(agentID string) (*api.DebugJobSpec, bool) {
 			WorkDir:      s.workDir,
 			Env:          s.env,
 			WorkspaceDir: s.workspaceDir,
+			ProjectID:    s.projectID,
+			CommitSHA:    s.commitSHA,
 		}, true
 	}
 	return nil, false

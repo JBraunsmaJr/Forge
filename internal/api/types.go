@@ -38,6 +38,7 @@ type JobSpec struct {
 	// Secret lookup order: project → org → global → legacy.
 	OrgID     string `json:"org_id,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
+	CommitSHA string `json:"commit_sha,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 }
@@ -49,6 +50,7 @@ type SubmitRunRequest struct {
 	WorkspaceDir string    `json:"workspace_dir"`
 	OrgID        string    `json:"org_id,omitempty"`     // enables policy injection
 	ProjectID    string    `json:"project_id,omitempty"` // scopes secrets to this project
+	CommitSHA    string    `json:"commit_sha,omitempty"`
 }
 
 // StepDef carries a step's definition inside a SubmitRunRequest.
@@ -149,6 +151,7 @@ type RunDetail struct {
 	AppliedPolicies []string    `json:"applied_policies,omitempty"`
 	OrgID           string      `json:"org_id,omitempty"`
 	ProjectID       string      `json:"project_id,omitempty"`
+	CommitSHA       string      `json:"commit_sha,omitempty"`
 }
 
 // JobDetail carries everything the DAG renderer needs for one node.
@@ -183,6 +186,8 @@ type DebugJobSpec struct {
 	WorkDir      string            `json:"workdir"`
 	Env          map[string]string `json:"env"`
 	WorkspaceDir string            `json:"workspace_dir"`
+	ProjectID    string            `json:"project_id,omitempty"`
+	CommitSHA    string            `json:"commit_sha,omitempty"`
 }
 
 // DebugCommand is a command queued by the browser to run in the debug container.

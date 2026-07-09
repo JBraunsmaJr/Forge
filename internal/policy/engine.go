@@ -108,7 +108,11 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 
 	switch {
 	case t.Image != "":
-		args := []string{"run", "--rm", "-i"}
+		args := []string{
+			"run", "--rm", "-i",
+			"--label", "forge.managed=true",
+			"--label", "forge.policy=true",
+		}
 		if input.WorkspaceDir != "" {
 
 			wsDir := strings.ReplaceAll(input.WorkspaceDir, `\`, `/`)

@@ -46,7 +46,8 @@ RUN apk add --no-cache \
         bash \
         git \
         netcat-openbsd \
-        postgresql-client
+        postgresql-client \
+        python3
 
 COPY --from=builder /forge /forge
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh

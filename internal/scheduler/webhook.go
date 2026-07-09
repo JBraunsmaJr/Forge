@@ -347,15 +347,7 @@ func (s *Server) triggerWebhookRun(
 		}
 	}
 
-	tmp, err := os.CreateTemp("", "forge-pipeline-*.json")
-	if err != nil {
-		return "", fmt.Errorf("creating temp file: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	tmp.Write(pipelineJSON)
-	tmp.Close()
-
-	pipeline, err := compiler.Compile(tmp.Name())
+	pipeline, err := compiler.CompileData(pipelineJSON, pipelinePath)
 	if err != nil {
 		return "", fmt.Errorf("compiling pipeline: %w", err)
 	}
@@ -428,7 +420,7 @@ func (s *Server) triggerWebhookRun(
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, steps, appliedPolicies)
+	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, commitSHA, steps, appliedPolicies)
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}

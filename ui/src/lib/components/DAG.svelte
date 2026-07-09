@@ -14,37 +14,54 @@
     };
 
     function computeLayout(jobs: Job[]) {
-        const depth: Record<string, number> = {};
-        const getDepth = (stepID: string): number => {
-            if (stepID in depth) return depth[stepID];
-            const job = jobs.find(j => j.step_id === stepID);
-            if (!job || !job.depends_on?.length) return (depth[stepID] = 0);
-            return (depth[stepID] = 1 + Math.max(...job.depends_on.map(getDepth)));
-        };
-        jobs.forEach(j => getDepth(j.step_id));
+        if (!jobs || jobs.length === 0) {
+            return { positions: {}, svgW: 0, svgH: 0 };
+        }
 
-        const cols: Record<number, Job[]> = {};
-        jobs.forEach(j => {
-            const d = depth[j.step_id] ?? 0;
-            (cols[d] = cols[d] || []).push(j);
-        });
+        try {
+            const depth: Record<string, number> = {};
+            const getDepth = (stepID: string, visited: string[] = []): number => {
+                if (stepID in depth) return depth[stepID];
+                if (visited.includes(stepID)) return 0; // Cycle detected
+                
+                const job = jobs.find(j => j.step_id === stepID);
+                if (!job || !job.depends_on || job.depends_on.length === 0) return (depth[stepID] = 0);
+                
+                const nextVisited = [...visited, stepID];
+                const deps = job.depends_on.filter(d => jobs.some(j => j.step_id === d));
+                if (deps.length === 0) return (depth[stepID] = 0);
+                
+                return (depth[stepID] = 1 + Math.max(...deps.map(d => getDepth(d, nextVisited))));
+            };
+            jobs.forEach(j => getDepth(j.step_id));
 
-        const positions: Record<string, { x: number, y: number }> = {};
-        const colKeys = Object.keys(cols).map(Number).sort((a, b) => a - b);
-        let x = PAD;
-        colKeys.forEach(col => {
-            const colJobs = cols[col];
-            let y = PAD;
-            colJobs.forEach(j => {
-                positions[j.job_id] = { x, y };
-                y += NODE_H + ROW_GAP;
+            const cols: Record<number, Job[]> = {};
+            jobs.forEach(j => {
+                const d = depth[j.step_id] ?? 0;
+                (cols[d] = cols[d] || []).push(j);
             });
-            x += NODE_W + COL_GAP;
-        });
 
-        const svgW = x - COL_GAP + PAD;
-        const maxH = Math.max(...Object.values(positions).map(p => p.y + NODE_H)) + PAD;
-        return { positions, svgW, svgH: maxH };
+            const positions: Record<string, { x: number, y: number }> = {};
+            const colKeys = Object.keys(cols).map(Number).sort((a, b) => a - b);
+            let x = PAD;
+            colKeys.forEach(col => {
+                const colJobs = cols[col];
+                let y = PAD;
+                colJobs.forEach(j => {
+                    positions[j.job_id] = { x, y };
+                    y += NODE_H + ROW_GAP;
+                });
+                x += NODE_W + COL_GAP;
+            });
+
+            const svgW = Math.max(0, x - COL_GAP + PAD);
+            const posValues = Object.values(positions);
+            const maxH = posValues.length > 0 ? Math.max(...posValues.map(p => p.y + NODE_H)) + PAD : PAD;
+            return { positions, svgW, svgH: maxH };
+        } catch (e) {
+            console.error("Layout computation failed:", e);
+            return { positions: {}, svgW: 0, svgH: 0 };
+        }
     }
 
     function fmtDuration(ms: number) {
@@ -61,8 +78,8 @@
         return labels[status] || status;
     }
 
-    $: layout = $activeRun ? computeLayout($activeRun.jobs) : null;
-    $: byStep = $activeRun ? Object.fromEntries($activeRun.jobs.map(j => [j.step_id, j])) : {};
+    $: layout = ($activeRun && $activeRun.jobs) ? computeLayout($activeRun.jobs) : null;
+    $: byStep = ($activeRun && $activeRun.jobs) ? Object.fromEntries($activeRun.jobs.map(j => [j.step_id, j])) : {};
 
     async function cancel() {
         if ($activeRun && confirm('Cancel this run?')) {

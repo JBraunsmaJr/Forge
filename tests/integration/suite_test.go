@@ -100,6 +100,17 @@ func startStack(repoRoot string) error {
 }
 
 func stopStack(repoRoot string) {
+	// Clean up any sibling job containers that weren't part of the compose project.
+	// We do this BEFORE compose down so that job containers are removed before
+	// compose tries to remove the network they might be attached to.
+	fmt.Println("[integration] cleaning up dangling job containers...")
+	out, _ := exec.Command("docker", "ps", "-a", "-q", "--filter", "label=forge.managed=true").Output()
+	ids := strings.Fields(string(out))
+	if len(ids) > 0 {
+		args := append([]string{"rm", "-f"}, ids...)
+		exec.Command("docker", args...).Run()
+	}
+
 	args := composeArgs("down", "-v", "--remove-orphans")
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = repoRoot

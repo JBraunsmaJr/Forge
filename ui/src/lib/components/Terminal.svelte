@@ -14,8 +14,23 @@
     let term: Terminal | null = null;
     let ws: WebSocket | null = null;
     let fitAddon: FitAddon | null = null;
-    let ttlInterval: number;
+    let ttlInterval: any;
     let ttlText = '';
+    let lastSessionID: string | null = null;
+
+    function cleanup() {
+        if (ws) {
+            ws.onclose = null;
+            ws.onerror = null;
+            ws.close();
+            ws = null;
+        }
+        if (term) {
+            term.dispose();
+            term = null;
+        }
+        clearInterval(ttlInterval);
+    }
 
     function startTTLTimer(seconds: number) {
         let remaining = seconds;
@@ -100,6 +115,11 @@
         ro.observe(termWrap);
     }
 
+    $: if (sessionID !== lastSessionID) {
+        cleanup();
+        lastSessionID = sessionID;
+    }
+
     $: if (sessionID && status === 'ready' && !ws) {
         openTerminalWS(sessionID);
     }
@@ -110,9 +130,7 @@
 
     onMount(() => {
         return () => {
-            ws?.close();
-            term?.dispose();
-            clearInterval(ttlInterval);
+            cleanup();
         };
     });
 

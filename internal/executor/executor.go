@@ -250,6 +250,7 @@ func (e *Executor) RunPipeline(ctx context.Context, p *pipeline.Pipeline) (*pipe
 func buildDockerArgs(step *pipeline.Step, workspaceDir string) []string {
 	args := []string{
 		"run", "--rm",
+		"--label", "forge.managed=true",
 		"--workdir", step.WorkDir,
 		"--volume", workspaceDir + ":/workspace:rw",
 		"--memory", "2g",
@@ -347,4 +348,32 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		LogFile:            logPath,
 		GeneratedStepsJSON: bytes.TrimSpace(stdoutBuf.Bytes()),
 	}, nil
+}
+
+// Cleanup removes all dangling Docker containers started by Forge.
+func Cleanup() error {
+	// Find all containers with the forge.managed label.
+	out, err := exec.Command("docker", "ps", "-a", "-q", "--filter", "label=forge.managed=true").Output()
+	if err != nil {
+		return fmt.Errorf("listing forge containers: %w", err)
+	}
+
+	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return nil
+	}
+
+	fmt.Printf("Cleaning up %d dangling Forge containers...\n", len(ids))
+
+	// Stop them first (gracefully).
+	args := append([]string{"stop"}, ids...)
+	exec.Command("docker", args...).Run()
+
+	// Remove them.
+	args = append([]string{"rm", "-f"}, ids...)
+	if err := exec.Command("docker", args...).Run(); err != nil {
+		return fmt.Errorf("removing forge containers: %w", err)
+	}
+
+	return nil
 }

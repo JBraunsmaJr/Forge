@@ -79,12 +79,18 @@ func Compile(path string) (*pipeline.Pipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading pipeline file %s: %w", path, err)
 	}
+	return CompileData(data, path)
+}
 
-	ext := strings.ToLower(filepath.Ext(path))
+// CompileData parses pipeline data (JSON or YAML) and returns the canonical IR.
+// The filename is used to determine the format (via extension).
+func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == ".yml" || ext == ".yaml" {
+		var err error
 		data, err = yamlToJSON(data)
 		if err != nil {
-			return nil, fmt.Errorf("parsing YAML pipeline %s: %w", path, err)
+			return nil, fmt.Errorf("parsing YAML pipeline %s: %w", filename, err)
 		}
 	}
 

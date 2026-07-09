@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin';
 
 -- ── Runs ──────────────────────────────────────────────────────────────────────
 -- References orgs — must come after orgs.
@@ -60,8 +61,12 @@ CREATE TABLE IF NOT EXISTS runs (
     applied_policies JSONB       NOT NULL DEFAULT '[]',
     org_id           TEXT        REFERENCES orgs(id) ON DELETE SET NULL,
     project_id       TEXT,
+    commit_sha       TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS commit_sha TEXT;
 
 -- ── Jobs ─────────────────────────────────────────────────────────────────────
 -- References runs — must come after runs.
@@ -95,6 +100,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at       TIMESTAMPTZ,
     finished_at      TIMESTAMPTZ
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pipeline_ref JSONB;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS artifact_uploads JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS artifact_downloads JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS emitted_step_ids JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS policy_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS condition TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS always_run BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS jobs_run_id_idx ON jobs(run_id);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
@@ -123,6 +135,8 @@ CREATE TABLE IF NOT EXISTS policies (
     forbid_override BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE policies ADD COLUMN IF NOT EXISTS transformer JSONB;
+ALTER TABLE policies ADD COLUMN IF NOT EXISTS forbid_override BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS policies_org_id_idx ON policies(org_id);
 
 -- ── Projects ─────────────────────────────────────────────────────────────────
@@ -139,6 +153,10 @@ CREATE TABLE IF NOT EXISTS projects (
     branch_filter  JSONB       NOT NULL DEFAULT '[]',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS scm_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS branch_filter JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS pipeline_path TEXT NOT NULL DEFAULT '';
 
 -- ── Step results (flaky test detection) ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS step_results (
@@ -168,6 +186,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     confirmed    BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS upload_token TEXT;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS confirmed BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS artifacts_run_id_idx   ON artifacts(run_id);
 CREATE INDEX IF NOT EXISTS artifacts_run_name_idx ON artifacts(run_id, name);
 `)

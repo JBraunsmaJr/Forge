@@ -18,6 +18,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
+	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
@@ -26,7 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-//go:embed web/dist/*
+//go:embed all:web/dist/*
 var webAssets embed.FS
 
 // Server is the HTTP server for the Forge scheduler.
@@ -121,6 +122,9 @@ func getenv(key, def string) string {
 
 // Start registers all routes and begins serving.
 func (s *Server) Start(ctx context.Context) error {
+	// Clean up any dangling policy transformer containers from previous runs.
+	executor.Cleanup()
+	defer executor.Cleanup()
 
 	s.tokens.bootstrapIfEmpty()
 
@@ -613,7 +617,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, steps, appliedPolicies)
+	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.CommitSHA, steps, appliedPolicies)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1018,13 +1022,13 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	newRunID, err := s.store.SubmitRun("rerun: "+name, workspaceDir, "", "", steps, nil)
+	newRunID, err := s.store.SubmitRun("rerun: "+name, workspaceDir, orgID, projectID, commitSHA, steps, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

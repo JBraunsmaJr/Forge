@@ -35,10 +35,10 @@ func (s *Server) handleCreateDebugSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	image, _, workDir, workspaceDir := s.store.GetJobDetails(req.JobID)
+	image, workDir, workspaceDir, projectID, commitSHA := s.store.GetJobDetails(req.JobID)
 	env := s.store.GetJobEnv(req.JobID)
 
-	info := s.debug.CreateSession(req.JobID, image, workDir, env, workspaceDir)
+	info := s.debug.CreateSession(req.JobID, image, workDir, env, workspaceDir, projectID, commitSHA)
 	fmt.Printf("[scheduler] debug session %s created for job %s\n", info.SessionID[:8], req.JobID[:8])
 	writeJSON(w, http.StatusCreated, info)
 }
