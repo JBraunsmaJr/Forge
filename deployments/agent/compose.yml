@@ -1,0 +1,25 @@
+services:
+  agent:
+    image: ghcr.io/jbraunsmajr/forge/forge:latest
+    command: ["agent", "${FORGE_SCHEDULER_URL:-http://localhost:8080}"]
+    environment:
+      FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
+      FORGE_VAULT_ADDR: ${FORGE_VAULT_ADDR}
+      FORGE_VAULT_TOKEN: ${FORGE_VAULT_TOKEN}
+      FORGE_AGENT_WS_PORT: "${FORGE_AGENT_WS_PORT:-8082}"
+      # The network that job containers will be attached to.
+      # Ensure this network exists or let compose create it.
+      FORGE_DOCKER_NETWORK: ${FORGE_DOCKER_NETWORK:-forge_agent_network}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+    working_dir: /tmp
+    restart: unless-stopped
+    deploy:
+      replicas: ${AGENT_REPLICAS:-1}
+    networks:
+      - forge_agent_network
+
+networks:
+  forge_agent_network:
+    driver: bridge

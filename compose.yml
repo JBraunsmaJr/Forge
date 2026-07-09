@@ -70,6 +70,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: ghcr.io/jbraunsmajr/forge/forge:latest
     command: [ "scheduler" ]
     environment:
       FORGE_DB_URL: postgres://forge:forge@postgres:5432/forge?sslmode=disable
@@ -128,6 +129,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: ghcr.io/jbraunsmajr/forge/forge:latest
     command: [ "agent", "http://scheduler:8080" ]
     environment:
       FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
