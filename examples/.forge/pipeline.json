@@ -10,7 +10,7 @@
     {
       "id": "lint",
       "name": "Vet Go code",
-      "image": "golang:1.26-alpine",
+      "image": "golang:1.26.5-alpine",
       "run": "cd /workspace && go vet ./... && echo 'Vet passed'",
       "depends_on": ["checkout"],
       "inputs": ["**/*.go", "go.mod"],
@@ -19,7 +19,7 @@
     {
       "id": "test",
       "name": "Run tests",
-      "image": "golang:1.26-alpine",
+      "image": "golang:1.26.5-alpine",
       "run": "cd /workspace && go test ./... -timeout 5m",
       "depends_on": ["checkout"],
       "inputs": ["**/*.go", "go.mod"],
@@ -35,7 +35,7 @@
     {
       "id": "build",
       "name": "Build forge binary",
-      "image": "golang:1.26-alpine",
+      "image": "golang:1.26.5-alpine",
       "run": "cd /workspace && mkdir -p dist && go build -o dist/forge ./cmd/forge && ls -lh dist/forge",
       "env": {
         "CGO_ENABLED": "0",

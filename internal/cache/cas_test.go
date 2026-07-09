@@ -66,7 +66,7 @@ func TestComputeTaskHash_Determinism(t *testing.T) {
 
 	step := &pipeline.Step{
 		ID:      "build",
-		Image:   "golang:1.26",
+		Image:   "golang:1.26.5",
 		Command: []string{"go", "build", "./..."},
 		Env:     map[string]string{"CGO_ENABLED": "0"},
 		Inputs:  []string{"*.go"},
@@ -95,7 +95,7 @@ func TestComputeTaskHash_ChangedFile(t *testing.T) {
 
 	step := &pipeline.Step{
 		ID:      "build",
-		Image:   "golang:1.26",
+		Image:   "golang:1.26.5",
 		Command: []string{"go", "build"},
 		Inputs:  []string{"*.go"},
 	}
@@ -125,7 +125,7 @@ func TestComputeTaskHash_ChangedCommand(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "main.go"), "package main")
 
 	step := &pipeline.Step{
-		Image:   "golang:1.26",
+		Image:   "golang:1.26.5",
 		Command: []string{"go", "build"},
 		Inputs:  []string{"*.go"},
 	}

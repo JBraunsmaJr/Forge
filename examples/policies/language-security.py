@@ -66,7 +66,7 @@ def main():
                 go_dir = os.path.dirname(os.path.join(WORKSPACE, go_match))
                 injected.append({
                     "id":      "govulncheck",
-                    "image":   "golang:1.26-alpine",
+                    "image":   "golang:1.26.5-alpine",
                     # govulncheck must be installed first; wrap in sh -c for &&
                     "command": ["sh", "-c",
                                 "go install golang.org/x/vuln/cmd/govulncheck@latest"

@@ -11,13 +11,13 @@ name: conditional-logic-demo
 steps:
 
   - id: unit-tests
-    image: golang:1.26-alpine
+    image: golang:1.26.5-alpine
     run: |
       echo "Running unit tests..."
 
 
   - id: integration-tests
-    image: golang:1.26-alpine
+    image: golang:1.26.5-alpine
     depends_on: [unit-tests]
     run: |
       echo "Running integration tests..."
