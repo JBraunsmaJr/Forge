@@ -18,6 +18,7 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_S3_REGION`      | `us-east-1`              | S3 region.                                                                                                                         |
 | `FORGE_S3_ACCESS_KEY`  | —                        | S3 access key ID.                                                                                                                  |
 | `FORGE_S3_SECRET_KEY`  | —                        | S3 secret access key.                                                                                                              |
+| `FORGE_PRUNE_SCHEDULE` | `@daily`                 | Cron-style schedule for `docker system prune` (e.g. `@hourly`, `@daily`, or duration like `12h`).                                  |
 
 ---
 
@@ -29,6 +30,8 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_VAULT_ADDR`    | —                | Vault server address. Required for steps that use `secrets:`. Example: `http://vault:8200`.                              |
 | `FORGE_VAULT_TOKEN`   | —                | Vault authentication token.                                                                                              |
 | `FORGE_AGENT_WS_ADDR` | `localhost:8082` | Public host:port for the agent's WebSocket debug terminal server. Set to the machine's LAN IP for remote browser access. |
+| `FORGE_DOCKER_MAX_GB`      | `50`             | Max GB Docker is allowed to use before LRU eviction triggers.                                                            |
+| `FORGE_DOCKER_MAX_PERCENT` | `80`             | Max disk usage percentage before LRU eviction triggers.                                                                 |
 
 ---
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -343,6 +344,20 @@ func agentCommand() {
 
 	agentID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 
+	// Cleanup configuration
+	maxGB, _ := strconv.ParseFloat(os.Getenv("FORGE_DOCKER_MAX_GB"), 64)
+	if maxGB == 0 {
+		maxGB = 50 // default to 50GB
+	}
+	maxPercent, _ := strconv.ParseFloat(os.Getenv("FORGE_DOCKER_MAX_PERCENT"), 64)
+	if maxPercent == 0 {
+		maxPercent = 80 // default to 80%
+	}
+	pruneSchedule := os.Getenv("FORGE_PRUNE_SCHEDULE")
+	if pruneSchedule == "" {
+		pruneSchedule = "@daily"
+	}
+
 	tp, err := tracing.InitTracer("forge-agent-" + agentID[:8])
 	if err != nil {
 		fmt.Printf("Warning: failed to initialize tracer: %v\n", err)
@@ -361,7 +376,7 @@ func agentCommand() {
 		cancel()
 	}()
 
-	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, vaultAddr, vaultToken, wsPort, apiToken)
+	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, vaultAddr, vaultToken, wsPort, apiToken, maxGB, maxPercent, pruneSchedule)
 	if err := a.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		os.Exit(1)

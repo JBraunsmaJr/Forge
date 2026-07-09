@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -225,6 +226,7 @@ func (s *Server) Start(ctx context.Context) error {
 	go s.heartbeatMonitor(ctx)
 	go s.startRetentionWorker(ctx)
 	go s.startMetricsWorker(ctx)
+	go s.startDockerPruneWorker(ctx)
 
 	stopDebug := make(chan struct{})
 	go s.debugExpiryMonitor(stopDebug)
@@ -1094,6 +1096,59 @@ func (s *Server) startRetentionWorker(ctx context.Context) {
 			} else if n > 0 {
 				fmt.Printf("[scheduler] retention: pruned %d runs older than %d days\n", n, days)
 			}
+		}
+	}
+}
+
+func (s *Server) startDockerPruneWorker(ctx context.Context) {
+	schedule := os.Getenv("FORGE_PRUNE_SCHEDULE")
+	d := 24 * time.Hour
+	if schedule == "@hourly" {
+		d = time.Hour
+	} else if schedule != "" && schedule != "@daily" {
+		if val, err := time.ParseDuration(schedule); err == nil {
+			d = val
+		}
+	}
+
+	fmt.Printf("[scheduler] Docker prune scheduled every %s\n", d)
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fmt.Println("[scheduler] running scheduled docker system prune...")
+			exec.Command("docker", "system", "prune", "-f").Run()
+			s.cleanupWorkspaces()
+		}
+	}
+}
+
+func (s *Server) cleanupWorkspaces() {
+	tempDir := os.TempDir()
+	files, err := os.ReadDir(tempDir)
+	if err != nil {
+		return
+	}
+
+	now := time.Now()
+	for _, f := range files {
+		if !f.IsDir() || !strings.HasPrefix(f.Name(), "forge-ws-") {
+			continue
+		}
+
+		info, err := f.Info()
+		if err != nil {
+			continue
+		}
+
+		// Remove workspaces older than 24 hours
+		if now.Sub(info.ModTime()) > 24*time.Hour {
+			fmt.Printf("[scheduler] cleaning up old workspace: %s\n", f.Name())
+			os.RemoveAll(filepath.Join(tempDir, f.Name()))
 		}
 	}
 }

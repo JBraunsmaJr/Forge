@@ -16,6 +16,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,23 +49,31 @@ type Agent struct {
 	wsListenPort string // port the WS server listens on
 	apiToken     string // FORGE_API_TOKEN — sent with every scheduler request
 	debugConts   sync.Map
+
+	// Cleanup configuration
+	maxDockerGB      float64
+	maxDockerPercent float64
+	pruneSchedule    string
 }
 
 // New creates an agent that connects to schedulerURL.
-func New(id, schedulerURL, workspaceDir, cacheDir, vaultAddr, vaultToken, wsListenPort, apiToken string) *Agent {
+func New(id, schedulerURL, workspaceDir, cacheDir, vaultAddr, vaultToken, wsListenPort, apiToken string, maxGB, maxPercent float64, schedule string) *Agent {
 	var vault *secrets.Client
 	if vaultAddr != "" && vaultToken != "" {
 		vault = secrets.NewClient(vaultAddr, vaultToken)
 	}
 	return &Agent{
-		id:           id,
-		schedulerURL: schedulerURL,
-		workspaceDir: workspaceDir,
-		cacheDir:     cacheDir,
-		vault:        vault,
-		wsListenPort: wsListenPort,
-		apiToken:     apiToken,
-		client:       &http.Client{Timeout: 10 * time.Second},
+		id:               id,
+		schedulerURL:     schedulerURL,
+		workspaceDir:     workspaceDir,
+		cacheDir:         cacheDir,
+		vault:            vault,
+		wsListenPort:     wsListenPort,
+		apiToken:         apiToken,
+		client:           &http.Client{Timeout: 10 * time.Second},
+		maxDockerGB:      maxGB,
+		maxDockerPercent: maxPercent,
+		pruneSchedule:    schedule,
 	}
 }
 
@@ -87,6 +97,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Run both job polling and debug session polling concurrently.
 	go a.debugLoop(ctx)
+	go a.pruneLoop(ctx)
 
 	for {
 		// Check if we've been asked to stop.
@@ -113,6 +124,216 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		if err := a.execute(ctx, spec); err != nil {
 			fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
+		}
+
+		// After each job, check disk usage and perform LRU eviction if needed.
+		a.checkDiskUsageAndCleanup()
+	}
+}
+
+func (a *Agent) pruneLoop(ctx context.Context) {
+	d := 24 * time.Hour
+	if a.pruneSchedule == "@hourly" {
+		d = time.Hour
+	} else if a.pruneSchedule != "@daily" {
+		if val, err := time.ParseDuration(a.pruneSchedule); err == nil {
+			d = val
+		}
+	}
+
+	fmt.Printf("[agent %s] Docker prune scheduled every %s\n", a.id[:8], d)
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fmt.Printf("[agent %s] running scheduled docker system prune...\n", a.id[:8])
+			exec.Command("docker", "system", "prune", "-f").Run()
+			// Also clean up any old workspace directories
+			a.cleanupWorkspaces()
+		}
+	}
+}
+
+func (a *Agent) checkDiskUsageAndCleanup() {
+	// 1. Check Docker disk usage (GB)
+	usageGB, err := a.getDockerUsageGB()
+	if err != nil {
+		fmt.Printf("[agent %s] error checking docker usage: %v\n", a.id[:8], err)
+		return
+	}
+
+	// 2. Check disk percentage (if configured)
+	percent := 0.0
+	if a.maxDockerPercent > 0 {
+		percent = getDiskUsagePercent(a.workspaceDir)
+	}
+
+	// 3. Check if we exceed threshold
+	if usageGB > a.maxDockerGB || (a.maxDockerPercent > 0 && percent > a.maxDockerPercent) {
+		reason := fmt.Sprintf("Docker usage %.2f GB > %.2f GB", usageGB, a.maxDockerGB)
+		if a.maxDockerPercent > 0 && percent > a.maxDockerPercent {
+			reason = fmt.Sprintf("Disk usage %.1f%% > %.1f%%", percent, a.maxDockerPercent)
+		}
+
+		fmt.Printf("[agent %s] %s, evicting LRU images...\n", a.id[:8], reason)
+		// If we are over percent, we might want to free more. But for now let's just free some.
+		toFree := usageGB - (a.maxDockerGB * 0.9)
+		if toFree < 5 {
+			toFree = 5 // free at least 5GB if we are over threshold
+		}
+		a.evictLRUImages(toFree)
+	}
+}
+
+func getDiskUsagePercent(path string) float64 {
+	if runtime.GOOS == "windows" {
+		// Use PowerShell to get disk usage percentage for the drive containing path
+		absPath, _ := filepath.Abs(path)
+		drive := filepath.VolumeName(absPath)
+		if drive == "" {
+			drive = "C:"
+		}
+		cmd := fmt.Sprintf("Get-Volume -DriveLetter %s | ForEach-Object { 100 * (1 - $_.SizeRemaining / $_.Size) }", strings.TrimSuffix(drive, ":"))
+		out, err := exec.Command("powershell", "-Command", cmd).Output()
+		if err == nil {
+			val, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+			return val
+		}
+	} else {
+		// Use df on Linux/Unix
+		out, err := exec.Command("df", "--output=pcent", path).Output()
+		if err == nil {
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(lines) >= 2 {
+				pStr := strings.TrimSpace(strings.TrimSuffix(lines[1], "%"))
+				val, _ := strconv.ParseFloat(pStr, 64)
+				return val
+			}
+		}
+	}
+	return 0
+}
+
+func (a *Agent) getDockerUsageGB() (float64, error) {
+	out, err := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}").Output()
+	if err != nil {
+		return 0, err
+	}
+
+	var total float64
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		// We care about Images and Build Cache
+		if fields[0] == "Images" || fields[0] == "Build" { // fields[0] might be "Build Cache" -> "Build"
+			sizeStr := fields[len(fields)-1]
+			gb := parseDockerSize(sizeStr)
+			total += gb
+		}
+	}
+	return total, nil
+}
+
+func parseDockerSize(s string) float64 {
+	s = strings.ToUpper(s)
+	multiplier := 1.0
+	if strings.HasSuffix(s, "GB") || strings.HasSuffix(s, "GIB") {
+		multiplier = 1.0
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "GB"), "GIB")
+	} else if strings.HasSuffix(s, "MB") || strings.HasSuffix(s, "MIB") {
+		multiplier = 0.001
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "MB"), "MIB")
+	} else if strings.HasSuffix(s, "KB") || strings.HasSuffix(s, "KIB") {
+		multiplier = 0.000001
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "KB"), "KIB")
+	} else if strings.HasSuffix(s, "B") {
+		multiplier = 0.000000001
+		s = strings.TrimSuffix(s, "B")
+	}
+
+	val, _ := strconv.ParseFloat(s, 64)
+	return val * multiplier
+}
+
+func (a *Agent) evictLRUImages(targetGB float64) {
+	// List all images with ID, CreatedAt, and Size
+	out, err := exec.Command("docker", "images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
+	if err != nil {
+		return
+	}
+
+	type imgInfo struct {
+		id      string
+		created time.Time
+		gb      float64
+	}
+	var images []imgInfo
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		parts := strings.Split(line, "|")
+		if len(parts) < 3 {
+			continue
+		}
+		// Docker CreatedAt format can vary, but usually it's "2023-01-01 12:00:00 +0000 UTC"
+		// or "About an hour ago" if not using --format.
+		// With --format {{.CreatedAt}}, it should be RFC3339-like or similar.
+		// Actually let's use a simpler way to sort: docker images --sort=created is not available.
+		// But we can parse it.
+		created, _ := time.Parse("2006-01-02 15:04:05 -0700 MST", parts[1])
+		images = append(images, imgInfo{
+			id:      parts[0],
+			created: created,
+			gb:      parseDockerSize(parts[2]),
+		})
+	}
+
+	// Sort by creation time (ascending = oldest first)
+	slices.SortFunc(images, func(a, b imgInfo) int {
+		return a.created.Compare(b.created)
+	})
+
+	evictedGB := 0.0
+	for _, img := range images {
+		if evictedGB >= targetGB {
+			break
+		}
+		// Try to remove. It will fail if in use.
+		err := exec.Command("docker", "rmi", img.id).Run()
+		if err == nil {
+			evictedGB += img.gb
+			fmt.Printf("[agent %s] evicted image %s (%.2f GB)\n", a.id[:8], img.id[:12], img.gb)
+		}
+	}
+}
+
+func (a *Agent) cleanupWorkspaces() {
+	files, err := os.ReadDir(a.workspaceDir)
+	if err != nil {
+		return
+	}
+
+	now := time.Now()
+	for _, f := range files {
+		if !f.IsDir() || (!strings.HasPrefix(f.Name(), "forge-job-") && !strings.HasPrefix(f.Name(), "forge-debug-")) {
+			continue
+		}
+
+		info, err := f.Info()
+		if err != nil {
+			continue
+		}
+
+		// Remove workspaces older than 24 hours
+		if now.Sub(info.ModTime()) > 24*time.Hour {
+			fmt.Printf("[agent %s] cleaning up old workspace: %s\n", a.id[:8], f.Name())
+			os.RemoveAll(filepath.Join(a.workspaceDir, f.Name()))
 		}
 	}
 }
@@ -626,6 +847,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	defer func() {
 		exec.Command("docker", "stop", containerID).Run()
 		a.debugConts.Delete(spec.SessionID)
+		os.RemoveAll(workspaceDir)
 		fmt.Printf("[agent %s] debug container %s stopped\n", a.id[:8], containerID[:12])
 	}()
 
