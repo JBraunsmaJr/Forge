@@ -39,6 +39,7 @@ type jsonStep struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
 	Image            string            `json:"image"`
+	Entrypoint       []string          `json:"entrypoint,omitempty"`
 	Run              string            `json:"run"`
 	Command          []string          `json:"command"`
 	WorkDir          string            `json:"workdir"`
@@ -214,6 +215,7 @@ func compileStep(js jsonStep, index int) (*pipeline.Step, error) {
 		ID:                id,
 		Name:              name,
 		Image:             image,
+		Entrypoint:        js.Entrypoint,
 		Command:           command,
 		WorkDir:           workdir,
 		Env:               js.Env,

@@ -13,10 +13,11 @@ type Pipeline struct {
 
 // Step is a single unit of work in a pipeline.
 type Step struct {
-	ID      string   // unique within the pipeline, e.g. "lint"
-	Name    string   // human label, e.g. "Run linter"
-	Image   string   // container image, e.g. "node:20"
-	Command []string // command + args, e.g. ["npm", "run", "lint"]
+	ID         string   // unique within the pipeline, e.g. "lint"
+	Name       string   // human label, e.g. "Run linter"
+	Image      string   // container image, e.g. "node:20"
+	Entrypoint []string // optional entrypoint override
+	Command    []string // command + args, e.g. ["npm", "run", "lint"]
 
 	// Type is "task" (default) or "generator".
 	// A generator step's stdout is parsed as a JSON array of new step

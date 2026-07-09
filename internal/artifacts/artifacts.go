@@ -16,7 +16,7 @@ type ArtifactStorer interface {
 	ListArtifacts(ctx context.Context, runID string) ([]ArtifactMeta, error)
 	DeleteArtifact(ctx context.Context, artifactID string) error
 	ServeUpload(ctx context.Context, artifactID, uploadToken string, r io.Reader) error
-	ServeDownload(ctx context.Context, artifactID string) (io.ReadCloser, int64, error)
+	ServeDownload(ctx context.Context, artifactID string) (io.ReadCloser, *ArtifactMeta, error)
 }
 
 // ArtifactMeta describes a stored artifact.
@@ -54,6 +54,7 @@ type Config struct {
 	LocalDir    string // path for local storage (FORGE_ARTIFACT_DIR)
 	LocalBase   string // base URL the scheduler is reachable at (for local URLs)
 	S3Endpoint  string
+	S3PublicURL string
 	S3Bucket    string
 	S3Region    string
 	S3AccessKey string
@@ -67,6 +68,7 @@ func ConfigFromEnv(schedulerBaseURL string) Config {
 		LocalDir:    getenv("FORGE_ARTIFACT_DIR", "/data/artifacts"),
 		LocalBase:   schedulerBaseURL,
 		S3Endpoint:  getenv("FORGE_S3_ENDPOINT", ""),
+		S3PublicURL: getenv("FORGE_S3_PUBLIC_URL", ""),
 		S3Bucket:    getenv("FORGE_S3_BUCKET", "forge-artifacts"),
 		S3Region:    getenv("FORGE_S3_REGION", "us-east-1"),
 		S3AccessKey: getenv("FORGE_S3_ACCESS_KEY", ""),

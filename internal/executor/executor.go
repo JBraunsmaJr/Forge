@@ -286,6 +286,20 @@ func buildDockerArgs(step *pipeline.Step, workspaceDir string) []string {
 		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
 	}
 
+	if len(step.Entrypoint) > 0 {
+		// Docker expects a single string for --entrypoint if using it this way,
+		// or we can use the array form in a JSON if we were using a different API.
+		// Via CLI: --entrypoint "/bin/sh"
+		// If they provided multiple, we take the first and put the rest in Command?
+		// Actually, Docker CLI --entrypoint only takes the binary.
+		args = append(args, "--entrypoint", step.Entrypoint[0])
+		// If there are more parts to Entrypoint, they should technically be at the
+		// start of the command.
+		if len(step.Entrypoint) > 1 {
+			step.Command = append(step.Entrypoint[1:], step.Command...)
+		}
+	}
+
 	for k, v := range step.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}

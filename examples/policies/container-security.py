@@ -51,22 +51,36 @@ def main():
 
         if step["id"] in build_steps:
             image_tag = build_steps[step["id"]]
+            report_id = f"trivy-report-{step['id']}"
             scan_id = f"trivy-scan-{step['id']}"
             scan_map[step["id"]] = scan_id
+            result.append({
+                "id":      report_id,
+                "image":   "aquasec/trivy:latest",
+                "docker_socket": True,
+                "command": ["image", "--severity", "HIGH,CRITICAL", "--no-progress",
+                            "--format", "template", "--template", "@/contrib/html.tpl",
+                            "-o", f"{scan_id}.html", image_tag],
+                "depends_on": [step["id"]],
+                "workdir": "/workspace",
+                "artifact_uploads": [
+                    {"path": f"{scan_id}.html", "name": f"Container Security Report ({step['id']})"}
+                ]
+            })
             result.append({
                 "id":      scan_id,
                 "image":   "aquasec/trivy:latest",
                 "docker_socket": True,
-                "command": ["image", "--severity", "HIGH,CRITICAL",
-                            "--no-progress", image_tag],
+                "command": ["image", "--severity", "HIGH,CRITICAL", "--no-progress", image_tag],
                 "env":     {"TRIVY_EXIT_CODE": "1"},
-                "depends_on": [step["id"]],
+                "depends_on": [report_id],
                 "workdir": "/workspace",
             })
 
-    scan_ids = set(scan_map.values())
+    # All injected steps should be excluded from dependency rewiring to avoid cycles.
+    injected_ids = set(scan_map.values()) | {f"trivy-report-{k}" for k in build_steps.keys()}
     for step in result:
-        if step["id"] in scan_ids:
+        if step["id"] in injected_ids:
             continue
         if step.get("depends_on"):
             step["depends_on"] = [

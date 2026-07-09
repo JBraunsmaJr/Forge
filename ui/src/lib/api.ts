@@ -64,9 +64,13 @@ export interface LogEvent {
 }
 
 export interface Artifact {
+    id: string;
+    run_id: string;
+    job_id: string;
     name: string;
     filename: string;
     size_bytes: number;
+    content_type: string;
     download_url: string;
 }
 

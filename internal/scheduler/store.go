@@ -107,12 +107,12 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 
 	_, err := tx.Exec(`
 		INSERT INTO jobs (
-			id, run_id, step_id, step_type, image, command, work_dir,
+			id, run_id, step_id, step_type, image, entrypoint, command, work_dir,
 			env, inputs, timeout_ns, depends_on, secret_names,
 			policy_source, condition, always_run, docker_socket, pipeline_ref,
 			artifact_uploads, artifact_downloads, status
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
-		jobID, runID, step.ID, stepType, step.Image,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+		jobID, runID, step.ID, stepType, step.Image, toJSON(step.Entrypoint),
 		toJSON(command), workDir,
 		toJSON(step.Env), toJSON(step.Inputs), int64(timeout),
 		toJSON(step.DependsOn), toJSON(step.SecretNames),
@@ -149,7 +149,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		FROM   next
 		WHERE  jobs.id = next.id
 		RETURNING
-			jobs.id, jobs.run_id, jobs.step_id, jobs.image,
+			jobs.id, jobs.run_id, jobs.step_id, jobs.image, jobs.entrypoint,
 			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
 			jobs.timeout_ns, jobs.secret_names, jobs.step_type,
 			jobs.docker_socket,
@@ -161,16 +161,17 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	)
 
 	var (
-		jobID, runID, stepID, image, stepType         string
-		commandJSON, envJSON, inputsJSON, secretsJSON []byte
-		pipelineRefJSON                               string
-		artifactUploadsJSON, artifactDownloadsJSON    string
-		workDir                                       string
-		timeoutNS                                     int64
-		dockerSocket                                  bool
+		jobID, runID, stepID, image, stepType      string
+		entrypointJSON, commandJSON, envJSON       []byte
+		inputsJSON, secretsJSON                    []byte
+		pipelineRefJSON                            string
+		artifactUploadsJSON, artifactDownloadsJSON string
+		workDir                                    string
+		timeoutNS                                  int64
+		dockerSocket                               bool
 	)
 	err := row.Scan(
-		&jobID, &runID, &stepID, &image,
+		&jobID, &runID, &stepID, &image, &entrypointJSON,
 		&commandJSON, &workDir, &envJSON, &inputsJSON,
 		&timeoutNS, &secretsJSON, &stepType,
 		&dockerSocket,
@@ -184,9 +185,10 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		return nil, false
 	}
 
-	var command, secretNames []string
+	var entrypoint, command, secretNames []string
 	var env map[string]string
 	var inputs []string
+	json.Unmarshal(entrypointJSON, &entrypoint)
 	json.Unmarshal(commandJSON, &command)
 	json.Unmarshal(envJSON, &env)
 	json.Unmarshal(inputsJSON, &inputs)
@@ -216,6 +218,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		LeaseID:           leaseID,
 		StepID:            stepID,
 		Image:             image,
+		Entrypoint:        entrypoint,
 		Command:           command,
 		WorkDir:           workDir,
 		Env:               env,
@@ -846,7 +849,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 	}
 
 	rows, err := s.db.Query(`
-		SELECT step_id, step_type, image, command, work_dir, env,
+		SELECT step_id, step_type, image, entrypoint, command, work_dir, env,
 		       inputs, timeout_ns, depends_on, secret_names, policy_source,
 		       docker_socket,
 		       COALESCE(pipeline_ref::text, 'null'),
@@ -862,12 +865,12 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 	for rows.Next() {
 		var stepID, stepType, image, workDir, policySource string
 		var pipelineRefJSON, artifactUploadsJSON, artifactDownloadsJSON, status string
-		var commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
+		var entrypointJSON, commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
 		var timeoutNS int64
 		var dockerSocket bool
 
 		if err := rows.Scan(
-			&stepID, &stepType, &image, &commandJSON, &workDir, &envJSON,
+			&stepID, &stepType, &image, &entrypointJSON, &commandJSON, &workDir, &envJSON,
 			&inputsJSON, &timeoutNS, &dependsJSON, &secretsJSON, &policySource,
 			&dockerSocket,
 			&pipelineRefJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
@@ -876,11 +879,12 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			continue
 		}
 
-		var command, dependsOn, secretNames []string
+		var entrypoint, command, dependsOn, secretNames []string
 		var env map[string]string
 		var inputs []string
 		var artifactUploads []api.ArtifactUploadSpec
 		var artifactDownloads []api.ArtifactDownloadSpec
+		json.Unmarshal(entrypointJSON, &entrypoint)
 		json.Unmarshal(commandJSON, &command)
 		json.Unmarshal(envJSON, &env)
 		json.Unmarshal(inputsJSON, &inputs)
@@ -892,6 +896,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		steps = append(steps, api.StepDef{
 			ID:                stepID,
 			Image:             image,
+			Entrypoint:        entrypoint,
 			Command:           command,
 			WorkDir:           workDir,
 			Env:               env,

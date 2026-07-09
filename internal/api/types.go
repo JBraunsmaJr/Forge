@@ -25,6 +25,7 @@ type JobSpec struct {
 	LeaseID           string                 `json:"lease_id"`
 	StepID            string                 `json:"step_id"`
 	Image             string                 `json:"image"`
+	Entrypoint        []string               `json:"entrypoint,omitempty"`
 	Command           []string               `json:"command"`
 	WorkDir           string                 `json:"workdir"`
 	Env               map[string]string      `json:"env"`
@@ -59,6 +60,7 @@ type SubmitRunRequest struct {
 type StepDef struct {
 	ID           string            `json:"id"`
 	Image        string            `json:"image"`
+	Entrypoint   []string          `json:"entrypoint,omitempty"`
 	Command      []string          `json:"command,omitempty"`
 	Run          string            `json:"run,omitempty"`
 	WorkDir      string            `json:"workdir"`

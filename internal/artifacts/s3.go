@@ -8,20 +8,24 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
 
 // S3Store stores artifacts in an S3-compatible object store.
 type S3Store struct {
-	db        *sql.DB
-	endpoint  string // e.g. "http://minio:9000" or "" for AWS
-	bucket    string
-	region    string
-	accessKey string
-	secretKey string
-	urlBase   string // computed: endpoint or AWS regional endpoint
+	db               *sql.DB
+	endpoint         string // e.g. "http://minio:9000" or "" for AWS
+	bucket           string
+	region           string
+	accessKey        string
+	secretKey        string
+	urlBase          string // computed: endpoint or AWS regional endpoint
+	publicURL        string // optional: public URL for browser access
+	schedulerBaseURL string
 }
 
 // NewS3 creates an S3-compatible artifact store.
@@ -40,13 +44,15 @@ func NewS3(db *sql.DB, cfg Config) (*S3Store, error) {
 	}
 
 	s := &S3Store{
-		db:        db,
-		endpoint:  cfg.S3Endpoint,
-		bucket:    cfg.S3Bucket,
-		region:    cfg.S3Region,
-		accessKey: cfg.S3AccessKey,
-		secretKey: cfg.S3SecretKey,
-		urlBase:   urlBase,
+		db:               db,
+		endpoint:         cfg.S3Endpoint,
+		bucket:           cfg.S3Bucket,
+		region:           cfg.S3Region,
+		accessKey:        cfg.S3AccessKey,
+		secretKey:        cfg.S3SecretKey,
+		urlBase:          urlBase,
+		publicURL:        cfg.S3PublicURL,
+		schedulerBaseURL: cfg.LocalBase,
 	}
 
 	if err := s.ensureBucket(); err != nil {
@@ -74,7 +80,7 @@ func (s *S3Store) PresignUpload(_ context.Context, req PresignRequest) (*Presign
 		return nil, fmt.Errorf("creating artifact record: %w", err)
 	}
 
-	uploadURL := s.presignURL("PUT", key, 3600)
+	uploadURL := s.presignURL("PUT", key, 3600, false, "", "")
 	return &PresignResponse{
 		ArtifactID: id,
 		UploadURL:  uploadURL,
@@ -115,7 +121,7 @@ func (s *S3Store) GetArtifact(_ context.Context, runID, name string) (*ArtifactM
 	if err != nil {
 		return nil, err
 	}
-	m.DownloadURL = s.presignURL("GET", key, 3600)
+	m.DownloadURL = s.getDownloadURL(m.ID, key, m.ContentType, m.Filename)
 	return &m, nil
 }
 
@@ -138,7 +144,7 @@ func (s *S3Store) ListArtifacts(_ context.Context, runID string) ([]ArtifactMeta
 		var key string
 		rows.Scan(&m.ID, &m.RunID, &m.JobID, &m.Name, &m.Filename,
 			&m.SizeBytes, &m.ContentType, &key, &m.CreatedAt)
-		m.DownloadURL = s.presignURL("GET", key, 3600)
+		m.DownloadURL = s.getDownloadURL(m.ID, key, m.ContentType, m.Filename)
 		result = append(result, m)
 	}
 	return result, nil
@@ -159,25 +165,77 @@ func (s *S3Store) DeleteArtifact(_ context.Context, artifactID string) error {
 	return nil
 }
 
-// ServeUpload and ServeDownload are not used by the S3 backend -
-// uploads and downloads go directly to S3 via pre-signed URLs.
+// ServeUpload is not used by the S3 backend - agents PUT directly to S3.
 func (s *S3Store) ServeUpload(_ context.Context, _, _ string, _ io.Reader) error {
 	return fmt.Errorf("ServeUpload not applicable for S3 backend")
 }
-func (s *S3Store) ServeDownload(_ context.Context, _ string) (io.ReadCloser, int64, error) {
-	return nil, 0, fmt.Errorf("ServeDownload not applicable for S3 backend")
+
+func (s *S3Store) ServeDownload(ctx context.Context, artifactID string) (io.ReadCloser, *ArtifactMeta, error) {
+	var m ArtifactMeta
+	var key string
+	err := s.db.QueryRow(`
+		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		FROM artifacts WHERE id=$1`, artifactID).Scan(&m.ID, &m.RunID, &m.JobID, &m.Name, &m.Filename, &m.SizeBytes, &m.ContentType, &key, &m.CreatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+
+	downloadURL := s.presignURL("GET", key, 300, false, m.ContentType, m.Filename) // 5 min expiry, use internal endpoint
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, nil, fmt.Errorf("S3 error: %s", resp.Status)
+	}
+
+	return resp.Body, &m, nil
+}
+
+func (s *S3Store) getDownloadURL(id, key, contentType, filename string) string {
+	// If public URL is set, use it.
+	if s.publicURL != "" {
+		return s.presignURL("GET", key, 3600, true, contentType, filename)
+	}
+	// If no custom endpoint, it's AWS, which is public.
+	if s.endpoint == "" {
+		return s.presignURL("GET", key, 3600, false, contentType, filename)
+	}
+	// Custom internal endpoint, use proxy.
+	return fmt.Sprintf("%s/api/v1/artifacts/%s/download", s.schedulerBaseURL, id)
 }
 
 // presignURL generates a pre-signed S3 URL for the given HTTP method and
 // object key. expiry is in seconds (max 604800 for AWS, unlimited for Minio).
 //
+// If usePublic is true and FORGE_S3_PUBLIC_URL is set, it uses that as the
+// base URL. This is important for Minio/S3 instances that have a different
+// public address than the one used by the scheduler.
+//
 // Implements the "Authenticating Requests: Using Query Parameters" spec:
-func (s *S3Store) presignURL(method, key string, expiry int) string {
+func (s *S3Store) presignURL(method, key string, expiry int, usePublic bool, contentType, filename string) string {
 	now := time.Now().UTC()
 	datestamp := now.Format("20060102")
 	amzdate := now.Format("20060102T150405Z")
 
 	host := s.bucketHost()
+	base := strings.TrimSuffix(s.urlBase, "/")
+	if usePublic && s.publicURL != "" {
+		base = strings.TrimSuffix(s.publicURL, "/")
+		if u, err := url.Parse(s.publicURL); err == nil {
+			host = u.Host
+		}
+	}
 	credentialScope := datestamp + "/" + s.region + "/s3/aws4_request"
 
 	q := url.Values{}
@@ -186,13 +244,26 @@ func (s *S3Store) presignURL(method, key string, expiry int) string {
 	q.Set("X-Amz-Date", amzdate)
 	q.Set("X-Amz-Expires", fmt.Sprintf("%d", expiry))
 	q.Set("X-Amz-SignedHeaders", "host")
+	q.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
 
-	canonicalURI := "/" + key
+	if method == "GET" {
+		if contentType != "" && contentType != "application/octet-stream" {
+			q.Set("response-content-type", contentType)
+		}
+		disposition := "inline"
+		if filename != "" {
+			disposition = fmt.Sprintf("inline; filename=%q", filename)
+		}
+		q.Set("response-content-disposition", disposition)
+	}
+
+	canonicalURI := s3EncodePath("/" + s.bucket + "/" + key)
+	canonicalQueryString := s3EncodeQuery(q)
 	canonicalHeaders := "host:" + host + "\n"
 	canonicalRequest := strings.Join([]string{
 		method,
 		canonicalURI,
-		q.Encode(),
+		canonicalQueryString,
 		canonicalHeaders,
 		"host",
 		"UNSIGNED-PAYLOAD",
@@ -210,7 +281,56 @@ func (s *S3Store) presignURL(method, key string, expiry int) string {
 	sig := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
 	q.Set("X-Amz-Signature", sig)
 
-	return fmt.Sprintf("%s/%s/%s?%s", s.urlBase, s.bucket, key, q.Encode())
+	return base + canonicalURI + "?" + s3EncodeQuery(q)
+}
+
+func s3EncodePath(path string) string {
+	var buf strings.Builder
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' || c == '/' {
+			buf.WriteByte(c)
+		} else {
+			fmt.Fprintf(&buf, "%%%02X", c)
+		}
+	}
+	return buf.String()
+}
+
+func s3EncodeQuery(v url.Values) string {
+	if v == nil {
+		return ""
+	}
+	var buf strings.Builder
+	keys := make([]string, 0, len(v))
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		prefix := s3EncodeQueryValue(k) + "="
+		for _, v := range v[k] {
+			if buf.Len() > 0 {
+				buf.WriteByte('&')
+			}
+			buf.WriteString(prefix)
+			buf.WriteString(s3EncodeQueryValue(v))
+		}
+	}
+	return buf.String()
+}
+
+func s3EncodeQueryValue(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' {
+			buf.WriteByte(c)
+		} else {
+			fmt.Fprintf(&buf, "%%%02X", c)
+		}
+	}
+	return buf.String()
 }
 
 // derivedSigningKey computes the AWS SigV4 derived signing key:
@@ -222,16 +342,11 @@ func (s *S3Store) derivedSigningKey(datestamp string) []byte {
 }
 
 func (s *S3Store) bucketHost() string {
-	if s.endpoint != "" {
-
-		u, err := url.Parse(s.endpoint)
-		if err != nil {
-			return s.endpoint
-		}
-		return u.Host
+	u, err := url.Parse(s.urlBase)
+	if err != nil {
+		return ""
 	}
-
-	return fmt.Sprintf("%s.s3.%s.amazonaws.com", s.bucket, s.region)
+	return u.Host
 }
 
 func (s *S3Store) objectKey(runID, artifactID, filename string) string {

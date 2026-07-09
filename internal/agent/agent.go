@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,6 +33,16 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 )
+
+func init() {
+	mime.AddExtensionType(".html", "text/html")
+	mime.AddExtensionType(".pdf", "application/pdf")
+	mime.AddExtensionType(".txt", "text/plain")
+	mime.AddExtensionType(".log", "text/plain")
+	mime.AddExtensionType(".png", "image/png")
+	mime.AddExtensionType(".jpg", "image/jpeg")
+	mime.AddExtensionType(".jpeg", "image/jpeg")
+}
 
 const (
 	pollInterval      = 2 * time.Second
@@ -416,6 +427,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		ID:           spec.StepID,
 		Name:         spec.StepID,
 		Image:        spec.Image,
+		Entrypoint:   spec.Entrypoint,
 		Command:      spec.Command,
 		WorkDir:      spec.WorkDir,
 		Env:          spec.Env,
@@ -1513,12 +1525,18 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 		size = info.Size()
 	}
 
+	contentType := mime.TypeByExtension(filepath.Ext(filePath))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
 	// Step 1: Get presigned URL
 	body, _ := json.Marshal(api.PresignUploadRequest{
-		RunID:    runId,
-		JobID:    jobId,
-		Name:     name,
-		Filename: filepath.Base(filePath),
+		RunID:       runId,
+		JobID:       jobId,
+		Name:        name,
+		Filename:    filepath.Base(filePath),
+		ContentType: contentType,
 	})
 
 	presignResp, err := a.authPost(
@@ -1553,7 +1571,7 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 	}
 
 	req.ContentLength = size
-	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Type", contentType)
 
 	/*
 			Only add Bearer auth for scheduler endpoints (local backend).

@@ -35,11 +35,21 @@ def main():
     if workspace_has("Dockerfile", "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"):
         if "trivy-fs-scan" not in existing_ids:
             injected.append({
+                "id":      "trivy-fs-report",
+                "image":   "aquasec/trivy:latest",
+                "command": ["filesystem", "--severity", "HIGH,CRITICAL", "--format", "template", "--template", "@/contrib/html.tpl", "-o", "trivy-fs-report.html", "/workspace"],
+                "depends_on": [],
+                "workdir": "/workspace",
+                "artifact_uploads": [
+                    {"path": "trivy-fs-report.html", "name": "Filesystem Security Report"}
+                ]
+            })
+            injected.append({
                 "id":      "trivy-fs-scan",
                 "image":   "aquasec/trivy:latest",
                 "command": ["filesystem", "--severity", "HIGH,CRITICAL", "/workspace"],
                 "env":     {"TRIVY_EXIT_CODE": "1"},
-                "depends_on": [],
+                "depends_on": ["trivy-fs-report"],
                 "workdir": "/workspace",
             })
 
@@ -53,9 +63,19 @@ def main():
                     "id":      "pip-audit",
                     "image":   "python:3.11-slim",
                     "command": ["sh", "-c",
-                                f"pip install --quiet pip-audit && pip-audit -r {req_file}"],
+                                f"pip install --quiet pip-audit && "
+                                f"pip-audit -r {req_file} > pip-audit-output.txt ; "
+                                f"RET=$? ; "
+                                f"echo '<html><body style=\"{{font-family: monospace; white-space: pre; background: #1e1e1e; color: #d4d4d4; padding: 20px;}}\">' > pip-audit-report.html ; "
+                                f"cat pip-audit-output.txt >> pip-audit-report.html ; "
+                                f"echo '</body></html>' >> pip-audit-report.html ; "
+                                f"cat pip-audit-output.txt ; "
+                                f"exit $RET"],
                     "depends_on": [],
                     "workdir": "/workspace",
+                    "artifact_uploads": [
+                        {"path": "pip-audit-report.html", "name": "Python Security Report"}
+                    ]
                 })
 
     # ---------------------------------- Go ----------------------------------
@@ -63,16 +83,26 @@ def main():
         if "govulncheck" not in existing_ids:
             go_match = workspace_find("go.mod")
             if go_match:
-                go_dir = os.path.dirname(os.path.join(WORKSPACE, go_match))
+                go_rel_dir = os.path.dirname(go_match)
+                go_dir = os.path.join(WORKSPACE, go_rel_dir)
                 injected.append({
                     "id":      "govulncheck",
                     "image":   "golang:1.26.5-alpine",
                     # govulncheck must be installed first; wrap in sh -c for &&
                     "command": ["sh", "-c",
-                                "go install golang.org/x/vuln/cmd/govulncheck@latest"
-                                " && govulncheck ./..."],
+                                "go install golang.org/x/vuln/cmd/govulncheck@latest && "
+                                "govulncheck ./... > govulncheck-output.txt ; "
+                                "RET=$? ; "
+                                "echo '<html><body style=\"font-family: monospace; white-space: pre; background: #1e1e1e; color: #d4d4d4; padding: 20px;\">' > govulncheck-report.html ; "
+                                "cat govulncheck-output.txt >> govulncheck-report.html ; "
+                                "echo '</body></html>' >> govulncheck-report.html ; "
+                                "cat govulncheck-output.txt ; "
+                                "exit $RET"],
                     "depends_on": [],
                     "workdir": go_dir,
+                    "artifact_uploads": [
+                        {"path": os.path.join(go_rel_dir, "govulncheck-report.html"), "name": "Go Security Report"}
+                    ]
                 })
 
     # ---------------------------------- Node.js ----------------------------------
@@ -80,13 +110,24 @@ def main():
         if "npm-audit" not in existing_ids:
             pkg_match = workspace_find("package.json")
             if pkg_match:
-                pkg_dir = os.path.dirname(os.path.join(WORKSPACE, pkg_match))
+                pkg_rel_dir = os.path.dirname(pkg_match)
+                pkg_dir = os.path.join(WORKSPACE, pkg_rel_dir)
                 injected.append({
                     "id":      "npm-audit",
                     "image":   "node:20-alpine",
-                    "command": ["npm", "audit", "--audit-level=high"],
+                    "command": ["sh", "-c",
+                                "npm audit --audit-level=high > npm-audit-output.txt ; "
+                                "RET=$? ; "
+                                "echo '<html><body style=\"font-family: monospace; white-space: pre; background: #1e1e1e; color: #d4d4d4; padding: 20px;\">' > npm-audit-report.html ; "
+                                "cat npm-audit-output.txt >> npm-audit-report.html ; "
+                                "echo '</body></html>' >> npm-audit-report.html ; "
+                                "cat npm-audit-output.txt ; "
+                                "exit $RET"],
                     "depends_on": [],
                     "workdir": pkg_dir,
+                    "artifact_uploads": [
+                        {"path": os.path.join(pkg_rel_dir, "npm-audit-report.html"), "name": "Node Security Report"}
+                    ]
                 })
 
     if not injected:

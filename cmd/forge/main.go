@@ -410,6 +410,7 @@ func submitCommand() {
 		steps[i] = api.StepDef{
 			ID:           s.ID,
 			Image:        s.Image,
+			Entrypoint:   s.Entrypoint,
 			Command:      s.Command,
 			WorkDir:      s.WorkDir,
 			Env:          s.Env,

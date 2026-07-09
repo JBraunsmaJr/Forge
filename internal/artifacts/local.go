@@ -175,25 +175,26 @@ func (s *LocalStore) ServeUpload(_ context.Context, artifactID, uploadToken stri
 
 // ServeDownload returns a reader for a local artifact download.
 // Called by the scheduler's /api/v1/artifacts/{id}/download handler.
-func (s *LocalStore) ServeDownload(_ context.Context, artifactID string) (io.ReadCloser, int64, error) {
+func (s *LocalStore) ServeDownload(_ context.Context, artifactID string) (io.ReadCloser, *ArtifactMeta, error) {
+	var m ArtifactMeta
 	var storageKey string
-	var size int64
 	err := s.db.QueryRow(`
-		SELECT storage_key, size_bytes FROM artifacts WHERE id=$1 AND confirmed=true`,
+		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		FROM artifacts WHERE id=$1 AND confirmed=true`,
 		artifactID,
-	).Scan(&storageKey, &size)
+	).Scan(&m.ID, &m.RunID, &m.JobID, &m.Name, &m.Filename, &m.SizeBytes, &m.ContentType, &storageKey, &m.CreatedAt)
 	if err == sql.ErrNoRows {
-		return nil, 0, ErrNotFound
+		return nil, nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	path := filepath.Join(s.dir, filepath.FromSlash(storageKey))
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("opening artifact file: %w", err)
+		return nil, nil, fmt.Errorf("opening artifact file: %w", err)
 	}
-	return f, size, nil
+	return f, &m, nil
 }
 
 func (s *LocalStore) storageKey(runID, artifactID, filename string) string {
@@ -214,7 +215,7 @@ var _ interface {
 	ListArtifacts(context.Context, string) ([]ArtifactMeta, error)
 	DeleteArtifact(context.Context, string) error
 	ServeUpload(context.Context, string, string, io.Reader) error
-	ServeDownload(context.Context, string) (io.ReadCloser, int64, error)
+	ServeDownload(context.Context, string) (io.ReadCloser, *ArtifactMeta, error)
 } = (*LocalStore)(nil)
 
 // cleanup runs periodically to remove unconfirmed artifacts older than 1 hour.

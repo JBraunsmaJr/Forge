@@ -4,12 +4,24 @@ package scheduler
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
 )
+
+func init() {
+	mime.AddExtensionType(".html", "text/html")
+	mime.AddExtensionType(".pdf", "application/pdf")
+	mime.AddExtensionType(".txt", "text/plain")
+	mime.AddExtensionType(".log", "text/plain")
+	mime.AddExtensionType(".png", "image/png")
+	mime.AddExtensionType(".jpg", "image/jpeg")
+	mime.AddExtensionType(".jpeg", "image/jpeg")
+}
 
 // handlePresignUpload gives the agent a pre-signed URL to upload an artifact.
 // Agent -> POST /api/v1/artifacts/presign
@@ -123,17 +135,10 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleArtifactDownload serves a file from the local backend.
+// handleArtifactDownload serves a file from the artifact store.
 // GET /api/v1/artifacts/{id}/download
-// S3 download URLs point directly to S3; this endpoint is local-only.
 func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) {
-	local, ok := s.artifacts.(*artifacts.LocalStore)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "direct download only supported for local backend")
-		return
-	}
-
-	rc, size, err := local.ServeDownload(r.Context(), r.PathValue("id"))
+	rc, meta, err := s.artifacts.ServeDownload(r.Context(), r.PathValue("id"))
 	if err == artifacts.ErrNotFound {
 		writeError(w, http.StatusNotFound, "artifact not found")
 		return
@@ -144,10 +149,21 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 	}
 	defer rc.Close()
 
-	if size > 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	if meta.SizeBytes > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(meta.SizeBytes, 10))
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
+
+	contentType := meta.ContentType
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = mime.TypeByExtension(filepath.Ext(meta.Filename))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", meta.Filename))
+
 	io.Copy(w, rc)
 }
 
