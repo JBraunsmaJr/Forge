@@ -150,8 +150,13 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	*/
 	jobWorkspace := filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
 	if err := os.MkdirAll(jobWorkspace, 0755); err != nil {
-		a.reportComplete(spec, 1, 0, nil, nil)
-		return fmt.Errorf("creating job workspace: %w", err)
+		err = fmt.Errorf("creating job workspace: %w", err)
+		a.reportComplete(spec, 1, 0, []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   err.Error(),
+		}}, nil)
+		return err
 	}
 	defer os.RemoveAll(jobWorkspace)
 
@@ -171,14 +176,18 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		}
 	}
 
-	// Build Executor
 	exec, err := executor.New(jobWorkspace,
 		filepath.Join(jobWorkspace, ".forge", "logs"),
 		a.cacheDir,
 	)
 	if err != nil {
-		a.reportComplete(spec, 1, 0, nil, nil)
-		return fmt.Errorf("creating executor: %w", err)
+		err = fmt.Errorf("creating executor: %w", err)
+		a.reportComplete(spec, 1, 0, []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   err.Error(),
+		}}, nil)
+		return err
 	}
 
 	// Convert API Spec -> pipeline.Step
@@ -226,8 +235,14 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	*/
 	if len(spec.SecretNames) > 0 {
 		if a.vault == nil {
-			return fmt.Errorf("step %q requires secrets %v but FORGE_VAULT_ADDR / FORGE_VAULT_TOKEN are not set",
+			err := fmt.Errorf("step %q requires secrets %v but FORGE_VAULT_ADDR / FORGE_VAULT_TOKEN are not set",
 				spec.StepID, spec.SecretNames)
+			a.reportComplete(spec, 1, 0, []api.LogEvent{{
+				Timestamp: time.Now(),
+				Level:     "ERROR",
+				Message:   err.Error(),
+			}}, nil)
+			return err
 		}
 		if step.Env == nil {
 			step.Env = make(map[string]string)
@@ -235,7 +250,13 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		for _, name := range spec.SecretNames {
 			val, err := a.vault.GetScoped(name, spec.OrgID, spec.ProjectID)
 			if err != nil {
-				return fmt.Errorf("fetching secret %q: %w", name, err)
+				err = fmt.Errorf("fetching secret %q: %w", name, err)
+				a.reportComplete(spec, 1, 0, []api.LogEvent{{
+					Timestamp: time.Now(),
+					Level:     "ERROR",
+					Message:   err.Error(),
+				}}, nil)
+				return err
 			}
 
 			// We inject the secret value using the same name as the secret
