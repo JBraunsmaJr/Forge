@@ -22,6 +22,7 @@ type Executor struct {
 	WorkspaceDir string
 	LogDir       string
 	Cache        *cache.Store
+	IsLocal      bool // skip checkout steps if true
 
 	// StreamCallback is set by the agent to receive log events in real time.
 	// Each event is forwarded to the scheduler as it's produced — not buffered
@@ -54,6 +55,16 @@ func New(workspaceDir, logDir, cacheDir string) (*Executor, error) {
 // RunStep executes a single pipeline step, checking the CAS first.
 func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.StepResult, error) {
 	start := time.Now()
+
+	// Skip checkout steps in local mode.
+	if e.IsLocal && (step.Type == "checkout" || step.ID == "checkout" || step.ID == "_forge_checkout") {
+		forgelog.StepHeader(step.ID, "(skipped)", "local run: using current directory as workspace")
+		return &pipeline.StepResult{
+			Step:     step,
+			Status:   pipeline.StatusPassed,
+			Duration: time.Since(start),
+		}, nil
+	}
 
 	if e.Cache != nil && len(step.Inputs) > 0 && step.Type != "generator" {
 		taskHash, err := cache.ComputeTaskHash(step, e.WorkspaceDir)

@@ -121,6 +121,10 @@ export const api = {
         fetchAuth(`/api/v1/runs/${id}/cancel`, { method: 'POST' }).then(() => {}),
     rerunRun: (id: string): Promise<{ run_id: string } | null> =>
         fetchAuth(`/api/v1/runs/${id}/rerun`, { method: 'POST' }).then(r => r?.ok ? r.json() : null),
+    rerunFailed: (id: string): Promise<{ run_id: string } | null> =>
+        fetchAuth(`/api/v1/runs/${id}/rerun-failed`, { method: 'POST' }).then(r => r?.ok ? r.json() : null),
+    rerunJob: (id: string): Promise<{ run_id: string } | null> =>
+        fetchAuth(`/api/v1/jobs/${id}/rerun`, { method: 'POST' }).then(r => r?.ok ? r.json() : null),
     createDebugSession: (jobID: string): Promise<{ session_id: string, expires_in_s: number } | null> =>
         fetchAuth('/api/v1/debug', {
             method: 'POST',

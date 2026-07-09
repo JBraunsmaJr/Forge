@@ -175,6 +175,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/runs/{id}", s.handleRunStatus)
 	mux.HandleFunc("POST /api/v1/runs/{id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/rerun", s.handleRerun)
+	mux.HandleFunc("POST /api/v1/runs/{id}/rerun-failed", s.handleRerunFailed)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/rerun", s.handleRerunJob)
 	mux.HandleFunc("POST /api/v1/runs/prune", s.handlePruneRuns)
 
 	// Web UI endpoints
@@ -1040,12 +1042,140 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newRunID, err := s.store.SubmitRun("rerun: "+name, workspaceDir, orgID, projectID, commitSHA, steps, nil)
+	newName := name
+	for strings.HasPrefix(newName, "rerun: ") {
+		newName = strings.TrimPrefix(newName, "rerun: ")
+	}
+	newName = "rerun: " + newName
+
+	for i := range steps {
+		steps[i].Status = ""
+	}
+
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	fmt.Printf("[scheduler] rerun of %s → new run %s\n", runID[:8], newRunID[:8])
+	s.publishRunDetail(newRunID)
+	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
+}
+
+func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	runID := r.PathValue("id")
+	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if err := validateSteps(steps); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
+		return
+	}
+
+	newName := name
+	for strings.HasPrefix(newName, "rerun: ") {
+		newName = strings.TrimPrefix(newName, "rerun: ")
+	}
+	newName = "rerun: " + newName
+
+	for i := range steps {
+		if steps[i].Status == api.JobStatusPassed {
+			// Keep as passed
+		} else {
+			steps[i].Status = "" // Rerun
+		}
+	}
+
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fmt.Printf("[scheduler] rerun-failed of %s → new run %s\n", runID[:8], newRunID[:8])
+	s.publishRunDetail(newRunID)
+	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
+}
+
+func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	jobID := r.PathValue("id")
+	detail, ok := s.store.RunDetailByJobID(jobID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	runID := detail.RunID
+
+	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	var targetStepID string
+	for _, j := range detail.Jobs {
+		if j.JobID == jobID {
+			targetStepID = j.StepID
+			break
+		}
+	}
+
+	if err := validateSteps(steps); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
+		return
+	}
+
+	newName := name
+	for strings.HasPrefix(newName, "rerun: ") {
+		newName = strings.TrimPrefix(newName, "rerun: ")
+	}
+	newName = "rerun: " + newName
+
+	toRerun := make(map[string]bool)
+	toRerun[targetStepID] = true
+	changed := true
+	for changed {
+		changed = false
+		for _, step := range steps {
+			if toRerun[step.ID] {
+				continue
+			}
+			for _, dep := range step.DependsOn {
+				if toRerun[dep] {
+					toRerun[step.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	for i := range steps {
+		if toRerun[steps[i].ID] {
+			steps[i].Status = ""
+		} else if steps[i].Status == api.JobStatusPassed {
+			// Keep as passed
+		} else {
+			// Job didn't pass, but isn't part of the rerun set.
+			// It remains in its current status, which will block its own downstreams
+			// (unless they are also in toRerun).
+		}
+	}
+
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fmt.Printf("[scheduler] rerun-job %s of %s → new run %s\n", targetStepID, runID[:8], newRunID[:8])
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }

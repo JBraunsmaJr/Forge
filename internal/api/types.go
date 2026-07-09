@@ -42,6 +42,7 @@ type JobSpec struct {
 	CommitSHA string `json:"commit_sha,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
+	Status      JobStatus    `json:"status,omitempty"`
 }
 
 // SubmitRunRequest is sent by the CLI to submit a pipeline for execution.
@@ -76,6 +77,7 @@ type StepDef struct {
 	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
+	Status      JobStatus    `json:"status,omitempty"`
 }
 
 // SubmitRunResponse is returned after a successful pipeline submission.

@@ -97,6 +97,18 @@
         }
     }
 
+    async function rerunFailed() {
+        if ($activeRun && confirm('Rerun failed jobs?')) {
+            await api.rerunFailed($activeRun.run_id);
+        }
+    }
+
+    async function rerunJob(job: Job) {
+        if (confirm(`Rerun job ${job.step_id} and its downstream?`)) {
+            await api.rerunJob(job.job_id);
+        }
+    }
+
     export let onOpenDebug: (job: Job) => void;
 </script>
 
@@ -121,6 +133,12 @@
                         Cancel
                     </button>
                 {:else}
+                    {#if $activeRun.status === 'failed'}
+                        <button class="btn-rerun" on:click={rerunFailed} title="Rerun Failed Jobs">
+                            <RotateCcw size={14} />
+                            Rerun Failed
+                        </button>
+                    {/if}
                     <button class="btn-rerun" on:click={rerun} title="Rerun Pipeline">
                         <RotateCcw size={14} />
                         Rerun
@@ -239,17 +257,30 @@
 
                 <g class="debug-btns">
                     {#each $activeRun.jobs as j}
-                        {#if j.status === 'failed' && layout.positions[j.job_id]}
+                        {#if layout.positions[j.job_id]}
                             {@const pos = layout.positions[j.job_id]}
-                            <text 
-                                x={pos.x + NODE_W - 8} y={pos.y + NODE_H - 10}
-                                text-anchor="end" fill="#818cf8"
-                                font-size="11px"
-                                style="cursor:pointer"
-                                on:click|stopPropagation={() => onOpenDebug(j)}
-                            >
-                                Debug →
-                            </text>
+                            {#if j.status === 'failed'}
+                                <text 
+                                    x={pos.x + NODE_W - 8} y={pos.y + NODE_H - 10}
+                                    text-anchor="end" fill="#818cf8"
+                                    font-size="11px"
+                                    style="cursor:pointer"
+                                    on:click|stopPropagation={() => onOpenDebug(j)}
+                                >
+                                    Debug →
+                                </text>
+                            {/if}
+                            {#if j.status === 'passed' || j.status === 'failed' || j.status === 'canceled'}
+                                <text 
+                                    x={pos.x + NODE_W - 8} y={pos.y + 14}
+                                    text-anchor="end" fill="#6b7094"
+                                    font-size="12px"
+                                    style="cursor:pointer"
+                                    on:click|stopPropagation={() => rerunJob(j)}
+                                >
+                                    ⟳
+                                </text>
+                            {/if}
                         {/if}
                     {/each}
                 </g>

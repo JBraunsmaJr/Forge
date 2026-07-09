@@ -195,6 +195,7 @@ func runCommand() {
 		fmt.Fprintf(os.Stderr, "✗ executor setup: %v\n", err)
 		os.Exit(1)
 	}
+	exec.IsLocal = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

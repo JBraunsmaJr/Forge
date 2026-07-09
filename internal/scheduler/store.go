@@ -70,14 +70,21 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, com
 			timeout = 30 * time.Minute
 		}
 
-		status := "pending"
-		if len(step.DependsOn) == 0 {
-			status = "queued"
+		status := string(step.Status)
+		if status == "" {
+			status = "pending"
+			if len(step.DependsOn) == 0 {
+				status = "queued"
+			}
 		}
 
 		if err := insertJob(tx, runID, step, command, workDir, stepType, timeout, status); err != nil {
 			return "", fmt.Errorf("insert job %s: %w", step.ID, err)
 		}
+	}
+
+	if err := s.unlockDownstream(tx, runID); err != nil {
+		return "", fmt.Errorf("unlock downstream: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -844,7 +851,8 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       docker_socket,
 		       COALESCE(pipeline_ref::text, 'null'),
 		       COALESCE(artifact_uploads::text, '[]'),
-		       COALESCE(artifact_downloads::text, '[]')
+		       COALESCE(artifact_downloads::text, '[]'),
+		       status
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
 		return "", nil, "", "", "", "", err
@@ -853,7 +861,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 
 	for rows.Next() {
 		var stepID, stepType, image, workDir, policySource string
-		var pipelineRefJSON, artifactUploadsJSON, artifactDownloadsJSON string
+		var pipelineRefJSON, artifactUploadsJSON, artifactDownloadsJSON, status string
 		var commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
 		var timeoutNS int64
 		var dockerSocket bool
@@ -863,6 +871,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			&inputsJSON, &timeoutNS, &dependsJSON, &secretsJSON, &policySource,
 			&dockerSocket,
 			&pipelineRefJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
+			&status,
 		); err != nil {
 			continue
 		}
@@ -895,6 +904,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			PolicySource:      policySource,
 			ArtifactUploads:   artifactUploads,
 			ArtifactDownloads: artifactDownloads,
+			Status:            api.JobStatus(status),
 		})
 	}
 	return name, steps, workspaceDir, orgID, projectID, commitSHA, nil
