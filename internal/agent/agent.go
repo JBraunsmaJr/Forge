@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -574,7 +575,13 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		"--volume", workspaceDir + ":/workspace:rw",
 	}
 	if spec.DockerSocket {
-		args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock")
+		hostSocket := "/var/run/docker.sock"
+		if h := os.Getenv("DOCKER_HOST"); strings.HasPrefix(h, "unix://") {
+			hostSocket = strings.TrimPrefix(h, "unix://")
+		} else if runtime.GOOS == "windows" {
+			hostSocket = `\\.\pipe\docker_engine`
+		}
+		args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
 		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
 	}
 	if spec.WorkDir == "" {

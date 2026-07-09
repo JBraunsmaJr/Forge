@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -264,7 +265,13 @@ func buildDockerArgs(step *pipeline.Step, workspaceDir string) []string {
 	}
 
 	if step.DockerSocket {
-		args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock")
+		hostSocket := "/var/run/docker.sock"
+		if h := os.Getenv("DOCKER_HOST"); strings.HasPrefix(h, "unix://") {
+			hostSocket = strings.TrimPrefix(h, "unix://")
+		} else if runtime.GOOS == "windows" {
+			hostSocket = `\\.\pipe\docker_engine`
+		}
+		args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
 		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
 	}
 

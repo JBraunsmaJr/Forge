@@ -19,8 +19,11 @@ def is_docker_build(step):
 def extract_image_tag(step):
     run = step.get("run", "") or ""
     command = " ".join(step.get("command", []) or [])
-    match = re.search(r"docker\s+build.*?-t\s+(\S+)", run + " " + command)
-    return match.group(1) if match else "$(docker images -q | head -1)"
+    # Support both -t and --tag flags, and handle optional quotes (with spaces)
+    match = re.search(r"docker\s+build.*?(?:-t|--tag)\s+(?:([\"'])(.*?)\1|(\S+))", run + " " + command)
+    if not match:
+        return None
+    return match.group(2) or match.group(3)
 
 def main():
     data = json.load(sys.stdin)
@@ -32,8 +35,12 @@ def main():
         if is_docker_build(s)
     }
 
+    # Filter out steps where we couldn't find an image tag.
+    # Trivy cannot scan an image if we don't know its name.
+    build_steps = {k: v for k, v in build_steps.items() if v}
+
     if not build_steps:
-        print(json.dumps(steps))
+        print(json.dumps(steps, indent=2))
         return
 
     result = []
@@ -49,6 +56,7 @@ def main():
             result.append({
                 "id":      scan_id,
                 "image":   "aquasec/trivy:latest",
+                "docker_socket": True,
                 "command": ["image", "--severity", "HIGH,CRITICAL",
                             "--no-progress", image_tag],
                 "env":     {"TRIVY_EXIT_CODE": "1"},

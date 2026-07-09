@@ -1,8 +1,6 @@
 name: Main-Workflow
 
 steps:
-
-
   - id: unit-tests
     name: Unit Tests
     image: golang:1.26-alpine
