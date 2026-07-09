@@ -124,7 +124,7 @@ func TestYAMLDockerSocket(t *testing.T) {
 name: dood
 steps:
   - id: build-image
-    image: docker:24-cli
+    image: docker:27-cli
     run: docker build -t myapp .
     docker_socket: true
 `

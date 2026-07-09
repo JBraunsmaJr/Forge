@@ -69,7 +69,7 @@ Each transformer is a process that:
   "workspace_dir": "/path/to/your/project",
   "org_id": "abc123",
   "steps": [
-    { "id": "build", "image": "docker:24", "run": "docker build -t myapp ." },
+    { "id": "build", "image": "docker:27", "run": "docker build -t myapp ." },
     { "id": "deploy", "depends_on": ["build"] }
   ]
 }
@@ -99,7 +99,7 @@ echo '{
   "workspace_dir": "/your/project",
   "org_id": "x",
   "steps": [
-    {"id": "build", "image": "docker:24", "run": "docker build -t myapp ."},
+    {"id": "build", "image": "docker:27", "run": "docker build -t myapp ."},
     {"id": "deploy", "depends_on": ["build"]}
   ]
 }' | python3 examples/policies/container-security.py | python3 -m json.tool

@@ -231,7 +231,7 @@ steps:
           name: app-binary
 
   - id: containerize
-    image: docker:24-cli
+    image: docker:27-cli
     docker_socket: true        # mount host Docker socket
     depends_on: [build]
     artifacts:

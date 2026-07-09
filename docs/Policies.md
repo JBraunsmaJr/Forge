@@ -83,7 +83,7 @@ A transformer is any executable that reads JSON from stdin and writes JSON to st
   "steps": [
     {
       "id": "build",
-      "image": "docker:24-cli",
+      "image": "docker:27-cli",
       "run": "docker build -t myapp .",
       ...
     }

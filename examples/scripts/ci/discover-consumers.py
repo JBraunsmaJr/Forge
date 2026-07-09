@@ -77,7 +77,7 @@ def build_steps_for_service(svc: str) -> list[dict]:
         },
         {
             "id":    f"build-{svc}",
-            "image": "docker:24-cli",
+            "image": "docker:27-cli",
             "docker_socket": True,
             "depends_on": [f"lint-{svc}", f"test-{svc}"],
             "timeout": "15m",
@@ -85,7 +85,7 @@ def build_steps_for_service(svc: str) -> list[dict]:
         },
         {
             "id":    f"push-{svc}",
-            "image": "docker:24-cli",
+            "image": "docker:27-cli",
             "docker_socket": True,
             "depends_on": [f"build-{svc}"],
             "secrets": ["REGISTRY_TOKEN"],

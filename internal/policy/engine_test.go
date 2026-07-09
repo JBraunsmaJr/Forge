@@ -97,7 +97,7 @@ func TestApply_NoPolicies(t *testing.T) {
 // This test requires sh to be available (works on Linux/Mac/WSL)
 func TestApply_InlineScriptTransformer(t *testing.T) {
 	userSteps := []api.StepDef{
-		{ID: "build", Image: "docker:24", Command: []string{"sh", "-c", "docker build -t myapp ."}},
+		{ID: "build", Image: "docker:27", Command: []string{"sh", "-c", "docker build -t myapp ."}},
 		{ID: "deploy", DependsOn: []string{"build"}},
 	}
 

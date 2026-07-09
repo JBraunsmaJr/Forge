@@ -12,13 +12,13 @@ steps:
 
   - id: build-image
     name: Build Image
-    image: docker:24-cli
+    image: docker:27-cli
     docker_socket: true
     depends_on: [unit-tests]
     secrets: [GITHUB_TOKEN, GITHUB_USER]
     timeout: 10m
     run: |
-      echo "$GITHUB_TOKEN" | docker login ghcr.io -u $GITHUB_USER --password --password-stdin
+      echo "$GITHUB_TOKEN" | docker login ghcr.io -u $GITHUB_USER --password-stdin
       docker build -t ghcr.io/jbraunsmajr/forge/forge -f Dockerfile .
       docker push ghcr.io/jbraunsmajr/forge/forge
       

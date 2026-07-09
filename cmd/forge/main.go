@@ -943,7 +943,7 @@ const dockerTemplate = `name: docker-build
 
 steps:
   - id: build
-    image: docker:24-cli
+    image: docker:27-cli
     docker_socket: true
     run: docker build -t myapp:latest .
 `

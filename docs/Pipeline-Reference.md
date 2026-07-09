@@ -212,7 +212,7 @@ steps:
 
   # Containerize downloads the binary built above
   - id: containerize
-    image: docker:24-cli
+    image: docker:27-cli
     docker_socket: true
     depends_on: [build]
     timeout: 10m
