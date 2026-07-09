@@ -140,6 +140,24 @@ func (s *LocalStore) DeleteArtifact(_ context.Context, artifactID string) error 
 	return nil
 }
 
+func (s *LocalStore) DeleteRunArtifacts(_ context.Context, runID string) error {
+	rows, err := s.db.Query(`DELETE FROM artifacts WHERE run_id=$1 RETURNING storage_key`, runID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		rows.Scan(&key)
+		path := filepath.Join(s.dir, filepath.FromSlash(key))
+		os.Remove(path)
+		os.Remove(filepath.Dir(path))
+	}
+	// Also try to remove the run directory if empty
+	os.Remove(filepath.Join(s.dir, runID))
+	return nil
+}
+
 // ServerUpload handles the actual PUT request for a local upload.
 // Called by the scheduler's /api/v1/artifacts/{id}/upload handler.
 func (s *LocalStore) ServeUpload(_ context.Context, artifactID, uploadToken string, r io.Reader) error {
@@ -214,6 +232,8 @@ var _ interface {
 	GetArtifact(context.Context, string, string) (*ArtifactMeta, error)
 	ListArtifacts(context.Context, string) ([]ArtifactMeta, error)
 	DeleteArtifact(context.Context, string) error
+	DeleteRunArtifacts(context.Context, string) error
+	Cleanup()
 	ServeUpload(context.Context, string, string, io.Reader) error
 	ServeDownload(context.Context, string) (io.ReadCloser, *ArtifactMeta, error)
 } = (*LocalStore)(nil)

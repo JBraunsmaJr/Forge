@@ -57,6 +57,16 @@ Check the status of a submitted run.
 forge status <run-id>
 ```
 
+### `forge prune`
+
+Manually trigger pruning of old runs and artifacts.
+
+```bash
+forge prune [age]
+```
+
+- `age`: Optional duration (e.g. `7d`, `24h`, `30m`) or number of days. Defaults to `30d`.
+
 ---
 
 ## Secret Commands
@@ -246,7 +256,10 @@ Default address: `:8080`
 | `FORGE_ARTIFACT_STORE` | `local` (default) or `s3`.                                                                               |
 | `FORGE_ARTIFACT_DIR`   | Local artifact storage directory (default: `/data/artifacts`).                                           |
 | `FORGE_S3_ENDPOINT`    | S3-compatible endpoint URL. Empty = AWS S3.                                                              |
+| `FORGE_S3_PUBLIC_URL`  | Public URL for artifacts when S3 endpoint is internal.                                                   |
 | `FORGE_S3_BUCKET`      | S3 bucket name.                                                                                          |
 | `FORGE_S3_REGION`      | S3 region.                                                                                               |
 | `FORGE_S3_ACCESS_KEY`  | S3 access key ID.                                                                                        |
 | `FORGE_S3_SECRET_KEY`  | S3 secret access key.                                                                                    |
+| `FORGE_RUN_RETENTION`  | How long to keep job runs and artifacts (e.g. `7d`, `30m`). Defaults to `30d`.                           |
+| `FORGE_RUN_RETENTION_INTERVAL` | How often to run the background retention worker. Defaults to `24h`.                             |

@@ -134,6 +134,8 @@
         };
     });
 
+    export let hideHeader = false;
+
     const statusLabels = {
         starting: '● connecting…',
         ready: '● ready',
@@ -141,19 +143,22 @@
     };
 </script>
 
-<div id="debug-panel" class:visible={sessionID !== null}>
+<div id="debug-panel" class:visible={sessionID !== null} class:no-header={hideHeader}>
+    {#if !hideHeader}
     <div id="debug-header">
         <h2>Debug Terminal</h2>
         <span id="debug-status" class={status}>{statusLabels[status]}</span>
         <span id="debug-ttl">{ttlText}</span>
         <button id="debug-close-btn" on:click={() => dispatch('close')}>✕ Close</button>
     </div>
+    {/if}
     <div id="debug-term-wrap" bind:this={termWrap}></div>
 </div>
 
 <style>
     #debug-panel { border-top: 1px solid var(--border); background: #0d0d0d; flex-shrink: 0;
         display: none; flex-direction: column; height: 340px; }
+    #debug-panel.no-header { border-top: none; height: 100%; flex: 1; flex-shrink: 1; }
     #debug-panel.visible { display: flex; }
     #debug-header { display: flex; align-items: center; gap: 10px; padding: 6px 14px;
         border-bottom: 1px solid #222; flex-shrink: 0; background: #111; }

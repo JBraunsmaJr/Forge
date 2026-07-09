@@ -15,6 +15,8 @@ type ArtifactStorer interface {
 	GetArtifact(ctx context.Context, runID, name string) (*ArtifactMeta, error)
 	ListArtifacts(ctx context.Context, runID string) ([]ArtifactMeta, error)
 	DeleteArtifact(ctx context.Context, artifactID string) error
+	DeleteRunArtifacts(ctx context.Context, runID string) error
+	Cleanup()
 	ServeUpload(ctx context.Context, artifactID, uploadToken string, r io.Reader) error
 	ServeDownload(ctx context.Context, artifactID string) (io.ReadCloser, *ArtifactMeta, error)
 }

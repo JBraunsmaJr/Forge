@@ -41,7 +41,7 @@ $env:FORGE_ORG = "<org-id>"  # copy from the output above
   --image forge-security-policies:latest `
   --command python3 /policies/language-security.py
 
-# Confirm both are registered
+# Confirm policies are registered
 ./forge.exe policy list
 ```
 

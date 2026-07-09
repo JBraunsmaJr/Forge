@@ -74,6 +74,8 @@ func main() {
 		projectCommand()
 	case "trigger":
 		triggerCommand()
+	case "prune":
+		pruneCommand()
 	case "version":
 		fmt.Printf("forge %s\n", version)
 	default:
@@ -1532,6 +1534,41 @@ func cliDelete(url string) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
+func pruneCommand() {
+	schedulerURL := os.Getenv("FORGE_URL")
+	if schedulerURL == "" {
+		schedulerURL = "http://localhost:8080"
+	}
+
+	arg := "30d"
+	if len(os.Args) > 2 {
+		arg = os.Args[2]
+	}
+
+	var targetURL string
+	if _, err := strconv.Atoi(arg); err == nil {
+		targetURL = fmt.Sprintf("%s/api/v1/runs/prune?days=%s", schedulerURL, arg)
+	} else {
+		targetURL = fmt.Sprintf("%s/api/v1/runs/prune?age=%s", schedulerURL, url.QueryEscape(arg))
+	}
+
+	resp, err := cliPost(targetURL, "application/json", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	checkResp(resp, http.StatusOK)
+
+	var res struct {
+		Pruned    int64  `json:"pruned"`
+		OlderThan string `json:"older_than"`
+	}
+	json.NewDecoder(resp.Body).Decode(&res)
+	fmt.Printf("✓ pruned %d runs older than %s\n", res.Pruned, res.OlderThan)
+}
+
 func printUsage() {
 	fmt.Print(`forge — a CI/CD pipeline runner
 
@@ -1547,6 +1584,7 @@ Distributed execution:
   forge agent [scheduler-url]            start a worker agent
   forge submit <pipeline.yml>            submit a pipeline to the scheduler
   forge trigger <project-id>             manually trigger a project pipeline
+  forge prune [age]                      prune old runs and artifacts (e.g. 7d, 30m)
   forge status <run-id>                  check a run's status
 
 Org and policy management:

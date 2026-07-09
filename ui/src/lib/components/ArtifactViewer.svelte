@@ -1,28 +1,17 @@
 <script lang="ts">
-    import { activeRun, selectedJob } from '../stores';
-    import { api, authUrl, type Artifact } from '../api';
+    import { onDestroy } from 'svelte';
+    import { selectedJob, artifacts } from '../stores';
+    import { authUrl, type Artifact } from '../api';
 
-    let artifacts: Artifact[] = [];
-    let loading = false;
     let viewingArtifact: Artifact | null = null;
+    let objectUrl: string | null = null;
+    let loadingArtifactId: string | null = null;
 
-    $: hasJobArtifacts = $selectedJob && artifacts.some(a => a.job_id === $selectedJob.job_id);
-    $: filteredArtifacts = hasJobArtifacts 
-        ? artifacts.filter(a => a.job_id === $selectedJob.job_id)
-        : artifacts;
+    $: filteredArtifacts = $selectedJob 
+        ? $artifacts.filter(a => a.job_id === $selectedJob.job_id)
+        : $artifacts;
 
-    async function handleRunChange(runID: string | undefined) {
-        if (!runID) {
-            artifacts = [];
-            viewingArtifact = null;
-            return;
-        }
-        loading = true;
-        artifacts = await api.runArtifacts(runID);
-        loading = false;
-    }
-
-    $: handleRunChange($activeRun?.run_id);
+    $: if ($selectedJob) closeViewer();
 
     function formatBytes(bytes: number) {
         if (bytes === 0) return '0 B';
@@ -44,23 +33,75 @@
         return false;
     }
 
+    export let hideHeader = false;
+
+    async function viewArtifact(a: Artifact) {
+        closeViewer();
+        loadingArtifactId = a.id;
+        try {
+            const resp = await fetch(authUrl(a.download_url));
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+
+            // Force correct MIME type if browser/server didn't provide a specific one
+            let finalBlob = blob;
+            if (blob.type === '' || blob.type === 'application/octet-stream') {
+                const ext = a.filename.split('.').pop()?.toLowerCase();
+                const mimeTypes: Record<string, string> = {
+                    'html': 'text/html',
+                    'pdf': 'application/pdf',
+                    'txt': 'text/plain',
+                    'log': 'text/plain',
+                    'png': 'image/png',
+                    'jpg': 'image/jpeg',
+                    'jpeg': 'image/jpeg'
+                };
+                if (ext && mimeTypes[ext]) {
+                    finalBlob = new Blob([blob], { type: mimeTypes[ext] });
+                }
+            }
+
+            objectUrl = URL.createObjectURL(finalBlob);
+            viewingArtifact = a;
+        } catch (e) {
+            console.error("Failed to view artifact:", e);
+            alert("Failed to load artifact content.");
+        } finally {
+            loadingArtifactId = null;
+        }
+    }
+
     function closeViewer() {
         viewingArtifact = null;
+        if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = null;
+        }
     }
+
+    onDestroy(() => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+    });
 </script>
 
-<div id="artifact-panel" class:visible={artifacts.length > 0}>
+<div id="artifact-panel" class:visible={$artifacts.length > 0} class:no-header={hideHeader}>
+    {#if !hideHeader}
     <div id="artifact-header">
-        <h2>Artifacts {#if hasJobArtifacts}(this job){:else}(this run){/if}</h2>
+        <h2>Artifacts {#if $selectedJob}(this job){:else}(this run){/if}</h2>
         <span id="artifact-count">
             {filteredArtifacts.length} file{filteredArtifacts.length !== 1 ? 's' : ''}
         </span>
     </div>
+    {/if}
     <div id="artifact-body">
-        {#if loading}
-            <div id="artifact-empty">Loading...</div>
-        {:else if filteredArtifacts.length === 0}
-            <div id="artifact-empty">No artifacts for this run.</div>
+        {#if filteredArtifacts.length === 0}
+            <div id="artifact-empty">
+                {#if $selectedJob}
+                    No artifacts for step "{$selectedJob.step_id}".
+                {:else}
+                    No artifacts for this run.
+                {/if}
+            </div>
         {:else}
             {#each filteredArtifacts as a}
                 <div class="artifact-row">
@@ -70,8 +111,8 @@
                     <span class="artifact-size">{formatBytes(a.size_bytes)}</span>
                     <div class="artifact-actions">
                         {#if isViewable(a)}
-                            <button class="artifact-view" on:click={() => viewingArtifact = a}>
-                                view
+                            <button class="artifact-view" on:click={() => viewArtifact(a)} disabled={loadingArtifactId !== null}>
+                                {loadingArtifactId === a.id ? 'loading...' : 'view'}
                             </button>
                         {/if}
                         <a 
@@ -98,7 +139,7 @@
             <div class="viewer-body">
                 <iframe 
                     title={viewingArtifact.name}
-                    src={authUrl(viewingArtifact.download_url)}
+                    src={objectUrl}
                 ></iframe>
             </div>
         </div>
@@ -107,14 +148,15 @@
 
 <style>
     #artifact-panel { border-top: 1px solid var(--border); background: var(--surface);
-        display: none; flex-direction: column; }
+        display: none; flex-direction: column; flex: 1; overflow: hidden; }
+    #artifact-panel.no-header { border-top: none; }
     #artifact-panel.visible { display: flex; }
     #artifact-header { display: flex; align-items: center; gap: 10px; padding: 6px 16px;
         border-bottom: 1px solid var(--border); flex-shrink: 0; }
     #artifact-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px;
         color: var(--muted); text-transform: uppercase; }
     #artifact-count { font-size: 11px; color: var(--muted); margin-left: auto; }
-    #artifact-body { padding: 8px 16px; font-size: 12px; font-family: var(--font-mono); }
+    #artifact-body { flex: 1; overflow-y: auto; padding: 8px 16px; font-size: 12px; font-family: var(--font-mono); }
     #artifact-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
     .artifact-row { display: flex; align-items: center; gap: 12px; padding: 4px 0;
         border-bottom: 1px solid var(--border); }

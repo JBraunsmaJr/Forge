@@ -793,14 +793,35 @@ func (s *Store) AppendJobLogs(jobID, leaseID string, events []api.LogEvent) erro
 	return tx.Commit()
 }
 
-// PruneRuns deletes runs older than the given number of days.
-// Pass days=0 to delete all runs. Cascading deletes in the schema handle
+func (s *Store) GetRunsOlderThan(olderThan time.Duration) ([]string, error) {
+	cutoff := time.Now().Add(-olderThan)
+	rows, err := s.db.Query(`SELECT id FROM runs WHERE created_at <= $1`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// PruneRuns deletes runs older than the given duration.
+// Pass duration=0 to delete all runs. Cascading deletes in the schema handle
 // jobs, job_logs, and artifacts automatically.
-func (s *Store) PruneRuns(olderThanDays int) (int64, error) {
-	res, err := s.db.Exec(
-		`DELETE FROM runs WHERE created_at <= NOW() - ($1 || ' days')::INTERVAL`,
-		olderThanDays,
-	)
+func (s *Store) PruneRuns(olderThan time.Duration) (int64, error) {
+	var res sql.Result
+	var err error
+	if olderThan == 0 {
+		res, err = s.db.Exec(`DELETE FROM runs`)
+	} else {
+		cutoff := time.Now().Add(-olderThan)
+		res, err = s.db.Exec(`DELETE FROM runs WHERE created_at <= $1`, cutoff)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("pruning runs: %w", err)
 	}

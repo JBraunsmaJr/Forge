@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 name: conditional-logic-demo
 
 steps:
@@ -21,7 +13,6 @@ steps:
     depends_on: [unit-tests]
     run: |
       echo "Running integration tests..."
-
 
   - id: notify-success
     image: curlimages/curl:latest
@@ -49,9 +40,6 @@ steps:
     always_run: true # Shortcut for condition: always()
     run: |
       echo "🧹 Cleaning up temporary resources..."
-
-
-
 
   - id: deploy-preview
     image: alpine:latest

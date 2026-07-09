@@ -232,14 +232,27 @@ FORGE_VAULT_TOKEN=<production-vault-token>
 # Point to production S3
 FORGE_ARTIFACT_STORE=s3
 FORGE_S3_ENDPOINT=                        # empty = AWS S3
+FORGE_S3_PUBLIC_URL=https://artifacts.example.com
 FORGE_S3_BUCKET=my-forge-artifacts
 FORGE_S3_REGION=us-east-1
 FORGE_S3_ACCESS_KEY=<access-key>
 FORGE_S3_SECRET_KEY=<secret-key>
 
+# Configure retention (defaults to 30 days)
+FORGE_RUN_RETENTION=30d
+FORGE_RUN_RETENTION_INTERVAL=24h
+
 # Scheduler public URL (for artifact download links)
 FORGE_BASE_URL=https://forge.internal.example.com
 ```
+
+### Retention and Cleanup
+
+Forge automatically cleans up old job runs and their associated artifacts in storage.
+
+- **Background Worker**: The scheduler runs a background process (controlled by `FORGE_RUN_RETENTION_INTERVAL`) that prunes any run older than `FORGE_RUN_RETENTION`.
+- **Manual Pruning**: You can manually trigger a cleanup via the CLI: `forge prune 7d`.
+- **Storage Cleanup**: Pruning a run automatically deletes its files from Local or S3 storage.
 
 ### TLS / Reverse Proxy
 

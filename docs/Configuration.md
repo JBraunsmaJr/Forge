@@ -14,10 +14,13 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_ARTIFACT_STORE` | `local`                  | Artifact backend: `local` or `s3`.                                                                                                 |
 | `FORGE_ARTIFACT_DIR`   | `/data/artifacts`        | Directory for local artifact storage.                                                                                              |
 | `FORGE_S3_ENDPOINT`    | —                        | S3-compatible endpoint URL. Leave empty for AWS S3. Example: `http://minio:9000`.                                                  |
+| `FORGE_S3_PUBLIC_URL`  | —                        | Public URL for artifacts when S3 endpoint is internal. Browsers will use this to view/download.                                    |
 | `FORGE_S3_BUCKET`      | `forge-artifacts`        | S3 bucket name.                                                                                                                    |
 | `FORGE_S3_REGION`      | `us-east-1`              | S3 region.                                                                                                                         |
 | `FORGE_S3_ACCESS_KEY`  | —                        | S3 access key ID.                                                                                                                  |
 | `FORGE_S3_SECRET_KEY`  | —                        | S3 secret access key.                                                                                                              |
+| `FORGE_RUN_RETENTION`  | `30d`                    | How long to keep job runs and artifacts (e.g. `7d`, `24h`, `30m`). Set to `0` to disable.                                          |
+| `FORGE_RUN_RETENTION_INTERVAL` | `24h`            | How often to run the background retention worker. Defaults to `1h` if retention < 24h.                                             |
 | `FORGE_PRUNE_SCHEDULE` | `@daily`                 | Cron-style schedule for `docker system prune` (e.g. `@hourly`, `@daily`, or duration like `12h`).                                  |
 
 ---

@@ -70,6 +70,8 @@
         }
     }
 
+    export let hideHeader = false;
+
     $: handleJobChange($selectedJob);
 
     function formatTime(ts: string) {
@@ -83,11 +85,13 @@
     });
 </script>
 
-<div id="log-panel">
+<div id="log-panel" class:no-header={hideHeader}>
+    {#if !hideHeader}
     <div id="log-header">
         <h2>Logs</h2>
         <span id="log-job-id">{$selectedJob?.step_id || ''}</span>
     </div>
+    {/if}
     <div id="log-body" bind:this={logBody}>
         {#if !$selectedJob}
             <div id="log-empty">Click a job node to view its logs.</div>
@@ -120,6 +124,7 @@
 <style>
     #log-panel { height: 240px; border-top: 1px solid var(--border); background: var(--surface);
         display: flex; flex-direction: column; flex-shrink: 0; }
+    #log-panel.no-header { height: 100%; border-top: none; flex: 1; flex-shrink: 1; }
     #log-header { display: flex; align-items: center; gap: 10px; padding: 8px 16px;
         border-bottom: 1px solid var(--border); flex-shrink: 0; }
     #log-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--muted);

@@ -3,9 +3,7 @@
     import Header from './lib/components/Header.svelte';
     import Sidebar from './lib/components/Sidebar.svelte';
     import DAG from './lib/components/DAG.svelte';
-    import LogViewer from './lib/components/LogViewer.svelte';
-    import ArtifactViewer from './lib/components/ArtifactViewer.svelte';
-    import Terminal from './lib/components/Terminal.svelte';
+    import DetailsPanel from './lib/components/DetailsPanel.svelte';
     import LoginModal from './lib/components/LoginModal.svelte';
     
     import OrgsView from './lib/components/OrgsView.svelte';
@@ -130,13 +128,9 @@
     <main>
         {#if $currentView === 'runs'}
             <DAG onOpenDebug={openDebug} />
-            <LogViewer />
-            <ArtifactViewer />
-            <Terminal 
-                sessionID={debugSession.sessionID} 
-                status={debugSession.status} 
-                expiresInS={debugSession.expiresInS}
-                on:close={closeDebug}
+            <DetailsPanel 
+                debugSession={debugSession}
+                onCloseDebug={closeDebug}
             />
         {:else}
             <div class="view-content">

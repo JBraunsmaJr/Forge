@@ -1,21 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 name: library-release
 
 steps:
@@ -41,9 +23,6 @@ steps:
       upload:
         - path: dist/core-lib-*.tar.gz
           name: library-archive
-
-
-
 
   - id: discover-consumers
     type: generator

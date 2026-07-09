@@ -1,30 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 name: progressive-deploy
 
 steps:
@@ -45,9 +18,6 @@ steps:
         - path: dist/app
           name: app-binary
 
-
-
-
   - id: containerize
     image: docker:27-cli
     docker_socket: true
@@ -66,9 +36,6 @@ steps:
       upload:
         - path: dist/myapp-image.tar.gz
           name: container-image
-
-
-
 
   - id: deploy-staging
     type: pipeline
@@ -130,7 +97,6 @@ steps:
 
       print(f"\nAll {len(checks)} smoke tests passed.")
       PYEOF
-
 
 
   - id: deploy-production

@@ -160,9 +160,38 @@ func (s *S3Store) DeleteArtifact(_ context.Context, artifactID string) error {
 	if err != nil {
 		return err
 	}
-
 	go s.deleteObject(key)
 	return nil
+}
+
+func (s *S3Store) DeleteRunArtifacts(_ context.Context, runID string) error {
+	rows, err := s.db.Query(`DELETE FROM artifacts WHERE run_id=$1 RETURNING storage_key`, runID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		rows.Scan(&key)
+		go s.deleteObject(key)
+	}
+	return nil
+}
+
+func (s *S3Store) Cleanup() {
+	cutoff := time.Now().Add(-1 * time.Hour)
+	rows, err := s.db.Query(`
+		DELETE FROM artifacts WHERE confirmed=false AND created_at < $1
+		RETURNING storage_key`, cutoff)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		rows.Scan(&key)
+		go s.deleteObject(key)
+	}
 }
 
 // ServeUpload is not used by the S3 backend - agents PUT directly to S3.
@@ -364,9 +393,31 @@ func (s *S3Store) ensureBucket() error {
 	return nil
 }
 
-func (s *S3Store) deleteObject(_ string) {
-
+func (s *S3Store) deleteObject(key string) {
+	url := s.presignURL("DELETE", key, 60, false, "", "")
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 }
+
+// Ensure S3Store implements the embedded interface used by the scheduler.
+var _ interface {
+	PresignUpload(context.Context, PresignRequest) (*PresignResponse, error)
+	ConfirmUpload(context.Context, string, int64) error
+	GetArtifact(context.Context, string, string) (*ArtifactMeta, error)
+	ListArtifacts(context.Context, string) ([]ArtifactMeta, error)
+	DeleteArtifact(context.Context, string) error
+	DeleteRunArtifacts(context.Context, string) error
+	Cleanup()
+	ServeUpload(context.Context, string, string, io.Reader) error
+	ServeDownload(context.Context, string) (io.ReadCloser, *ArtifactMeta, error)
+} = (*S3Store)(nil)
 
 func hmacSHA256(key, data []byte) []byte {
 	h := hmac.New(sha256.New, key)

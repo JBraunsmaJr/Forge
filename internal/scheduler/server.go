@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1180,51 +1181,88 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
 
+func (s *Server) prune(ctx context.Context, olderThan time.Duration) (int64, error) {
+	ids, err := s.store.GetRunsOlderThan(olderThan)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		s.artifacts.DeleteRunArtifacts(ctx, id)
+	}
+	return s.store.PruneRuns(olderThan)
+}
+
 func (s *Server) handlePruneRuns(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return
 	}
-	days := 30
+	olderThan := 30 * 24 * time.Hour
 	if d := r.URL.Query().Get("days"); d != "" {
+		var days int
 		fmt.Sscanf(d, "%d", &days)
+		olderThan = time.Duration(days) * 24 * time.Hour
+	} else if age := r.URL.Query().Get("age"); age != "" {
+		if val, err := time.ParseDuration(age); err == nil {
+			olderThan = val
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid age format (e.g. 30m, 24h, 7d)")
+			return
+		}
 	}
-	if days < 0 {
-		writeError(w, http.StatusBadRequest, "days must be >= 0")
-		return
-	}
-	n, err := s.store.PruneRuns(days)
+
+	n, err := s.prune(r.Context(), olderThan)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fmt.Printf("[scheduler] pruned %d runs older than %d days\n", n, days)
-	writeJSON(w, http.StatusOK, map[string]any{"pruned": n, "older_than_days": days})
+	fmt.Printf("[scheduler] pruned %d runs older than %s\n", n, olderThan)
+	writeJSON(w, http.StatusOK, map[string]any{"pruned": n, "older_than": olderThan.String()})
 }
 
-// startRetentionWorker runs a daily background job that deletes old runs.
+// startRetentionWorker runs a background job that deletes old runs and artifacts.
 func (s *Server) startRetentionWorker(ctx context.Context) {
-	days := 30
-	if d := os.Getenv("FORGE_RUN_RETENTION_DAYS"); d != "" {
+	retention := 30 * 24 * time.Hour
+	if r := os.Getenv("FORGE_RUN_RETENTION"); r != "" {
+		if val, err := time.ParseDuration(r); err == nil {
+			retention = val
+		} else if days, err := strconv.Atoi(r); err == nil {
+			retention = time.Duration(days) * 24 * time.Hour
+		}
+	} else if d := os.Getenv("FORGE_RUN_RETENTION_DAYS"); d != "" {
+		var days int
 		fmt.Sscanf(d, "%d", &days)
+		retention = time.Duration(days) * 24 * time.Hour
 	}
-	if days <= 0 {
-		fmt.Println("[scheduler] run retention disabled (FORGE_RUN_RETENTION_DAYS=0)")
+
+	if retention <= 0 {
+		fmt.Println("[scheduler] run retention disabled")
 		return
 	}
-	fmt.Printf("[scheduler] run retention: deleting runs older than %d days (daily)\n", days)
 
-	ticker := time.NewTicker(24 * time.Hour)
+	interval := 24 * time.Hour
+	if i := os.Getenv("FORGE_RUN_RETENTION_INTERVAL"); i != "" {
+		if val, err := time.ParseDuration(i); err == nil {
+			interval = val
+		}
+	} else if retention < 24*time.Hour {
+		interval = 1 * time.Hour
+	}
+
+	fmt.Printf("[scheduler] run retention: deleting runs older than %s (every %s)\n", retention, interval)
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := s.store.PruneRuns(days)
+			s.artifacts.Cleanup()
+			n, err := s.prune(ctx, retention)
 			if err != nil {
 				fmt.Printf("[scheduler] retention error: %v\n", err)
 			} else if n > 0 {
-				fmt.Printf("[scheduler] retention: pruned %d runs older than %d days\n", n, days)
+				fmt.Printf("[scheduler] retention: pruned %d runs older than %s\n", n, retention)
 			}
 		}
 	}
