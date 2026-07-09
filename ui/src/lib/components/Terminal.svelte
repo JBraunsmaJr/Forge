@@ -6,7 +6,6 @@
     import { authUrl } from '../api';
 
     export let sessionID: string | null = null;
-    export let expiresInS: number = 0;
     export let status: 'starting' | 'ready' | 'closed' = 'starting';
 
     const dispatch = createEventDispatcher();
@@ -14,8 +13,6 @@
     let term: Terminal | null = null;
     let ws: WebSocket | null = null;
     let fitAddon: FitAddon | null = null;
-    let ttlInterval: any;
-    let ttlText = '';
     let lastSessionID: string | null = null;
 
     function cleanup() {
@@ -29,25 +26,6 @@
             term.dispose();
             term = null;
         }
-        clearInterval(ttlInterval);
-    }
-
-    function startTTLTimer(seconds: number) {
-        let remaining = seconds;
-        clearInterval(ttlInterval);
-        const update = () => {
-            if (remaining <= 0) {
-                clearInterval(ttlInterval);
-                ttlText = 'expired';
-                return;
-            }
-            const m = Math.floor(remaining / 60);
-            const s = remaining % 60;
-            ttlText = `TTL ${m}:${String(s).padStart(2, '0')}`;
-            remaining--;
-        };
-        update();
-        ttlInterval = setInterval(update, 1000);
     }
 
     function openTerminalWS(sid: string) {
@@ -124,53 +102,19 @@
         openTerminalWS(sessionID);
     }
 
-    $: if (expiresInS > 0) {
-        startTTLTimer(expiresInS);
-    }
-
     onMount(() => {
         return () => {
             cleanup();
         };
     });
-
-    export let hideHeader = false;
-
-    const statusLabels = {
-        starting: '● connecting…',
-        ready: '● ready',
-        closed: '○ closed'
-    };
 </script>
 
-<div id="debug-panel" class:visible={sessionID !== null} class:no-header={hideHeader}>
-    {#if !hideHeader}
-    <div id="debug-header">
-        <h2>Debug Terminal</h2>
-        <span id="debug-status" class={status}>{statusLabels[status]}</span>
-        <span id="debug-ttl">{ttlText}</span>
-        <button id="debug-close-btn" on:click={() => dispatch('close')}>✕ Close</button>
-    </div>
-    {/if}
+<div id="debug-panel" class:visible={sessionID !== null}>
     <div id="debug-term-wrap" bind:this={termWrap}></div>
 </div>
 
 <style>
-    #debug-panel { border-top: 1px solid var(--border); background: #0d0d0d; flex-shrink: 0;
-        display: none; flex-direction: column; height: 340px; }
-    #debug-panel.no-header { border-top: none; height: 100%; flex: 1; flex-shrink: 1; }
+    #debug-panel { background: #0d0d0d; height: 100%; flex: 1; display: none; flex-direction: column; overflow: hidden; }
     #debug-panel.visible { display: flex; }
-    #debug-header { display: flex; align-items: center; gap: 10px; padding: 6px 14px;
-        border-bottom: 1px solid #222; flex-shrink: 0; background: #111; }
-    #debug-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px;
-        color: #666; text-transform: uppercase; }
-    #debug-status { font-size: 11px; margin-left: auto; }
-    #debug-status.starting { color: var(--amber); }
-    #debug-status.ready    { color: var(--green); }
-    #debug-status.closed   { color: #555; }
-    #debug-ttl { font-size: 11px; color: #555; font-family: var(--font-mono); }
-    #debug-close-btn { background: none; border: 1px solid #333; color: #555;
-        border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; }
-    #debug-close-btn:hover { border-color: var(--red); color: var(--red); }
     #debug-term-wrap { flex: 1; overflow: hidden; padding: 4px; }
 </style>
