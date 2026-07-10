@@ -87,6 +87,7 @@ services:
       FORGE_S3_PUBLIC_URL: ${FORGE_S3_PUBLIC_URL:-http://localhost:9000}
     ports:
       - "8080:8080"
+      - "50051:50051"
     depends_on:
       postgres:
         condition: service_healthy

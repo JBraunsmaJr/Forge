@@ -6,3 +6,4 @@ internal/scheduler/web/dist/*
 !internal/scheduler/web/dist/.gitkeep
 .idea
 .env
+protoc_bin

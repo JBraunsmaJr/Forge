@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package forge;
+
+option go_package = "github.com/JBraunsmaJr/forge/internal/pb";
+
+import "google/protobuf/timestamp.proto";
+
+service AgentService {
+  // Session is a bidirectional stream for agent communication.
+  // The agent sends heartbeats, job completions, and logs.
+  // The scheduler sends job assignments.
+  rpc Session(stream AgentMessage) returns (stream SchedulerMessage);
+}
+
+message AgentMessage {
+  string agent_id = 1;
+  oneof payload {
+    RegisterRequest register = 2;
+    HeartbeatRequest heartbeat = 3;
+    CompleteRequest complete = 4;
+    LogBatch log_batch = 5;
+  }
+}
+
+message SchedulerMessage {
+  oneof payload {
+    JobSpec job = 1;
+    HeartbeatAck heartbeat_ack = 2;
+  }
+}
+
+message RegisterRequest {
+  int32 concurrency = 1;
+  map<string, string> labels = 2;
+}
+
+message HeartbeatRequest {
+  string job_id = 1;
+  string lease_id = 2;
+}
+
+message HeartbeatAck {
+  string job_id = 1;
+  bool stop = 2;
+}
+
+message CompleteRequest {
+  string job_id = 1;
+  int32 exit_code = 2;
+  int64 duration_ms = 3;
+  repeated LogEvent logs = 4;
+  string lease_id = 5;
+  string emitted_steps_json = 6;
+}
+
+message LogEvent {
+  google.protobuf.Timestamp ts = 1;
+  string level = 2;
+  string message = 3;
+}
+
+message LogBatch {
+  string job_id = 1;
+  string lease_id = 2;
+  repeated LogEvent events = 3;
+}
+
+message JobSpec {
+  string job_id = 1;
+  string run_id = 2;
+  string lease_id = 3;
+  string step_id = 4;
+  string image = 5;
+  repeated string entrypoint = 6;
+  repeated string command = 7;
+  string work_dir = 8;
+  map<string, string> env = 9;
+  repeated string inputs = 10;
+  int64 timeout_ns = 11;
+  repeated string secret_names = 12;
+  bool docker_socket = 13;
+  string type = 14;
+  string org_id = 15;
+  string project_id = 16;
+  repeated ArtifactUploadSpec artifact_uploads = 17;
+  repeated ArtifactDownloadSpec artifact_downloads = 18;
+  string commit_sha = 19;
+  string condition = 20;
+  bool always_run = 21;
+  PipelineRef pipeline_ref = 22;
+}
+
+message PipelineRef {
+  string path = 1;
+  bool wait = 2;
+}
+
+message ArtifactUploadSpec {
+  string path = 1;
+  string name = 2;
+}
+
+message ArtifactDownloadSpec {
+  string name = 1;
+  string dest = 2;
+}

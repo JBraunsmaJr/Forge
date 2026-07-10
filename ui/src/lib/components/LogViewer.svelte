@@ -1,10 +1,10 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
     import { selectedJob } from '../stores';
-    import { api, authUrl, type LogEvent, type Job } from '../api';
+    import { api, authUrl, wsUrl, type LogEvent, type Job } from '../api';
 
     let logs: LogEvent[] = [];
-    let logSse: EventSource | null = null;
+    let logWs: WebSocket | null = null;
     let logBody: HTMLDivElement;
     let loading = false;
     let currentJobId: string | null = null;
@@ -17,20 +17,20 @@
     }
 
     function closeLogStream() {
-        if (logSse) {
-            logSse.close();
-            logSse = null;
+        if (logWs) {
+            logWs.close();
+            logWs = null;
         }
         currentJobId = null;
     }
 
-    function openLogSSE(jobID: string) {
-        if (currentJobId === jobID && logSse) return;
+    function openLogWS(jobID: string) {
+        if (currentJobId === jobID && logWs) return;
         closeLogStream();
         currentJobId = jobID;
-        logSse = new EventSource(authUrl(`/api/v1/jobs/${jobID}/logs/stream`));
-        logSse.onmessage = (e) => {
-            if (!logSse) return;
+        logWs = new WebSocket(wsUrl(`/api/v1/jobs/${jobID}/logs/stream`));
+        logWs.onmessage = (e) => {
+            if (!logWs) return;
             const evt: LogEvent = JSON.parse(e.data);
             logs = [...logs, evt];
             scrollToBottom();
@@ -45,9 +45,9 @@
         }
 
         if (currentJobId === job.job_id) {
-            if (job.status !== 'running' && logSse) {
-                logSse.close();
-                logSse = null;
+            if (job.status !== 'running' && logWs) {
+                logWs.close();
+                logWs = null;
             }
             return;
         }
@@ -59,7 +59,7 @@
         if (statusMsg) return;
 
         if (job.status === 'running') {
-            openLogSSE(job.job_id);
+            openLogWS(job.job_id);
         } else {
             currentJobId = job.job_id;
             loading = true;

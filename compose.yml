@@ -93,9 +93,9 @@ services:
       FORGE_RUN_RETENTION_INTERVAL: ${FORGE_RUN_RETENTION_INTERVAL:-24h}
     ports:
       - "8080:8080"
+      - "50051:50051"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp:/tmp
       - git_cache:/var/lib/forge/git-cache
     depends_on:
       postgres:
@@ -135,6 +135,7 @@ services:
       FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
+      FORGE_GRPC_ADDR: scheduler:50051
       FORGE_AGENT_WS_PORT: "8082"   # internal listen port (not exposed publicly)
       FORGE_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
       # ── Docker image cleanup ───────────────────────────────────────────────
@@ -150,7 +151,6 @@ services:
       FORGE_DOCKER_MAX_PERCENT: ${FORGE_DOCKER_MAX_PERCENT:-80}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp:/tmp
     working_dir: /tmp
     depends_on:
       scheduler:

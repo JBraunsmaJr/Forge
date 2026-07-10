@@ -7,7 +7,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -29,9 +28,13 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
+	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func init() {
@@ -65,6 +68,10 @@ type Agent struct {
 	maxConcurrency int
 	semaphore      chan struct{}
 
+	// gRPC communication
+	grpcClient pb.AgentServiceClient
+	out        chan *pb.AgentMessage
+
 	// Cleanup configuration
 	maxDockerGB      float64
 	maxDockerPercent float64
@@ -95,59 +102,147 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		pruneSchedule:    schedule,
 		maxConcurrency:   concurrency,
 		semaphore:        make(chan struct{}, concurrency),
+		out:              make(chan *pb.AgentMessage, 64),
 	}
 }
 
-// Run starts the agent's poll loop. Blocks until ctx is canceled.
+// Run starts the agent's gRPC session and handles jobs. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
-	fmt.Printf("[agent %s] starting, scheduler: %s\n", a.id[:8], a.schedulerURL)
-	fmt.Printf("[agent %s] workspace: %s\n", a.id[:8], a.workspaceDir)
-	fmt.Printf("[agent %s] cache: %s\n", a.id[:8], a.cacheDir)
-	fmt.Printf("[agent %s] logs: %s\n", a.id[:8], a.logDir)
+	fmt.Printf("[agent %s] starting (gRPC), scheduler: %s\n", a.id[:8], a.schedulerURL)
+
+	// Determine gRPC address from schedulerURL or environment variable
+	grpcAddr := os.Getenv("FORGE_GRPC_ADDR")
+	if grpcAddr != "" {
+		grpcAddr = strings.TrimPrefix(grpcAddr, "http://")
+		grpcAddr = strings.TrimPrefix(grpcAddr, "https://")
+		grpcAddr = strings.TrimSuffix(grpcAddr, "/")
+	} else {
+		grpcAddr = "localhost:50051"
+		if u, err := url.Parse(a.schedulerURL); err == nil {
+			host := u.Hostname()
+			if host != "" {
+				grpcAddr = host + ":50051"
+			}
+		}
+	}
+
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("failed to dial gRPC: %w", err)
+	}
+	defer conn.Close()
+
+	a.grpcClient = pb.NewAgentServiceClient(conn)
+
+	// Open bidirectional stream
+	stream, err := a.grpcClient.Session(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open gRPC session: %w", err)
+	}
+
+	// Register agent
+	err = stream.Send(&pb.AgentMessage{
+		AgentId: a.id,
+		Payload: &pb.AgentMessage_Register{
+			Register: &pb.RegisterRequest{
+				Concurrency: int32(a.maxConcurrency),
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register: %w", err)
+	}
 
 	// Clean up any dangling containers from previous runs.
 	executor.Cleanup()
 	defer executor.Cleanup()
 
-	// Run both job polling and debug session polling concurrently.
 	go a.debugLoop(ctx)
 	go a.pruneLoop(ctx)
 
+	// Goroutine to send outgoing messages (heartbeats, completions, logs)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-a.out:
+				msg.AgentId = a.id
+				if err := stream.Send(msg); err != nil {
+					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
+				}
+			}
+		}
+	}()
+
 	fmt.Printf("[agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
 
+	// Receive loop: receive jobs from scheduler
 	for {
-		// Check if we've been asked to stop.
-		if ctx.Err() != nil {
-			fmt.Printf("[agent %s] shutting down\n", a.id[:8])
+		msg, err := stream.Recv()
+		if err == io.EOF {
 			return nil
 		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("gRPC receive error: %w", err)
+		}
 
-		// Wait for capacity before leasing a job.
-		select {
-		case a.semaphore <- struct{}{}:
-			// We have capacity, lease a job.
-			spec, ok, err := a.lease(ctx)
-			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					fmt.Printf("[agent %s] lease error: %v\n", a.id[:8], err)
+		if pbSpec := msg.GetJob(); pbSpec != nil {
+			// Convert pb.JobSpec back to api.JobSpec
+			spec := &api.JobSpec{
+				JobID:        pbSpec.JobId,
+				RunID:        pbSpec.RunId,
+				LeaseID:      pbSpec.LeaseId,
+				StepID:       pbSpec.StepId,
+				Image:        pbSpec.Image,
+				Entrypoint:   pbSpec.Entrypoint,
+				Command:      pbSpec.Command,
+				WorkDir:      pbSpec.WorkDir,
+				Env:          pbSpec.Env,
+				Inputs:       pbSpec.Inputs,
+				SecretNames:  pbSpec.SecretNames,
+				DockerSocket: pbSpec.DockerSocket,
+				Timeout:      time.Duration(pbSpec.TimeoutNs),
+				Type:         pbSpec.Type,
+				OrgID:        pbSpec.OrgId,
+				ProjectID:    pbSpec.ProjectId,
+				CommitSHA:    pbSpec.CommitSha,
+				Condition:    pbSpec.Condition,
+				AlwaysRun:    pbSpec.AlwaysRun,
+			}
+
+			if pbSpec.PipelineRef != nil {
+				spec.PipelineRef = &api.PipelineRef{
+					Path: pbSpec.PipelineRef.Path,
+					Wait: pbSpec.PipelineRef.Wait,
 				}
-				<-a.semaphore
-				a.sleep(ctx, pollInterval)
-				continue
-			}
-			if !ok {
-				<-a.semaphore
-				a.sleep(ctx, pollInterval)
-				continue
 			}
 
-			fmt.Printf("[agent %s] received job %s (step: %s)\n",
+			for _, u := range pbSpec.ArtifactUploads {
+				spec.ArtifactUploads = append(spec.ArtifactUploads, api.ArtifactUploadSpec{
+					Path: u.Path,
+					Name: u.Name,
+				})
+			}
+			for _, d := range pbSpec.ArtifactDownloads {
+				spec.ArtifactDownloads = append(spec.ArtifactDownloads, api.ArtifactDownloadSpec{
+					Name: d.Name,
+					Dest: d.Dest,
+				})
+			}
+
+			fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
 				a.id[:8], spec.JobID[:8], spec.StepID)
+
+			// Wait for capacity
+			a.semaphore <- struct{}{}
 
 			go func(s *api.JobSpec) {
 				defer func() {
 					<-a.semaphore
-					// After each job, check disk usage and perform LRU eviction if needed.
 					a.checkDiskUsageAndCleanup()
 				}()
 
@@ -155,9 +250,6 @@ func (a *Agent) Run(ctx context.Context) error {
 					fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
 				}
 			}(spec)
-
-		case <-ctx.Done():
-			return nil
 		}
 	}
 }
@@ -419,7 +511,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			Timestamp: time.Now(),
 			Level:     "ERROR",
 			Message:   err.Error(),
-		}}, nil)
+		}}, "")
 		return err
 	}
 	defer os.RemoveAll(jobWorkspace)
@@ -442,7 +534,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 					Timestamp: time.Now(),
 					Level:     "ERROR",
 					Message:   err.Error(),
-				}}, nil)
+				}}, "")
 				return err
 			}
 		}
@@ -461,7 +553,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			Timestamp: time.Now(),
 			Level:     "ERROR",
 			Message:   err.Error(),
-		}}, nil)
+		}}, "")
 		return err
 	}
 	exec.UseCopy = true
@@ -518,7 +610,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				Timestamp: time.Now(),
 				Level:     "ERROR",
 				Message:   err.Error(),
-			}}, nil)
+			}}, "")
 			return err
 		}
 		if step.Env == nil {
@@ -532,7 +624,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 					Timestamp: time.Now(),
 					Level:     "ERROR",
 					Message:   err.Error(),
-				}}, nil)
+				}}, "")
 				return err
 			}
 
@@ -565,7 +657,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				if entry, hit := cas.Lookup(hash); hit {
 					fmt.Printf("[agent %s] cache hit for step %s\n",
 						a.id[:8], step.ID)
-					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), nil)
+					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "")
 				}
 			}
 		}
@@ -579,7 +671,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				Timestamp: time.Now(),
 				Level:     "ERROR",
 				Message:   fmt.Sprintf("artifact download failed: %v", err),
-			}}, nil)
+			}}, "")
 		}
 	}
 
@@ -646,13 +738,9 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 
 	// For generator steps, parse the emitted step definitions from stdout.
-	var emittedSteps []api.StepDef
+	var emittedStepsJSON string
 	if result != nil && len(result.GeneratedStepsJSON) > 0 && exitCode == 0 {
-		if err := json.Unmarshal(result.GeneratedStepsJSON, &emittedSteps); err != nil {
-			fmt.Printf("[agent %s] failed to parse generator output: %v\n", a.id[:8], err)
-		} else {
-			fmt.Printf("[agent %s] generator emitting %d steps\n", a.id[:8], len(emittedSteps))
-		}
+		emittedStepsJSON = string(result.GeneratedStepsJSON)
 	}
 
 	// Upload artifacts declared by this step (only on success)
@@ -660,7 +748,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		a.uploadArtifacts(spec, jobWorkspace)
 	}
 
-	return a.reportComplete(spec, exitCode, elapsed.Milliseconds(), logEvents, emittedSteps)
+	return a.reportComplete(spec, exitCode, elapsed.Milliseconds(), logEvents, emittedStepsJSON)
 }
 
 // heartbeatLoop sends heartbeats every heartbeatInterval until done is closed.
@@ -716,79 +804,63 @@ func (a *Agent) lease(ctx context.Context) (*api.JobSpec, bool, error) {
 	return leaseResp.Job, true, nil
 }
 
-// heartbeat notifies the scheduler that this agent is still alive.
+// heartbeat notifies the scheduler that this agent is still alive via gRPC.
 func (a *Agent) heartbeat(jobID, leaseID string) error {
-	body, _ := json.Marshal(api.HeartbeatRequest{
-		LeaseID: leaseID,
-		AgentID: a.id,
-	})
-
-	resp, err := a.authPost(
-		fmt.Sprintf("%s/api/v1/jobs/%s/heartbeat", a.schedulerURL, jobID),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) // Drain body to allow connection reuse.
-
-	if resp.StatusCode == http.StatusConflict {
-		return fmt.Errorf("lease reclaimed by scheduler")
+	a.out <- &pb.AgentMessage{
+		Payload: &pb.AgentMessage_Heartbeat{
+			Heartbeat: &pb.HeartbeatRequest{
+				JobId:   jobID,
+				LeaseId: leaseID,
+			},
+		},
 	}
 	return nil
 }
 
-// reportComplete sends the job result to the scheduler.
-func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64, logs []api.LogEvent, emittedSteps []api.StepDef) error {
-	body, _ := json.Marshal(api.CompleteRequest{
-		LeaseID:      spec.LeaseID,
-		AgentID:      a.id,
-		ExitCode:     exitCode,
-		Duration:     durationMs,
-		LogEvents:    logs,
-		EmittedSteps: emittedSteps,
-	})
-
-	resp, err := a.authPost(
-		fmt.Sprintf("%s/api/v1/jobs/%s/complete", a.schedulerURL, spec.JobID),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return fmt.Errorf("reporting completion: %w", err)
+// reportComplete sends the job result to the scheduler via gRPC.
+func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64, logs []api.LogEvent, emittedStepsJSON string) error {
+	pbLogs := make([]*pb.LogEvent, len(logs))
+	for i, l := range logs {
+		pbLogs[i] = &pb.LogEvent{
+			Ts:      timestamppb.New(l.Timestamp),
+			Level:   l.Level,
+			Message: l.Message,
+		}
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	a.out <- &pb.AgentMessage{
+		Payload: &pb.AgentMessage_Complete{
+			Complete: &pb.CompleteRequest{
+				JobId:            spec.JobID,
+				LeaseId:          spec.LeaseID,
+				ExitCode:         int32(exitCode),
+				DurationMs:       durationMs,
+				Logs:             pbLogs,
+				EmittedStepsJson: emittedStepsJSON,
+			},
+		},
+	}
 	return nil
 }
 
-// reportSkipped marks a job as skipped when its runtime condition is false.
-// The scheduler treats "skipped" identically to "passed" for dependency purposes.
+// reportSkipped marks a job as skipped via gRPC.
 func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 	fmt.Printf("[agent %s] step %s skipped — condition %q evaluated to false\n",
 		a.id[:8], spec.StepID, condition)
-	body, _ := json.Marshal(api.CompleteRequest{
-		LeaseID: spec.LeaseID,
-		AgentID: a.id,
-		LogEvents: []api.LogEvent{{
-			Timestamp: time.Now(),
-			Level:     "INFO",
-			Message:   fmt.Sprintf("◯ step skipped: condition %q is false", condition),
-		}},
-		Skipped: true,
-	})
-	resp, err := a.authPost(
-		fmt.Sprintf("%s/api/v1/jobs/%s/complete", a.schedulerURL, spec.JobID),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return fmt.Errorf("reporting skip: %w", err)
+	pbLogs := []*pb.LogEvent{{
+		Ts:      timestamppb.Now(),
+		Level:   "INFO",
+		Message: fmt.Sprintf("◯ step skipped: condition %q is false", condition),
+	}}
+	a.out <- &pb.AgentMessage{
+		Payload: &pb.AgentMessage_Complete{
+			Complete: &pb.CompleteRequest{
+				JobId:    spec.JobID,
+				LeaseId:  spec.LeaseID,
+				ExitCode: 0,
+				Logs:     pbLogs,
+			},
+		},
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -1378,20 +1450,23 @@ func (a *Agent) rebaseURL(rawURL string) string {
 }
 
 func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
-	body, _ := json.Marshal(api.AppendLogsRequest{
-		LeaseID: leaseID,
-		Events:  events,
-	})
-	resp, err := a.authPost(
-		fmt.Sprintf("%s/api/v1/jobs/%s/logs", a.schedulerURL, jobID),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return
+	pbEvents := make([]*pb.LogEvent, len(events))
+	for i, e := range events {
+		pbEvents[i] = &pb.LogEvent{
+			Ts:      timestamppb.New(e.Timestamp),
+			Level:   e.Level,
+			Message: e.Message,
+		}
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	a.out <- &pb.AgentMessage{
+		Payload: &pb.AgentMessage_LogBatch{
+			LogBatch: &pb.LogBatch{
+				JobId:   jobID,
+				LeaseId: leaseID,
+				Events:  pbEvents,
+			},
+		},
+	}
 }
 
 func (a *Agent) handleTerminalRequest(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {
@@ -1794,7 +1869,7 @@ func (a *Agent) downloadFile(downloadURL, dest string) error {
 func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace string) error {
 	ref := spec.PipelineRef
 	if ref == nil || ref.Path == "" {
-		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), nil)
+		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), "")
 	}
 
 	start := time.Now()
@@ -1819,7 +1894,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	childPipeline, err := compiler.Compile(pipelinePath)
 	if err != nil {
 		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("compile %s: %v", ref.Path, err))...)
-		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, nil)
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "")
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("compiled child pipeline %q (%d steps)", childPipeline.Name, len(childPipeline.Steps)))...)
 
@@ -1860,7 +1935,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {
 		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("submit child run: %v", err))...)
-		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, nil)
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "")
 	}
 	defer submitResp.Body.Close()
 
@@ -1868,13 +1943,13 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	json.NewDecoder(submitResp.Body).Decode(&runResp)
 	if runResp.RunID == "" {
 		logs = append(logs, pipelineLog("ERROR", "scheduler returned empty run ID")...)
-		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, nil)
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "")
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("child run submitted: %s", runResp.RunID[:8]))...)
 
 	if !ref.Wait {
 		logs = append(logs, pipelineLog("INFO", "fire-and-forget — not waiting for child run")...)
-		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, nil)
+		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "")
 	}
 
 	// Poll until the child run finishes.
@@ -1898,7 +1973,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		}
 	}
 
-	return a.reportComplete(spec, exitCode, time.Since(start).Milliseconds(), logs, nil)
+	return a.reportComplete(spec, exitCode, time.Since(start).Milliseconds(), logs, "")
 }
 
 // waitForChildRun polls the scheduler every 5 seconds until the run reaches a terminal state. Reruns the

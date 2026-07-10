@@ -11,10 +11,10 @@
     import PoliciesView from './lib/components/PoliciesView.svelte';
     import TokensView from './lib/components/TokensView.svelte';
 
-    import { api, authUrl, type Job, type RunDetail } from './lib/api';
+    import { api, authUrl, wsUrl, type Job, type RunDetail } from './lib/api';
     import { activeRun, selectedJob, connStatus, authRequired, runs, currentView } from './lib/stores';
 
-    let sse: EventSource | null = null;
+    let ws: WebSocket | null = null;
     let debugSession: { sessionID: string | null, expiresInS: number, status: 'starting' | 'ready' | 'closed' } = {
         sessionID: null,
         expiresInS: 0,
@@ -22,9 +22,9 @@
     };
 
     async function selectRun(runID: string) {
-        if (sse) {
-            sse.close();
-            sse = null;
+        if (ws) {
+            ws.close();
+            ws = null;
         }
 
         activeRun.set(null);
@@ -39,11 +39,11 @@
 
         activeRun.set(detail);
         
-        // Open SSE for live updates
-        sse = new EventSource(authUrl(`/api/v1/runs/${runID}/events`));
-        sse.onopen = () => connStatus.set('live');
-        sse.onerror = () => connStatus.set('reconnecting');
-        sse.onmessage = (e) => {
+        // Open WebSocket for live updates
+        ws = new WebSocket(wsUrl(`/api/v1/runs/${runID}/events`));
+        ws.onopen = () => connStatus.set('live');
+        ws.onerror = () => connStatus.set('reconnecting');
+        ws.onmessage = (e) => {
             const updated: RunDetail = JSON.parse(e.data);
             activeRun.set(updated);
             
@@ -59,8 +59,8 @@
 
             if (updated.status === 'passed' || updated.status === 'failed') {
                 connStatus.set('done');
-                sse?.close();
-                sse = null;
+                ws?.close();
+                ws = null;
             }
         };
     }
@@ -77,8 +77,8 @@
 
         debugSession = { sessionID: info.session_id, status: 'starting', expiresInS: info.expires_in_s };
 
-        const debugSse = new EventSource(authUrl(`/api/v1/debug/${info.session_id}/stream`));
-        debugSse.onmessage = (e) => {
+        const debugWs = new WebSocket(wsUrl(`/api/v1/debug/${info.session_id}/stream`));
+        debugWs.onmessage = (e) => {
             const evt = JSON.parse(e.data);
             if (evt.type === 'ready') {
                 debugSession.status = 'ready';
@@ -88,10 +88,10 @@
             }
             if (evt.type === 'closed') {
                 debugSession.status = 'closed';
-                debugSse.close();
+                debugWs.close();
             }
         };
-        debugSse.onerror = () => {
+        debugWs.onerror = () => {
             if (debugSession.status !== 'closed') {
                 debugSession.status = 'starting';
             }
@@ -116,7 +116,7 @@
 
         return () => {
             unsubscribe();
-            sse?.close();
+            ws?.close();
         };
     });
 </script>

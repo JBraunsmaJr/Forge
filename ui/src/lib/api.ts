@@ -24,6 +24,13 @@ export function authUrl(url: string): string {
     return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t);
 }
 
+export function wsUrl(url: string): string {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = location.host;
+    const fullUrl = protocol + '//' + host + url;
+    return authUrl(fullUrl);
+}
+
 import { authRequired } from './stores';
 
 async function fetchAuth(url: string, opts: RequestInit = {}): Promise<Response | null> {

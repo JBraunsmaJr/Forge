@@ -6,6 +6,7 @@ services:
       FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
       FORGE_VAULT_ADDR: ${FORGE_VAULT_ADDR}
       FORGE_VAULT_TOKEN: ${FORGE_VAULT_TOKEN}
+      FORGE_GRPC_ADDR: ${FORGE_GRPC_ADDR}
       # The network that job containers will be attached to.
       # Ensure this network exists or let compose create it.
       FORGE_DOCKER_NETWORK: ${FORGE_DOCKER_NETWORK:-forge_agent_network}

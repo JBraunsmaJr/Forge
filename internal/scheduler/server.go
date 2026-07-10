@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -22,11 +23,13 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
+	"github.com/JBraunsmaJr/forge/internal/pb"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
 )
 
 //go:embed all:web/dist/*
@@ -184,12 +187,32 @@ func (s *Server) Start(ctx context.Context) error {
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
 	mux.HandleFunc("GET /api/v1/runs/{id}/detail", s.handleRunDetail)
-	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEvents)
+	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEventsWS)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.handleJobLogs)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
-	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStream)
+	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
 
-	// Agent protocol
+	// Start gRPC server for internal communication (agents)
+	grpcAddr := getenv("FORGE_GRPC_ADDR", ":50051")
+	lis, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		fmt.Printf("[scheduler] failed to listen for gRPC: %v\n", err)
+	} else {
+		gsrv := grpc.NewServer()
+		pb.RegisterAgentServiceServer(gsrv, &grpcServer{scheduler: s})
+		go func() {
+			fmt.Printf("[scheduler] gRPC server listening at %v\n", lis.Addr())
+			if err := gsrv.Serve(lis); err != nil {
+				fmt.Printf("[scheduler] gRPC server error: %v\n", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			gsrv.GracefulStop()
+		}()
+	}
+
+	// Agent protocol (legacy HTTP - kept for compatibility)
 	mux.HandleFunc("POST /api/v1/jobs/lease", s.handleLease)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/complete", s.handleComplete)
@@ -197,7 +220,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Debug sesion - browser side.
 	mux.HandleFunc("POST /api/v1/debug", s.handleCreateDebugSession)
 	mux.HandleFunc("GET /api/v1/debug/{id}", s.handleGetDebugSession)
-	mux.HandleFunc("GET /api/v1/debug/{id}/stream", s.handleDebugStream)
+	mux.HandleFunc("GET /api/v1/debug/{id}/stream", s.handleDebugStreamWS)
 	mux.HandleFunc("POST /api/v1/debug/{id}/exec", s.handleDebugExec)
 	mux.HandleFunc("DELETE /api/v1/debug/{id}", s.handleCloseDebugSession)
 	mux.HandleFunc("POST /api/v1/debug/{id}/cancel", s.handleCancelDebugCommand)
@@ -751,6 +774,13 @@ func (s *Server) publishRunDetail(runID string) {
 	if detail, ok := s.store.RunDetail(runID); ok {
 		data, _ := json.Marshal(detail)
 		s.broker.Publish(runID, string(data))
+	}
+}
+
+func (s *Server) publishJobLogs(jobID string, events []api.LogEvent) {
+	for _, e := range events {
+		data, _ := json.Marshal(e)
+		s.broker.Publish("log:"+jobID, string(data))
 	}
 }
 

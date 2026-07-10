@@ -11,6 +11,7 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_DB_URL`         | —                        | **Required.** PostgreSQL connection string. Format: `postgres://user:pass@host:port/dbname?sslmode=disable`                        |
 | `FORGE_ROOT_TOKEN`     | —                        | Pre-set admin token for reproducible environments (compose, CI). If unset, a random token is generated and printed on first start. |
 | `FORGE_BASE_URL`       | `http://localhost{addr}` | Public URL of this scheduler. Used to construct artifact download URLs for the local backend.                                      |
+| `FORGE_GRPC_ADDR`     | `:50051`                 | Listen address for gRPC agent communication.                                                                                       |
 | `FORGE_ARTIFACT_STORE` | `local`                  | Artifact backend: `local` or `s3`.                                                                                                 |
 | `FORGE_ARTIFACT_DIR`   | `/data/artifacts`        | Directory for local artifact storage.                                                                                              |
 | `FORGE_S3_ENDPOINT`    | —                        | S3-compatible endpoint URL. Leave empty for AWS S3. Example: `http://minio:9000`.                                                  |
@@ -32,9 +33,19 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_API_TOKEN`     | —                | **Required.** API token for scheduler authentication. Use a token with the `agent` role.                                 |
 | `FORGE_VAULT_ADDR`    | —                | Vault server address. Required for steps that use `secrets:`. Example: `http://vault:8200`.                              |
 | `FORGE_VAULT_TOKEN`   | —                | Vault authentication token.                                                                                              |
+| `FORGE_GRPC_ADDR`    | —                | Optional. Explicit `host:port` for the gRPC session (e.g. `scheduler:50051`). If unset, derived from scheduler URL. |
 | `FORGE_AGENT_WS_ADDR` | `localhost:8082` | Public host:port for the agent's WebSocket debug terminal server. Set to the machine's LAN IP for remote browser access. |
 | `FORGE_DOCKER_MAX_GB`      | `50`             | Max GB Docker is allowed to use before LRU eviction triggers.                                                            |
 | `FORGE_DOCKER_MAX_PERCENT` | `80`             | Max disk usage percentage before LRU eviction triggers.                                                                 |
+
+---
+
+## Agent gRPC Connection
+
+The agent connects to the scheduler via gRPC on port `50051` by default. 
+
+- If `FORGE_GRPC_ADDR` is set, the agent uses that address (stripping any `http://` or `https://` prefixes if present). It must be in `host:port` format.
+- If `FORGE_GRPC_ADDR` is NOT set, the agent derives the gRPC address from the scheduler's HTTP URL (e.g., `http://master.badger.net:8080` -> `master.badger.net:50051`).
 
 ---
 
@@ -80,6 +91,7 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 | Port | Service    | Description              |
 |------|------------|--------------------------|
 | 8080 | Scheduler  | HTTP API + Web UI        |
+| 50051| Scheduler  | gRPC Agent Communication  |
 | 8082 | Agent 1    | WebSocket debug terminal |
 | 8083 | Agent 2    | WebSocket debug terminal |
 | 5432 | PostgreSQL | Database                 |
