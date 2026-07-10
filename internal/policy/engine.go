@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -108,29 +109,48 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 
 	switch {
 	case t.Image != "":
-		args := []string{
-			"run", "--rm", "-i",
+		// 1. Create the container
+		createArgs := []string{
+			"create", "--interactive",
 			"--label", "forge.managed=true",
 			"--label", "forge.policy=true",
 		}
-		if input.WorkspaceDir != "" {
-
-			wsDir := strings.ReplaceAll(input.WorkspaceDir, `\`, `/`)
-			args = append(args, "--volume", wsDir+":/workspace:ro")
-		}
-
-		// Use entrypoint to override the Dockerfile ENTRYPOINT explicitly.
-		// Otherwise Docker preprends the image's ENTRYPOINT to our command
 		if len(t.Command) > 0 {
-			args = append(args, "--entrypoint", t.Command[0])
-			args = append(args, t.Image)
-			args = append(args, t.Command[1:]...)
+			createArgs = append(createArgs, "--entrypoint", t.Command[0])
+			createArgs = append(createArgs, t.Image)
+			createArgs = append(createArgs, t.Command[1:]...)
 		} else {
-
-			args = append(args, t.Image)
+			createArgs = append(createArgs, t.Image)
 		}
 
-		cmd = exec.CommandContext(ctx, "docker", args...)
+		createCmd := exec.CommandContext(ctx, "docker", createArgs...)
+		createOut, err := createCmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("docker create failed: %w\n%s", err, string(createOut))
+		}
+		containerID := strings.TrimSpace(string(createOut))
+
+		// Ensure cleanup
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", containerID).Run()
+		}()
+
+		// 2. Copy workspace if provided
+		if input.WorkspaceDir != "" {
+			src := filepath.Clean(input.WorkspaceDir)
+			// Ensure trailing slash and dot for content-only copy
+			srcPath := src + string(filepath.Separator) + "."
+
+			cpCmd := exec.CommandContext(ctx, "docker", "cp", srcPath, containerID+":/workspace")
+			if cpOut, err := cpCmd.CombinedOutput(); err != nil {
+				return nil, fmt.Errorf("docker cp failed: %w\n%s", err, string(cpOut))
+			}
+		}
+
+		// 3. Prepare the start command (will be streamed below)
+		cmd = exec.CommandContext(ctx, "docker", "start", "--attach", "--interactive", containerID)
 
 	case t.Script != "":
 		cmd = exec.CommandContext(ctx, "sh", "-c", t.Script)

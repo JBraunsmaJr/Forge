@@ -52,7 +52,7 @@ get() {
 }
 
 # ── Create or reuse default org ───────────────────────────────────────────────
-divider "Organisation"
+divider "Organization"
 EXISTING_ID=$(get "/api/v1/orgs" | jq -r '.[] | select(.name=="default") | .id' 2>/dev/null || true)
 
 if [ -n "${EXISTING_ID}" ]; then
@@ -87,7 +87,7 @@ register_policy "container-security" '{
   "name": "container-security",
   "description": "Injects Trivy vulnerability scan after every docker build step",
   "transformer": {
-    "image":   "forge-security-policies:latest",
+    "image":   "ghcr.io/jbraunsmajr/forge/forge-security-policies:latest",
     "command": ["python3", "/policies/container-security.py"],
     "timeout": "60s"
   }
@@ -95,14 +95,14 @@ register_policy "container-security" '{
 
 # ── Language security policy ──────────────────────────────────────────────────
 register_policy "language-security" '{
-  "name": "language-security",
-  "description": "Injects language-appropriate security scans based on workspace files",
-  "transformer": {
-    "image":   "forge-security-policies:latest",
-    "command": ["python3", "/policies/language-security.py"],
-    "timeout": "60s"
-  }
-}'
+   "name": "language-security",
+   "description": "Injects language-appropriate security scans based on workspace files",
+   "transformer": {
+     "image":   "ghcr.io/jbraunsmajr/forge/forge-security-policies:latest",
+     "command": ["python3", "/policies/language-security.py"],
+     "timeout": "60s"
+   }
+ }'
 
 # ── Agent token (least-privilege) ─────────────────────────────────────────────
 divider "Agent token"

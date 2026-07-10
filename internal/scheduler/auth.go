@@ -225,6 +225,24 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 		id, hash,
 	)
 
+	// Also bootstrap an agent token if provided via environment.
+	// This ensures that distributed deployments (where init.sh might not run)
+	// can still have authenticated agents.
+	agentToken := os.Getenv("FORGE_AGENT_TOKEN")
+	if agentToken == "" {
+		agentToken = os.Getenv("FORGE_API_TOKEN")
+	}
+
+	if agentToken != "" && agentToken != rawToken {
+		ahash := hashToken(agentToken)
+		aid := newID()[:12]
+		ts.db.Exec(
+			`INSERT INTO api_tokens (id, token_hash, name, role, expires_at) VALUES ($1,$2,'default-agent','agent', NULL)`,
+			aid, ahash,
+		)
+		fmt.Printf("[auth] agent token initialised from environment\n")
+	}
+
 	if preset != "" {
 		fmt.Printf("[auth] root token initialised from FORGE_ROOT_TOKEN\n")
 		return

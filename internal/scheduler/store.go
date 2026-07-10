@@ -153,6 +153,8 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
 			jobs.timeout_ns, jobs.secret_names, jobs.step_type,
 			jobs.docker_socket,
+			COALESCE(jobs.condition, ''),
+			jobs.always_run,
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]')
@@ -169,12 +171,16 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		workDir                                    string
 		timeoutNS                                  int64
 		dockerSocket                               bool
+		condition                                  string
+		alwaysRun                                  bool
 	)
 	err := row.Scan(
 		&jobID, &runID, &stepID, &image, &entrypointJSON,
 		&commandJSON, &workDir, &envJSON, &inputsJSON,
 		&timeoutNS, &secretsJSON, &stepType,
 		&dockerSocket,
+		&condition,
+		&alwaysRun,
 		&pipelineRefJSON,
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 	)
@@ -227,6 +233,8 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		SecretNames:       secretNames,
 		DockerSocket:      dockerSocket,
 		Type:              stepType,
+		Condition:         condition,
+		AlwaysRun:         alwaysRun,
 		OrgID:             orgID,
 		ProjectID:         projectID,
 		CommitSHA:         commitSHA,
@@ -284,7 +292,7 @@ func (s *Store) ReclaimStaleJobs() int {
 // Complete marks a job done, stores its logs, adds any emitted steps,
 // and unblocks downstream jobs whose dependencies are now satisfied.
 func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
-	logs []api.LogEvent, emittedSteps []api.StepDef) (string, error) {
+	logs []api.LogEvent, emittedSteps []api.StepDef, skipped bool) (string, error) {
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -293,7 +301,9 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 	defer tx.Rollback()
 
 	status := "passed"
-	if exitCode != 0 {
+	if skipped {
+		status = "skipped"
+	} else if exitCode != 0 {
 		status = "failed"
 	}
 	var runID, stepID string

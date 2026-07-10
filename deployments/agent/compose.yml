@@ -6,14 +6,14 @@ services:
       FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
       FORGE_VAULT_ADDR: ${FORGE_VAULT_ADDR}
       FORGE_VAULT_TOKEN: ${FORGE_VAULT_TOKEN}
-      FORGE_AGENT_WS_PORT: "${FORGE_AGENT_WS_PORT:-8082}"
       # The network that job containers will be attached to.
       # Ensure this network exists or let compose create it.
       FORGE_DOCKER_NETWORK: ${FORGE_DOCKER_NETWORK:-forge_agent_network}
+      FORGE_AGENT_CONCURRENCY: "${FORGE_AGENT_CONCURRENCY:-1}"
+      FORGE_WORKSPACE: ${FORGE_WORKSPACE:-/tmp/forge}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp:/tmp
-    working_dir: /tmp
+    working_dir: /tmp/forge
     restart: unless-stopped
     deploy:
       replicas: ${AGENT_REPLICAS:-1}
@@ -22,4 +22,5 @@ services:
 
 networks:
   forge_agent_network:
+    name: forge_agent_network
     driver: bridge

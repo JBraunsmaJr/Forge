@@ -71,14 +71,23 @@ func (o *OrgStore) CreatePolicy(orgID string, req api.CreatePolicyRequest) (*api
 	}
 
 	id := newID()[:12]
-	stepsJSON, _ := json.Marshal(req.Steps)
+	stepsJSON, err := json.Marshal(req.Steps)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling steps: %w", err)
+	}
 	var transformerJSON []byte
 	if req.Transformer != nil {
-		transformerJSON, _ = json.Marshal(req.Transformer)
+		if req.Transformer.Image == "" && req.Transformer.Script == "" {
+			return nil, fmt.Errorf("transformer must specify either 'image' or 'script'")
+		}
+		transformerJSON, err = json.Marshal(req.Transformer)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling transformer: %w", err)
+		}
 	}
 
 	var createdAt time.Time
-	err := o.db.QueryRow(`
+	err = o.db.QueryRow(`
 		INSERT INTO policies (id, org_id, name, description, steps, transformer, forbid_override)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		RETURNING created_at`,
@@ -119,18 +128,26 @@ func (o *OrgStore) GetPolicies(orgID string) ([]api.PolicyInfo, bool) {
 	for rows.Next() {
 		var p api.PolicyInfo
 		var stepsJSON []byte
-		var transformerJSON sql.NullString
-		rows.Scan(&p.ID, &p.Name, &p.Description, &stepsJSON,
+		var transformerJSON []byte
+		err := rows.Scan(&p.ID, &p.Name, &p.Description, &stepsJSON,
 			&transformerJSON, &p.ForbidOverride, &p.CreatedAt)
-		json.Unmarshal(stepsJSON, &p.Steps)
-		if transformerJSON.Valid && transformerJSON.String != "" {
+		if err != nil {
+			continue
+		}
+		_ = json.Unmarshal(stepsJSON, &p.Steps)
+		if len(transformerJSON) > 0 && string(transformerJSON) != "null" {
 			var t api.PolicyTransformer
-			if err := json.Unmarshal([]byte(transformerJSON.String), &t); err == nil {
-				p.Transformer = &t
+			if err := json.Unmarshal(transformerJSON, &t); err == nil {
+				if t.Image != "" || t.Script != "" {
+					p.Transformer = &t
+				}
 			}
 		}
 		p.OrgID = orgID
 		result = append(result, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false
 	}
 	return result, true
 }
@@ -146,4 +163,47 @@ func (o *OrgStore) DeletePolicy(orgID, policyID string) error {
 		return fmt.Errorf("policy %s not found in org %s", policyID, orgID)
 	}
 	return nil
+}
+
+func (o *OrgStore) UpdatePolicy(orgID, policyID string, req api.UpdatePolicyRequest) (*api.PolicyInfo, error) {
+	stepsJSON, err := json.Marshal(req.Steps)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling steps: %w", err)
+	}
+	var transformerJSON []byte
+	if req.Transformer != nil {
+		if req.Transformer.Image == "" && req.Transformer.Script == "" {
+			return nil, fmt.Errorf("transformer must specify either 'image' or 'script'")
+		}
+		transformerJSON, err = json.Marshal(req.Transformer)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling transformer: %w", err)
+		}
+	}
+
+	var createdAt time.Time
+	err = o.db.QueryRow(`
+		UPDATE policies 
+		SET name=$3, description=$4, steps=$5, transformer=$6, forbid_override=$7
+		WHERE id=$1 AND org_id=$2
+		RETURNING created_at`,
+		policyID, orgID, req.Name, req.Description, stepsJSON, transformerJSON, req.ForbidOverride,
+	).Scan(&createdAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("policy %s not found in org %s", policyID, orgID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("updating policy: %w", err)
+	}
+
+	return &api.PolicyInfo{
+		ID:             policyID,
+		OrgID:          orgID,
+		Name:           req.Name,
+		Description:    req.Description,
+		Steps:          req.Steps,
+		Transformer:    req.Transformer,
+		ForbidOverride: req.ForbidOverride,
+		CreatedAt:      createdAt,
+	}, nil
 }

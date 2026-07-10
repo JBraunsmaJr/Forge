@@ -15,9 +15,18 @@ import glob
 WORKSPACE = "/workspace"
 
 def workspace_find(f):
-    matches = [match for match in glob.glob(f"**/{f}", root_dir=WORKSPACE, recursive=True)
-               if os.path.isfile(os.path.join(WORKSPACE, match))]
-    return matches[0] if matches else None
+    # Check root first (fastest and most robust for many policies)
+    if os.path.isfile(os.path.join(WORKSPACE, f)):
+        return f
+    
+    # Fallback to recursive search for nested projects (e.g. monorepos)
+    try:
+        matches = [match for match in glob.glob(f"**/{f}", root_dir=WORKSPACE, recursive=True)
+                   if os.path.isfile(os.path.join(WORKSPACE, match))]
+        return matches[0] if matches else None
+    except Exception as e:
+        print(f"DEBUG: glob error for {f}: {e}", file=sys.stderr)
+        return None
 
 def workspace_has(*files):
     for f in files:

@@ -54,10 +54,21 @@ docker compose up -d --scale agent=3
 | `FORGE_AGENT_TOKEN`   | Must match the token configured on the scheduler.              | `forge-dev-agent-token` |
 | `AGENT_REPLICAS`      | Number of agents to run (used if using `docker stack deploy`). | `1`                     |
 | `FORGE_VAULT_ADDR`    | Address of the Vault server (optional).                        | -                       |
+| `FORGE_AGENT_CONCURRENCY` | Max concurrent jobs this agent can run.                    | `1`                     |
+| `FORGE_WORKSPACE`     | Path where the agent stores job workspaces.                    | `/tmp/forge`            |
 
 **Note on Scaling:**
-You can scale the number of agents on a node using the `--scale` flag with `docker compose`:
+To scale your Forge cluster, you have two options:
+
+1. **Horizontal Scaling (Multiple Nodes)**: Run one agent per physical/virtual host. This is the recommended way to scale for high availability and resource isolation.
+2. **Vertical Scaling (Concurrent Jobs)**: Increase `FORGE_AGENT_CONCURRENCY` on a single agent. This allows one agent to handle multiple jobs simultaneously.
+3. **Container Scaling (Multiple Agents)**: Use the `--scale` flag in Docker Compose to run multiple agent containers on one host. This is now safe and won't cause port conflicts.
+
+**Scaling with Docker Compose:**
+You can scale the number of agents on a node using the `--scale` flag. Since agents use a 'Reverse WebSocket' model for debug sessions, they do not need to expose any ports, and you can run multiple agent containers on the same host without port conflicts.
+
 ```bash
+# Scale to 5 agent containers on one host
 docker compose up -d --scale agent=5
 ```
 

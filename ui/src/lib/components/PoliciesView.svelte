@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { api, type Policy, type Org } from '../api';
-    import { Plus, ShieldCheck, Trash2 } from '@lucide/svelte';
+    import { Plus, ShieldCheck, Trash2, Edit } from '@lucide/svelte';
 
     let policies: Policy[] = [];
     let orgs: Org[] = [];
@@ -9,11 +9,13 @@
     let selectedOrgId = '';
     
     let showCreate = false;
+    let editingPolicyId: string | null = null;
     let newPolicy = {
         name: '',
         description: '',
         steps_json: '[]',
-        forbid_override: true
+        transformer_json: '',
+        forbid_override: false
     };
 
     async function loadData() {
@@ -39,24 +41,61 @@
         policies = await api.listPolicies(selectedOrgId);
     }
 
-    async function createPolicy() {
+    async function savePolicy() {
         if (!newPolicy.name || !selectedOrgId) return;
         try {
             const steps = JSON.parse(newPolicy.steps_json);
-            const pol = await api.createPolicy(selectedOrgId, {
-                name: newPolicy.name,
-                description: newPolicy.description,
-                steps: steps,
-                forbid_override: newPolicy.forbid_override
-            });
-            if (pol) {
-                newPolicy = { name: '', description: '', steps_json: '[]', forbid_override: true };
-                showCreate = false;
-                await refreshPolicies();
+            let transformer = null;
+            if (newPolicy.transformer_json && newPolicy.transformer_json.trim()) {
+                transformer = JSON.parse(newPolicy.transformer_json);
+            }
+            
+            if (editingPolicyId) {
+                const pol = await api.updatePolicy(selectedOrgId, editingPolicyId, {
+                    name: newPolicy.name,
+                    description: newPolicy.description,
+                    steps: steps,
+                    transformer: transformer,
+                    forbid_override: newPolicy.forbid_override
+                });
+                if (pol) {
+                    resetForm();
+                    await refreshPolicies();
+                }
+            } else {
+                const pol = await api.createPolicy(selectedOrgId, {
+                    name: newPolicy.name,
+                    description: newPolicy.description,
+                    steps: steps,
+                    transformer: transformer,
+                    forbid_override: newPolicy.forbid_override
+                });
+                if (pol) {
+                    resetForm();
+                    await refreshPolicies();
+                }
             }
         } catch (e) {
-            alert('Invalid JSON for steps: ' + e);
+            alert('Invalid JSON: ' + e);
         }
+    }
+
+    function resetForm() {
+        newPolicy = { name: '', description: '', steps_json: '[]', transformer_json: '', forbid_override: false };
+        showCreate = false;
+        editingPolicyId = null;
+    }
+
+    function startEdit(policy: Policy) {
+        newPolicy = {
+            name: policy.name,
+            description: policy.description,
+            steps_json: JSON.stringify(policy.steps || [], null, 2),
+            transformer_json: policy.transformer ? JSON.stringify(policy.transformer, null, 2) : '',
+            forbid_override: policy.forbid_override
+        };
+        editingPolicyId = policy.id;
+        showCreate = true;
     }
 
     async function deletePolicy(id: string) {
@@ -87,7 +126,7 @@
 
     {#if showCreate}
         <div class="create-card card">
-            <h3>Create New Policy</h3>
+            <h3>{editingPolicyId ? 'Edit Policy' : 'Create New Policy'}</h3>
             <div class="form-group">
                 <label for="pol-name">Policy Name</label>
                 <input id="pol-name" type="text" bind:value={newPolicy.name} placeholder="security-scan" />
@@ -98,8 +137,13 @@
             </div>
             <div class="form-group">
                 <label for="pol-steps">Steps (JSON Array)</label>
-                <textarea id="pol-steps" bind:value={newPolicy.steps_json} rows="8"></textarea>
+                <textarea id="pol-steps" bind:value={newPolicy.steps_json} rows="6"></textarea>
                 <small>See <a href="https://github.com/JBraunsmaJr/forge/blob/main/docs/pipeline-reference.md" target="_blank" rel="noopener noreferrer">docs</a> for step schema.</small>
+            </div>
+            <div class="form-group">
+                <label for="pol-transformer">Transformer (JSON Object)</label>
+                <textarea id="pol-transformer" bind:value={newPolicy.transformer_json} rows="6"></textarea>
+                <small>Optional. Dynamic transformation logic. Use lowercase keys (e.g. "image", "command").</small>
             </div>
             <div class="form-group checkbox">
                 <label>
@@ -108,8 +152,10 @@
                 </label>
             </div>
             <div class="form-actions">
-                <button class="btn-secondary" on:click={() => showCreate = false}>Cancel</button>
-                <button class="btn-primary" on:click={createPolicy} disabled={!newPolicy.name}>Create</button>
+                <button class="btn-secondary" on:click={resetForm}>Cancel</button>
+                <button class="btn-primary" on:click={savePolicy} disabled={!newPolicy.name}>
+                    {editingPolicyId ? 'Save Changes' : 'Create'}
+                </button>
             </div>
         </div>
     {/if}
@@ -146,9 +192,14 @@
                             <span>Created {new Date(policy.created_at).toLocaleDateString()}</span>
                         </div>
                     </div>
-                    <button class="btn-icon btn-danger" on:click={() => deletePolicy(policy.id)} title="Delete Policy">
-                        <Trash2 size={16} />
-                    </button>
+                    <div class="item-actions">
+                        <button class="btn-icon" on:click={() => startEdit(policy)} title="Edit Policy">
+                            <Edit size={16} />
+                        </button>
+                        <button class="btn-icon btn-danger" on:click={() => deletePolicy(policy.id)} title="Delete Policy">
+                            <Trash2 size={16} />
+                        </button>
+                    </div>
                 </div>
             {/each}
         </div>
@@ -267,6 +318,10 @@
     .btn-danger:hover {
         background: var(--red-muted);
         color: var(--red);
+    }
+    .item-actions {
+        display: flex;
+        gap: 4px;
     }
     .item-card {
         display: flex;

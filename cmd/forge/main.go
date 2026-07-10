@@ -324,22 +324,24 @@ func agentCommand() {
 		schedulerURL = os.Args[2]
 	}
 
-	workspaceDir, _ := os.Getwd()
-	cacheDir := filepath.Join(workspaceDir, ".forge", "cache")
+	workspaceDir := os.Getenv("FORGE_WORKSPACE")
+	if workspaceDir == "" {
+		workspaceDir, _ = os.Getwd()
+	}
+	cacheDir := os.Getenv("FORGE_CACHE_DIR")
+	if cacheDir == "" {
+		cacheDir = filepath.Join(workspaceDir, ".forge", "cache")
+	}
+	logDir := os.Getenv("FORGE_LOG_DIR")
+	if logDir == "" {
+		logDir = filepath.Join(workspaceDir, ".forge", "logs")
+	}
 
 	vaultAddr := os.Getenv("FORGE_VAULT_ADDR")
 	vaultToken := os.Getenv("FORGE_VAULT_TOKEN")
 	if vaultAddr != "" {
 		fmt.Printf("[agent] Vault configured at %s\n", vaultAddr)
 	}
-	// FORGE_AGENT_WS_PORT is the public address browsers use to reach this
-	// agent's WebSocket terminal server. Defaults to localhost:8082.
-	wsPort := os.Getenv("FORGE_AGENT_WS_PORT")
-	if wsPort == "" {
-		wsPort = "8082"
-	}
-	fmt.Printf("[agent] terminal server port: %s (scheduler-proxied)\n", wsPort)
-
 	apiToken := os.Getenv("FORGE_API_TOKEN")
 	if apiToken == "" {
 		fmt.Fprintln(os.Stderr, "⚠ FORGE_API_TOKEN not set — scheduler requests will be rejected")
@@ -361,6 +363,11 @@ func agentCommand() {
 		pruneSchedule = "@daily"
 	}
 
+	concurrency, _ := strconv.Atoi(os.Getenv("FORGE_AGENT_CONCURRENCY"))
+	if concurrency == 0 {
+		concurrency = 1
+	}
+
 	tp, err := tracing.InitTracer("forge-agent-" + agentID[:8])
 	if err != nil {
 		fmt.Printf("Warning: failed to initialize tracer: %v\n", err)
@@ -379,7 +386,7 @@ func agentCommand() {
 		cancel()
 	}()
 
-	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, vaultAddr, vaultToken, wsPort, apiToken, maxGB, maxPercent, pruneSchedule)
+	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, maxGB, maxPercent, pruneSchedule, concurrency)
 	if err := a.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		os.Exit(1)

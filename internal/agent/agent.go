@@ -7,10 +7,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,60 +55,65 @@ type Agent struct {
 	schedulerURL string
 	workspaceDir string
 	cacheDir     string
+	logDir       string
 	vault        *secrets.Client
 	client       *http.Client
-	wsListenPort string // port the WS server listens on
 	apiToken     string // FORGE_API_TOKEN — sent with every scheduler request
 	debugConts   sync.Map
+
+	// Concurrency control
+	maxConcurrency int
+	semaphore      chan struct{}
 
 	// Cleanup configuration
 	maxDockerGB      float64
 	maxDockerPercent float64
 	pruneSchedule    string
+	cleanupMu        sync.Mutex
 }
 
 // New creates an agent that connects to schedulerURL.
-func New(id, schedulerURL, workspaceDir, cacheDir, vaultAddr, vaultToken, wsListenPort, apiToken string, maxGB, maxPercent float64, schedule string) *Agent {
+func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken string, maxGB, maxPercent float64, schedule string, concurrency int) *Agent {
 	var vault *secrets.Client
 	if vaultAddr != "" && vaultToken != "" {
 		vault = secrets.NewClient(vaultAddr, vaultToken)
+	}
+	if concurrency < 1 {
+		concurrency = 1
 	}
 	return &Agent{
 		id:               id,
 		schedulerURL:     schedulerURL,
 		workspaceDir:     workspaceDir,
 		cacheDir:         cacheDir,
+		logDir:           logDir,
 		vault:            vault,
-		wsListenPort:     wsListenPort,
 		apiToken:         apiToken,
 		client:           &http.Client{Timeout: 10 * time.Second},
 		maxDockerGB:      maxGB,
 		maxDockerPercent: maxPercent,
 		pruneSchedule:    schedule,
+		maxConcurrency:   concurrency,
+		semaphore:        make(chan struct{}, concurrency),
 	}
-}
-
-func (a *Agent) wsPort() string {
-	if a.wsListenPort == "" {
-		return "8082"
-	}
-	return a.wsListenPort
 }
 
 // Run starts the agent's poll loop. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
 	fmt.Printf("[agent %s] starting, scheduler: %s\n", a.id[:8], a.schedulerURL)
+	fmt.Printf("[agent %s] workspace: %s\n", a.id[:8], a.workspaceDir)
+	fmt.Printf("[agent %s] cache: %s\n", a.id[:8], a.cacheDir)
+	fmt.Printf("[agent %s] logs: %s\n", a.id[:8], a.logDir)
 
 	// Clean up any dangling containers from previous runs.
 	executor.Cleanup()
 	defer executor.Cleanup()
 
-	// Start the WebSocket terminal server so browsers can connect directly.
-	go a.runTerminalServer(ctx)
-
 	// Run both job polling and debug session polling concurrently.
 	go a.debugLoop(ctx)
 	go a.pruneLoop(ctx)
+
+	fmt.Printf("[agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
 
 	for {
 		// Check if we've been asked to stop.
@@ -117,28 +122,43 @@ func (a *Agent) Run(ctx context.Context) error {
 			return nil
 		}
 
-		// Try to lease a job.
-		spec, ok, err := a.lease(ctx)
-		if err != nil {
-			fmt.Printf("[agent %s] lease error: %v\n", a.id[:8], err)
-			a.sleep(ctx, pollInterval)
-			continue
+		// Wait for capacity before leasing a job.
+		select {
+		case a.semaphore <- struct{}{}:
+			// We have capacity, lease a job.
+			spec, ok, err := a.lease(ctx)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("[agent %s] lease error: %v\n", a.id[:8], err)
+				}
+				<-a.semaphore
+				a.sleep(ctx, pollInterval)
+				continue
+			}
+			if !ok {
+				<-a.semaphore
+				a.sleep(ctx, pollInterval)
+				continue
+			}
+
+			fmt.Printf("[agent %s] received job %s (step: %s)\n",
+				a.id[:8], spec.JobID[:8], spec.StepID)
+
+			go func(s *api.JobSpec) {
+				defer func() {
+					<-a.semaphore
+					// After each job, check disk usage and perform LRU eviction if needed.
+					a.checkDiskUsageAndCleanup()
+				}()
+
+				if err := a.execute(ctx, s); err != nil {
+					fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
+				}
+			}(spec)
+
+		case <-ctx.Done():
+			return nil
 		}
-		if !ok {
-
-			a.sleep(ctx, pollInterval)
-			continue
-		}
-
-		fmt.Printf("[agent %s] received job %s (step: %s)\n",
-			a.id[:8], spec.JobID[:8], spec.StepID)
-
-		if err := a.execute(ctx, spec); err != nil {
-			fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
-		}
-
-		// After each job, check disk usage and perform LRU eviction if needed.
-		a.checkDiskUsageAndCleanup()
 	}
 }
 
@@ -170,6 +190,9 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 }
 
 func (a *Agent) checkDiskUsageAndCleanup() {
+	a.cleanupMu.Lock()
+	defer a.cleanupMu.Unlock()
+
 	// 1. Check Docker disk usage (GB)
 	usageGB, err := a.getDockerUsageGB()
 	if err != nil {
@@ -359,10 +382,6 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	ctx, span := tracing.Tracer().Start(ctx, "agent.execute")
 	defer span.End()
 
-	if spec.Type == "pipeline" {
-		return a.executePipelineStep(ctx, spec)
-	}
-
 	/*
 		Start heartbeat goroutine
 
@@ -371,8 +390,21 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	*/
 	done := make(chan struct{})
 	defer close(done)
-
 	go a.heartbeatLoop(spec.JobID, spec.LeaseID, done)
+
+	/*
+		Runtime Condition Evaluation
+
+		Scheduler already handles success/failure/always conditions via unlockDownstream.
+		Here we're evaluating environment variable conditions such as `$BRANCH == "main"` that
+		can only be resolved at agent runtime because the scheduler doesn't have access to the step's
+		environment
+	*/
+	if cond := spec.Condition; cond != "" &&
+		!isSchedulerCondition(cond) &&
+		!evalRuntimeCondition(cond, spec.Env) {
+		return a.reportSkipped(spec, cond)
+	}
 
 	/*
 		Create isolated workspace
@@ -404,14 +436,25 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		if len(files) == 0 {
 			fmt.Printf("[agent %s] workspace empty, performing checkout for %s @ %s\n",
 				a.id[:8], spec.ProjectID, spec.CommitSHA)
-			a.performDebugCheckout(ctx, jobWorkspace, spec.ProjectID, spec.CommitSHA)
+			if err := a.performCheckout(ctx, jobWorkspace, spec.ProjectID, spec.CommitSHA); err != nil {
+				err = fmt.Errorf("automatic checkout failed: %w", err)
+				a.reportComplete(spec, 1, 0, []api.LogEvent{{
+					Timestamp: time.Now(),
+					Level:     "ERROR",
+					Message:   err.Error(),
+				}}, nil)
+				return err
+			}
 		}
 	}
 
-	exec, err := executor.New(jobWorkspace,
-		filepath.Join(jobWorkspace, ".forge", "logs"),
-		a.cacheDir,
-	)
+	if spec.Type == "pipeline" {
+		return a.executePipelineStep(ctx, spec, jobWorkspace)
+	}
+
+	jobLogDir := filepath.Join(a.logDir, spec.JobID)
+	defer os.RemoveAll(jobLogDir)
+	exec, err := executor.New(jobWorkspace, jobLogDir, a.cacheDir)
 	if err != nil {
 		err = fmt.Errorf("creating executor: %w", err)
 		a.reportComplete(spec, 1, 0, []api.LogEvent{{
@@ -421,6 +464,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		}}, nil)
 		return err
 	}
+	exec.UseCopy = true
 
 	// Convert API Spec -> pipeline.Step
 	step := &pipeline.Step{
@@ -720,6 +764,112 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 	return nil
 }
 
+// reportSkipped marks a job as skipped when its runtime condition is false.
+// The scheduler treats "skipped" identically to "passed" for dependency purposes.
+func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
+	fmt.Printf("[agent %s] step %s skipped — condition %q evaluated to false\n",
+		a.id[:8], spec.StepID, condition)
+	body, _ := json.Marshal(api.CompleteRequest{
+		LeaseID: spec.LeaseID,
+		AgentID: a.id,
+		LogEvents: []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "INFO",
+			Message:   fmt.Sprintf("◯ step skipped: condition %q is false", condition),
+		}},
+		Skipped: true,
+	})
+	resp, err := a.authPost(
+		fmt.Sprintf("%s/api/v1/jobs/%s/complete", a.schedulerURL, spec.JobID),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("reporting skip: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// isSchedulerCondition returns true for conditions the scheduler evaluates
+// itself (success(), failure(), always()).  These must not be re-evaluated
+// by the agent since the scheduler has already acted on them.
+func isSchedulerCondition(cond string) bool {
+	c := strings.TrimSpace(strings.ToLower(cond))
+	return c == "" || c == "success()" || c == "failure()" || c == "always()"
+}
+
+// evalRuntimeCondition evaluates an environment-variable condition expression.
+// Supported syntax:
+//
+//	$VAR == 'value'   — string equality
+//	$VAR != 'value'   — string inequality
+//	$VAR              — truthy: non-empty
+//	!$VAR             — falsy: empty
+func evalRuntimeCondition(expr string, env map[string]string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return true
+	}
+	resolved := resolveEnvRefs(expr, env)
+
+	if idx := strings.Index(resolved, "=="); idx >= 0 {
+		left := strings.TrimSpace(resolved[:idx])
+		right := strings.Trim(strings.TrimSpace(resolved[idx+2:]), "'\"")
+		return left == right
+	}
+	if idx := strings.Index(resolved, "!="); idx >= 0 {
+		left := strings.TrimSpace(resolved[:idx])
+		right := strings.Trim(strings.TrimSpace(resolved[idx+2:]), "'\"")
+		return left != right
+	}
+	if strings.HasPrefix(resolved, "!") {
+		return strings.TrimSpace(resolved[1:]) == ""
+	}
+	return strings.TrimSpace(resolved) != ""
+}
+
+// resolveEnvRefs replaces $VAR and ${VAR} references with values from env.
+// Variables not present in env resolve to empty string — an unset variable
+// is treated as falsy, consistent with shell behaviour.
+func resolveEnvRefs(expr string, env map[string]string) string {
+	result := expr
+	// First pass: replace known variables.
+	for k, v := range env {
+		result = strings.ReplaceAll(result, "${"+k+"}", v)
+		result = strings.ReplaceAll(result, "$"+k, v)
+	}
+	// Second pass: collapse any remaining $IDENTIFIER or ${IDENTIFIER}
+	// references to empty string (variable not set → treat as empty).
+	for strings.Contains(result, "$") {
+		before := result
+		// ${VAR} form
+		if start := strings.Index(result, "${"); start >= 0 {
+			if end := strings.Index(result[start:], "}"); end >= 0 {
+				result = result[:start] + result[start+end+1:]
+				continue
+			}
+		}
+		// $VAR form — consume $IDENTIFIER (letters, digits, underscores)
+		if idx := strings.Index(result, "$"); idx >= 0 {
+			end := idx + 1
+			for end < len(result) && (result[end] == '_' ||
+				(result[end] >= 'A' && result[end] <= 'Z') ||
+				(result[end] >= 'a' && result[end] <= 'z') ||
+				(result[end] >= '0' && result[end] <= '9')) {
+				end++
+			}
+			result = result[:idx] + result[end:]
+			continue
+		}
+		if result == before {
+			break // nothing more to replace
+		}
+	}
+	return result
+}
+
 // sleep waits for d duration but returns early if ctx is canceled.
 // This is preferred due to time.Sleep() not allowing interruption by context cancellation.
 func (a *Agent) sleep(ctx context.Context, d time.Duration) {
@@ -817,16 +967,23 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		if len(files) == 0 {
 			fmt.Printf("[agent %s] workspace empty, performing checkout for %s @ %s\n",
 				a.id[:8], spec.ProjectID[:8], spec.CommitSHA[:8])
-			a.performDebugCheckout(ctx, workspaceDir, spec.ProjectID, spec.CommitSHA)
+			if err := a.performCheckout(ctx, workspaceDir, spec.ProjectID, spec.CommitSHA); err != nil {
+				fmt.Printf("[agent %s] debug checkout failed: %v\n", a.id[:8], err)
+				return
+			}
 		}
 	}
 
+	workDir := spec.WorkDir
+	if workDir == "" {
+		workDir = "/workspace"
+	}
+
 	args := []string{
-		"run", "--rm", "-d",
+		"create",
 		"--label", "forge.managed=true",
 		"--label", "forge.debug=true",
-		"--workdir", spec.WorkDir,
-		"--volume", workspaceDir + ":/workspace:rw",
+		"--workdir", workDir,
 	}
 	if spec.DockerSocket {
 		hostSocket := "/var/run/docker.sock"
@@ -838,17 +995,16 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
 		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
 	}
-	if spec.WorkDir == "" {
-		args[3] = "/workspace"
-	}
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
 	args = append(args, spec.Image, "tail", "-f", "/dev/null")
 
+	fmt.Printf("[agent %s] creating debug container for session %s with workdir %s\n",
+		a.id[:8], spec.SessionID[:8], workDir)
 	out, err := exec.CommandContext(ctx, "docker", args...).Output()
 	if err != nil {
-		fmt.Printf("[agent %s] debug container failed to start: %v\n", a.id[:8], err)
+		fmt.Printf("[agent %s] debug container failed to create: %v\n", a.id[:8], err)
 		return
 	}
 	containerID := strings.TrimSpace(string(out))
@@ -856,8 +1012,24 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		return
 	}
 
+	// Copy workspace into debug container
+	cpCmd := exec.CommandContext(ctx, "docker", "cp", workspaceDir+"/.", containerID+":/workspace")
+	if err := cpCmd.Run(); err != nil {
+		fmt.Printf("[agent %s] failed to copy workspace into debug container: %v\n", a.id[:8], err)
+		exec.Command("docker", "rm", "-f", containerID).Run()
+		return
+	}
+
+	// Start debug container
+	if err := exec.CommandContext(ctx, "docker", "start", containerID).Run(); err != nil {
+		fmt.Printf("[agent %s] debug container failed to start: %v\n", a.id[:8], err)
+		exec.Command("docker", "rm", "-f", containerID).Run()
+		return
+	}
+
 	defer func() {
 		exec.Command("docker", "stop", containerID).Run()
+		exec.Command("docker", "rm", "-f", containerID).Run()
 		a.debugConts.Delete(spec.SessionID)
 		os.RemoveAll(workspaceDir)
 		fmt.Printf("[agent %s] debug container %s stopped\n", a.id[:8], containerID[:12])
@@ -879,20 +1051,16 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	a.debugConts.Store(spec.SessionID, containerID)
 
 	/*
-			Register the INTERNAL address the scheduler uses to proxy WebSocket connections.
-		    The browser connects to the scheduler at /api/v1/debug/{id}/ws;
-		    the scheduler dials this internal URL and bridges the two connections.
-		    We leverage the agent's Docker-network IP so it works with any number of scaled replicas.
+		Register that we are already. The scheduler will now know this agent is
+		handling the session. We no longer need to provide a terminal URL
+		dbecause we use the reverse connection model
 	*/
-	wsPort := a.wsPort()
-	internalIP := agentInternalIP()
-	terminalURL := fmt.Sprintf("ws://%s:%s/debug/%s/ws", internalIP, wsPort, spec.SessionID)
-	if err := a.registerDebugContainer(spec.SessionID, containerID, terminalURL); err != nil {
+	if err := a.registerDebugContainer(spec.SessionID, containerID, ""); err != nil {
 		fmt.Printf("[agent %s] failed to register debug container: %v\n", a.id[:8], err)
 		return
 	}
-	fmt.Printf("[agent %s] debug container ready: %s  ws: %s\n",
-		a.id[:8], containerID[:12], terminalURL)
+	fmt.Printf("[agent %s] debug container ready: %s\n",
+		a.id[:8], containerID[:12])
 
 	// cancelCmd holds the cancel function for the currently running command.
 	// The cancel-poll goroutine calls it when the browser requests a cancel.
@@ -948,6 +1116,11 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		}
 
 		for _, cmd := range resp.Commands {
+			// Check if this is a reverse terminal request.
+			if strings.Contains(cmd.Input, `"type":"terminal_request"`) {
+				go a.handleTerminalRequest(ctx, spec.SessionID, containerID, cmd)
+				continue
+			}
 
 			cmdCtx, cancel := context.WithCancel(ctx)
 			cancelMu.Lock()
@@ -1204,39 +1377,6 @@ func (a *Agent) rebaseURL(rawURL string) string {
 	return rawURL
 }
 
-// agent's Websocket server. In Docker, this is the container's network IP.
-// Falls back to 127.0.0.1 for local (non-containerized) development.
-func agentInternalIP() string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return "127.0.0.1"
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			if ip == nil || ip.IsLoopback() {
-				continue
-			}
-			if ip4 := ip.To4(); ip4 != nil {
-				return ip4.String()
-			}
-		}
-	}
-	return "127.0.0.1"
-}
 func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
 	body, _ := json.Marshal(api.AppendLogsRequest{
 		LeaseID: leaseID,
@@ -1254,83 +1394,55 @@ func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
 	io.Copy(io.Discard, resp.Body)
 }
 
-// runTerminalServer starts an HTTP server that upgrades debug session connections
-// to Websockets and connects them directly to a docker exec PTY.
-// Browsers connect here directly, no scheduler in the hot path
-func (a *Agent) runTerminalServer(ctx context.Context) {
-	listenAddr := ":" + a.wsPort()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/{sessionID}/ws", a.handleTerminalWS)
-
-	srv := &http.Server{Addr: listenAddr, Handler: mux}
-	go func() {
-		<-ctx.Done()
-		srv.Close()
-	}()
-
-	fmt.Printf("[agent %s] terminal server listening on %s (internal only)\n",
-		a.id[:8], listenAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Printf("[agent %s] terminal server error: %v\n", a.id[:8], err)
+func (a *Agent) handleTerminalRequest(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {
+	var req struct {
+		TerminalID string `json:"terminal_id"`
+		Cols       int    `json:"cols"`
+		Rows       int    `json:"rows"`
 	}
-}
-
-var wsUpgrader = websocket.Upgrader{
-
-	// Allow all origins for now, will need to address this later.
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
-// handleTerminalWS upgrades the connection to WebSocket and bridges it to
-// a terminal session on the debug container.
-//
-// Why use `script` inside the container instead of `docker exec -it`
-//
-// `docker exec -it` allocates a PTY but requires the CALLING process to have a real console/TTY.
-// On Windows with Docker Desktop, when Go runs docker as a subprocess with piped stdin/stdout (which has no console),
-// Docker cannot set up the ConPTY and input never reaches the container.
-//
-// With run `script` inside the container, `script` allocates a PTY entirely within the container's Linux kernel,
-// independent of the host OS. Our pipe connects to script's stdin, script forwards it through the PTY to
-// sh, and echo+output flows back through the same path. This should work on Windows, Linux, and Mac with no host-side
-// PTY libraries.
-func (a *Agent) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
-	// Verify that auth token
-	if a.apiToken != "" {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+a.apiToken {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	sessionID := r.PathValue("sessionID")
-
-	cid, ok := a.debugConts.Load(sessionID)
-	if !ok {
-		http.Error(w, "debug session not found", http.StatusNotFound)
+	if err := json.Unmarshal([]byte(cmd.Input), &req); err != nil {
+		fmt.Printf("[agent] failed to unmarshal terminal request: %v\n", err)
 		return
 	}
-	containerID := cid.(string)
 
-	// Parse initial terminal size from query params, set by xterm.js FitAddon.
-	cols, rows := 220, 50
-	if c := r.URL.Query().Get("cols"); c != "" {
-		fmt.Sscanf(c, "%d", &cols)
-	}
-	if r2 := r.URL.Query().Get("rows"); r2 != "" {
-		fmt.Sscanf(r2, "%d", &rows)
-	}
-
-	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	u, err := url.Parse(a.schedulerURL)
 	if err != nil {
-		fmt.Printf("[agent] failed to upgrade WS: %v\n", err)
+		return
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = fmt.Sprintf("/api/v1/debug/%s/agent-ws", sessionID)
+	q := u.Query()
+	q.Set("terminalID", req.TerminalID)
+	u.RawQuery = q.Encode()
+
+	header := http.Header{}
+	if a.apiToken != "" {
+		header.Set("Authorization", "Bearer "+a.apiToken)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), header)
+	if err != nil {
+		fmt.Printf("[agent] reverse terminal dial failed: %v\n", err)
 		return
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithCancel(r.Context())
+	a.pipeTerminalToConn(ctx, sessionID, containerID, conn, req.Cols, req.Rows)
+}
+
+func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID string, conn *websocket.Conn, cols, rows int) {
+	if cols <= 0 {
+		cols = 220
+	}
+	if rows <= 0 {
+		rows = 50
+	}
+
+	shellCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	shellCmd := fmt.Sprintf(
@@ -1342,15 +1454,7 @@ func (a *Agent) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		cols, rows,
 	)
 
-	/*
-		Use `script` to allocate a PTY inside the container.
-
-		`-i` (no `-t`): keeps stdin open, no host PTY required.
-		`script -q -c "sh" /dev/null`: allocates /dev/pts/N inside the container
-		   giving sh a real PTY with echo, readline, colors, CTRL+C, etc.
-		Falls back to `python` PTY or `sh- i` if script isn't available.
-	*/
-	cmd := exec.CommandContext(ctx, "docker", "exec",
+	cmd := exec.CommandContext(shellCtx, "docker", "exec",
 		"-i",
 		"-e", fmt.Sprintf("COLUMNS=%d", cols),
 		"-e", fmt.Sprintf("LINES=%d", rows),
@@ -1381,7 +1485,7 @@ func (a *Agent) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cmd.Wait()
 
-	fmt.Printf("[agent %s] terminal WS connected — session %s (%dx%d)\n",
+	fmt.Printf("[agent %s] terminal reverse-connected — session %s (%dx%d)\n",
 		a.id[:8], sessionID[:8], cols, rows)
 
 	// Goroutine: container output -> WebSocket
@@ -1413,10 +1517,6 @@ func (a *Agent) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		if len(msg) > 0 && msg[0] == '{' {
 			var ctrl api.TerminalResizeMsg
 			if json.Unmarshal(msg, &ctrl) == nil && ctrl.Type == "resize" {
-				/*
-						Send stty resize command through stdin so it applies to the active PTY inside the container.
-					    Run in a goroutine so it doesn't block the input loop.
-				*/
 				go func(c, r int) {
 					stdinPipe.Write([]byte(fmt.Sprintf("stty cols %d rows %d\n", c, r)))
 				}(ctrl.Cols, ctrl.Rows)
@@ -1428,8 +1528,6 @@ func (a *Agent) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-
-	cancel()
 }
 
 // downloadArtifacts fetches declared artifacts from the scheduler before the step runs.
@@ -1608,43 +1706,40 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 	return nil
 }
 
-func (a *Agent) performDebugCheckout(ctx context.Context, dir, projectID, commitSHA string) {
+func (a *Agent) performCheckout(ctx context.Context, dir, projectID, commitSHA string) error {
 	url := fmt.Sprintf("%s/api/v1/source/%s?commit=%s", a.schedulerURL, projectID, commitSHA)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		fmt.Printf("[agent %s] checkout failed: %v\n", a.id[:8], err)
-		return
+		return fmt.Errorf("checkout request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+a.apiToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Printf("[agent %s] checkout failed: %v\n", a.id[:8], err)
-		return
+		return fmt.Errorf("checkout do: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("[agent %s] checkout failed: status %d\n", a.id[:8], resp.StatusCode)
-		return
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("checkout failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	gzr, err := gzip.NewReader(resp.Body)
 	if err != nil {
-		fmt.Printf("[agent %s] checkout failed (gzip): %v\n", a.id[:8], err)
-		return
+		return fmt.Errorf("gzip reader: %w", err)
 	}
 	defer gzr.Close()
 
 	tr := tar.NewReader(gzr)
+	filesCount := 0
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			fmt.Printf("[agent %s] checkout failed (tar): %v\n", a.id[:8], err)
-			return
+			return fmt.Errorf("tar next: %w", err)
 		}
 
 		target := filepath.Join(dir, header.Name)
@@ -1655,17 +1750,18 @@ func (a *Agent) performDebugCheckout(ctx context.Context, dir, projectID, commit
 			os.MkdirAll(filepath.Dir(target), 0755)
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
 			if err != nil {
-				fmt.Printf("[agent %s] checkout failed (file): %v\n", a.id[:8], err)
-				return
+				return fmt.Errorf("create file %s: %w", target, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
 				f.Close()
-				fmt.Printf("[agent %s] checkout failed (copy): %v\n", a.id[:8], err)
-				return
+				return fmt.Errorf("copy file %s: %w", target, err)
 			}
 			f.Close()
+			filesCount++
 		}
 	}
+	fmt.Printf("[agent] checkout complete: %d files extracted to %s\n", filesCount, dir)
+	return nil
 }
 
 func (a *Agent) downloadFile(downloadURL, dest string) error {
@@ -1695,7 +1791,7 @@ func (a *Agent) downloadFile(downloadURL, dest string) error {
 	return err
 }
 
-func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec) error {
+func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace string) error {
 	ref := spec.PipelineRef
 	if ref == nil || ref.Path == "" {
 		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), nil)
@@ -1710,7 +1806,13 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec) erro
 	// Build the full path to the referenced pipeline file.
 	pipelinePath := ref.Path
 	if !filepath.IsAbs(pipelinePath) {
-		pipelinePath = filepath.Join(a.workspaceDir, pipelinePath)
+		// Try jobWorkspace first, fall back to a.workspaceDir
+		p := filepath.Join(jobWorkspace, pipelinePath)
+		if _, err := os.Stat(p); err == nil {
+			pipelinePath = p
+		} else {
+			pipelinePath = filepath.Join(a.workspaceDir, pipelinePath)
+		}
 	}
 
 	// Compile the child pipeline.

@@ -23,6 +23,7 @@ type Executor struct {
 	LogDir       string
 	Cache        *cache.Store
 	IsLocal      bool // skip checkout steps if true
+	UseCopy      bool // use docker cp instead of bind mounts
 
 	// StreamCallback is set by the agent to receive log events in real time.
 	// Each event is forwarded to the scheduler as it's produced — not buffered
@@ -119,8 +120,47 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
 	logger.Info("step starting", map[string]any{"image": step.Image})
 
-	args := buildDockerArgs(step, e.WorkspaceDir)
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	var cmd *exec.Cmd
+	var containerID string
+
+	if e.UseCopy {
+		// 1. Create container
+		args := buildDockerArgs(step, "", true)
+		out, err := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...).Output()
+		if err != nil {
+			logger.Error("failed to create container", map[string]any{"error": err.Error()})
+			forgelog.StepFooter(step.ID, false, time.Since(start))
+			return &pipeline.StepResult{
+				Step:     step,
+				Status:   pipeline.StatusFailed,
+				ExitCode: 1,
+				Duration: time.Since(start),
+				LogFile:  logPath,
+			}, nil
+		}
+		containerID = strings.TrimSpace(string(out))
+
+		// 2. Copy workspace IN
+		cpIn := exec.CommandContext(ctx, "docker", "cp", e.WorkspaceDir+"/.", containerID+":/workspace")
+		if err := cpIn.Run(); err != nil {
+			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error()})
+			exec.Command("docker", "rm", "-f", containerID).Run()
+			forgelog.StepFooter(step.ID, false, time.Since(start))
+			return &pipeline.StepResult{
+				Step:     step,
+				Status:   pipeline.StatusFailed,
+				ExitCode: 1,
+				Duration: time.Since(start),
+				LogFile:  logPath,
+			}, nil
+		}
+
+		// 3. Prepare start command
+		cmd = exec.CommandContext(ctx, "docker", "start", "-a", containerID)
+	} else {
+		args := buildDockerArgs(step, e.WorkspaceDir, false)
+		cmd = exec.CommandContext(ctx, "docker", append([]string{"run", "--rm"}, args...)...)
+	}
 
 	outputPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -159,6 +199,15 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 
 	err = cmd.Wait()
 	duration := time.Since(start)
+
+	if e.UseCopy && containerID != "" {
+		// 4. Copy workspace OUT (to capture any changes/artifacts)
+		cpOut := exec.CommandContext(ctx, "docker", "cp", containerID+":/workspace/.", e.WorkspaceDir)
+		cpOut.Run() // non-fatal if it fails
+
+		// 5. Cleanup container
+		exec.Command("docker", "rm", "-f", containerID).Run()
+	}
 
 	exitCode := 0
 	passed := true
@@ -259,14 +308,21 @@ func (e *Executor) RunPipeline(ctx context.Context, p *pipeline.Pipeline) (*pipe
 	}, nil
 }
 
-func buildDockerArgs(step *pipeline.Step, workspaceDir string) []string {
+func buildDockerArgs(step *pipeline.Step, workspaceDir string, useCopy bool) []string {
+	workDir := step.WorkDir
+	if workDir == "" {
+		workDir = "/workspace"
+	}
+
 	args := []string{
-		"run", "--rm",
 		"--label", "forge.managed=true",
-		"--workdir", step.WorkDir,
-		"--volume", workspaceDir + ":/workspace:rw",
+		"--workdir", workDir,
 		"--memory", "2g",
 		"--stop-timeout", "10",
+	}
+
+	if !useCopy {
+		args = append(args, "--volume", workspaceDir+":/workspace:rw")
 	}
 
 	// if FORGE_DOCKER_NETWORK is set, join that network. This is needed for job containers to reach the
@@ -325,19 +381,39 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
 	logger.Info("generator step starting", map[string]any{"image": step.Image})
 
-	args := buildDockerArgs(step, e.WorkspaceDir)
-	cmd := exec.Command("docker", args...)
+	var cmdGen *exec.Cmd
+	var containerID string
+
+	if e.UseCopy {
+		args := buildDockerArgs(step, "", true)
+		out, err := exec.Command("docker", append([]string{"create"}, args...)...).Output()
+		if err != nil {
+			return nil, fmt.Errorf("creating generator container: %w", err)
+		}
+		containerID = strings.TrimSpace(string(out))
+
+		cpIn := exec.Command("docker", "cp", e.WorkspaceDir+"/.", containerID+":/workspace")
+		if err := cpIn.Run(); err != nil {
+			exec.Command("docker", "rm", "-f", containerID).Run()
+			return nil, fmt.Errorf("copying workspace into generator: %w", err)
+		}
+
+		cmdGen = exec.Command("docker", "start", "-a", containerID)
+	} else {
+		args := buildDockerArgs(step, e.WorkspaceDir, false)
+		cmdGen = exec.Command("docker", append([]string{"run", "--rm"}, args...)...)
+	}
 
 	// Capture stdout (the generated step JSON) into a buffer.
 	// Stream stderr to the logger so errors are visible.
 	var stdoutBuf bytes.Buffer
-	stderrPipe, err := cmd.StderrPipe()
+	stderrPipe, err := cmdGen.StderrPipe()
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stdout = &stdoutBuf
+	cmdGen.Stdout = &stdoutBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := cmdGen.Start(); err != nil {
 		return nil, fmt.Errorf("starting generator container: %w", err)
 	}
 
@@ -347,8 +423,12 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		logger.Output("[stderr] " + scanner.Text())
 	}
 
-	err = cmd.Wait()
+	err = cmdGen.Wait()
 	duration := time.Since(start)
+
+	if e.UseCopy && containerID != "" {
+		exec.Command("docker", "rm", "-f", containerID).Run()
+	}
 
 	exitCode := 0
 	passed := true

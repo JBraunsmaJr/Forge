@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/gorilla/websocket"
 )
 
 const debugSessionTTL = 15 * time.Minute
@@ -26,6 +27,10 @@ type debugSession struct {
 	agentID       string
 	containerID   string
 	terminalWsURL string // direct WS URL: ws://agent-host:port/debug/{id}/ws
+	// wsToken is a short-lived one-time token issued when the session is
+	// created.  The browser sends it as ?ws_token= on the terminal WS URL
+	// so the long-lived API token never appears in server access logs.
+	wsToken string
 
 	pendingCmds     []api.DebugCommand
 	outputs         []api.DebugOutput
@@ -38,12 +43,16 @@ type debugSession struct {
 
 // DebugStore manages all active debug sessions.
 type DebugStore struct {
-	mu       sync.Mutex
-	sessions map[string]*debugSession
+	mu           sync.Mutex
+	sessions     map[string]*debugSession
+	pendingTerms map[string]chan *websocket.Conn
 }
 
 func newDebugStore() *DebugStore {
-	return &DebugStore{sessions: make(map[string]*debugSession)}
+	return &DebugStore{
+		sessions:     make(map[string]*debugSession),
+		pendingTerms: make(map[string]chan *websocket.Conn),
+	}
 }
 
 // CreateSession opens a new debug session for a failed job. The caller provides
@@ -55,6 +64,7 @@ func (d *DebugStore) CreateSession(jobID, image, workDir string,
 	defer d.mu.Unlock()
 
 	id := newID()
+	wsToken := newID() // short-lived token for the terminal WebSocket upgrade
 	now := time.Now()
 	s := &debugSession{
 		id:           id,
@@ -67,6 +77,7 @@ func (d *DebugStore) CreateSession(jobID, image, workDir string,
 		commitSHA:    commitSHA,
 		dockerSocket: dockerSocket,
 		status:       "starting",
+		wsToken:      wsToken,
 		subscribers:  make(map[chan string]struct{}),
 		createdAt:    now,
 		expiresAt:    now.Add(debugSessionTTL),
@@ -99,6 +110,54 @@ func (d *DebugStore) LeaseNext(agentID string) (*api.DebugJobSpec, bool) {
 		}, true
 	}
 	return nil, false
+}
+
+// RequestTerminal asks the agent to connect back for a terminal session.
+func (d *DebugStore) RequestTerminal(sessionID string, cols, rows int) (string, <-chan *websocket.Conn) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	s, ok := d.sessions[sessionID]
+	if !ok {
+		return "", nil
+	}
+
+	termID := newID()[:8]
+	ch := make(chan *websocket.Conn, 1)
+	d.pendingTerms[termID] = ch
+
+	// Queue a special command for the agent.
+	// We use a JSON string that the agent will recognize.
+	cmdID := "term-" + termID
+	s.pendingCmds = append(s.pendingCmds, api.DebugCommand{
+		CommandID: cmdID,
+		Input:     fmt.Sprintf(`{"type":"terminal_request","terminal_id":%q,"cols":%d,"rows":%d}`, termID, cols, rows),
+	})
+
+	return termID, ch
+}
+
+// RegisterAgentConn matches an incoming agent connection with a pending terminal request.
+func (d *DebugStore) RegisterAgentConn(termID string, conn *websocket.Conn) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ch, ok := d.pendingTerms[termID]
+	if !ok {
+		return false
+	}
+
+	delete(d.pendingTerms, termID)
+	ch <- conn
+	close(ch)
+	return true
+}
+
+// CleanupTerminal ensures we don't leak channels if an agent never connects.
+func (d *DebugStore) CleanupTerminal(termID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.pendingTerms, termID)
 }
 
 // RegisterContainer is called by the agent once the debug container is running.
@@ -330,7 +389,21 @@ func (d *DebugStore) info(s *debugSession) *api.DebugSessionInfo {
 		ContainerID:   s.containerID,
 		ExpiresInS:    remaining,
 		TerminalWsURL: s.terminalWsURL,
+		WsToken:       s.wsToken,
 	}
+}
+
+// ValidateWsToken checks whether the provided token matches the session's
+// short-lived wsToken.  Returns false if the session doesn't exist or the
+// token is wrong.
+func (d *DebugStore) ValidateWsToken(sessionID, token string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s, ok := d.sessions[sessionID]
+	if !ok {
+		return false
+	}
+	return s.wsToken != "" && s.wsToken == token
 }
 
 // GetTerminalWsURL returns the internal agent WebSocket URL for a session.

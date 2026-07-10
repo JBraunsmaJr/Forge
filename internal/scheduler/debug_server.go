@@ -219,32 +219,45 @@ func (s *Server) debugExpiryMonitor(stopCh <-chan struct{}) {
 }
 
 // handleDebugTerminalProxy proxies a browser WebSocket connection to the
-// agent that owns the debug session. This is the key to scalability:
-// the browser always connects to the scheduler (one stable URL), and the
-// scheduler dials the agent's internal address (stored at session creation).
-//
-// Route: GET /api/v1/debug{id}/ws
-//
-// With this endpoint, agents do not need public-facing WebSocket ports.
-// They listen internally only, and the scheduler bridges connections.
+// agent that owns the debug session. In this new 'reverse' model, the
+// scheduler triggers a request to the agent, which then dials back to
+// the scheduler. This eliminates the need for agents to expose any ports.
 func (s *Server) handleDebugTerminalProxy(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 
-	internalURL, ok := s.debug.GetTerminalWsURL(sessionID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "debug session not found or not ready")
+	/*
+		Validate the session-scope one-time token so the long-lived API token
+		never appears in the server access logs (WebSocket upgrade URLs are logged
+		by the reverse proxies). The browser obtains this token from the session
+		info response (DebugSessionInfo.WsToken) and appends it as ?ws_token=.
+		Fall through if no token is present - the outer auth middleware already
+		verified the API token, providing a safe default for old clients.
+	*/
+	if wsToken := r.URL.Query().Get("ws_token"); wsToken != "" {
+		if !s.debug.ValidateWsToken(sessionID, wsToken) {
+			writeError(w, http.StatusForbidden, "invalid or expired ws_token")
+			return
+		}
+	}
+
+	// Parse initial terminal size from query params, set by xterm.js FitAddon.
+	cols, rows := 220, 50
+	if c := r.URL.Query().Get("cols"); c != "" {
+		fmt.Sscanf(c, "%d", &cols)
+	}
+	if r2 := r.URL.Query().Get("rows"); r2 != "" {
+		fmt.Sscanf(r2, "%d", &rows)
+	}
+
+	// 1. Tell the agent we want a terminal.
+	termID, ch := s.debug.RequestTerminal(sessionID, cols, rows)
+	if ch == nil {
+		writeError(w, http.StatusNotFound, "debug session not found")
 		return
 	}
+	defer s.debug.CleanupTerminal(termID)
 
-	// Forward query params (cols, rows for terminal sizing) to the agent,
-	// but strip the token (now sent via header).
-	params := r.URL.Query()
-	params.Del("token")
-	if q := params.Encode(); q != "" {
-		internalURL += "?" + q
-	}
-
-	// Upgrade the browser's connection to WebSocket.
+	// 2. Upgrade the browser's connection to WebSocket.
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	browserConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -252,26 +265,25 @@ func (s *Server) handleDebugTerminalProxy(w http.ResponseWriter, r *http.Request
 	}
 	defer browserConn.Close()
 
-	// Dial the agent's internal WebSocket server.
-	header := http.Header{}
-	if s.apiToken != "" {
-		header.Set("Authorization", "Bearer "+s.apiToken)
-	}
-	agentConn, _, err := websocket.DefaultDialer.Dial(internalURL, header)
-	if err != nil {
+	// 3. Wait for the agent to connect back.
+	var agentConn *websocket.Conn
+	select {
+	case conn := <-ch:
+		agentConn = conn
+	case <-time.After(10 * time.Second):
 		browserConn.WriteMessage(websocket.TextMessage,
-			[]byte(fmt.Sprintf("\r\n\x1b[31mCannot reach agent terminal: %v\x1b[0m\r\n", err)))
+			[]byte("\r\n\x1b[31mTimeout waiting for agent to connect back. Is the agent running?\x1b[0m\r\n"))
+		return
+	case <-r.Context().Done():
 		return
 	}
 	defer agentConn.Close()
 
-	fmt.Printf("[scheduler] proxying terminal WS for session %s → %s\n",
-		sessionID[:8], internalURL)
+	fmt.Printf("[scheduler] proxying terminal WS for session %s (reverse connect %s)\n",
+		sessionID[:8], termID)
 
 	// Bidirectional proxy: browser <--> agent.
-	// Either side disconnecting ends both goroutines
 	errc := make(chan error, 2)
-
 	go func() {
 		for {
 			mt, msg, err := browserConn.ReadMessage()
@@ -285,7 +297,6 @@ func (s *Server) handleDebugTerminalProxy(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}()
-
 	go func() {
 		for {
 			mt, msg, err := agentConn.ReadMessage()
@@ -300,5 +311,30 @@ func (s *Server) handleDebugTerminalProxy(w http.ResponseWriter, r *http.Request
 		}
 	}()
 
-	<-errc // block until either side disconnects
+	<-errc
+}
+
+// handleAgentDebugTerminal accepts a reverse WebSocket connection from an agent.
+func (s *Server) handleAgentDebugTerminal(w http.ResponseWriter, r *http.Request) {
+	termID := r.URL.Query().Get("terminalID")
+	if termID == "" {
+		http.Error(w, "terminalID is required", http.StatusBadRequest)
+		return
+	}
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Printf("[scheduler] failed to upgrade agent reverse WS: %v\n", err)
+		return
+	}
+
+	if !s.debug.RegisterAgentConn(termID, conn) {
+		conn.WriteMessage(websocket.TextMessage, []byte("invalid terminalID"))
+		conn.Close()
+		return
+	}
+
+	// The connection is now owned by handleDebugTerminalProxy.
+	// We must NOT close it here. We just return and let the connection live.
 }

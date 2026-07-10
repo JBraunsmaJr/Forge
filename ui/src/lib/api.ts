@@ -96,6 +96,8 @@ export interface Policy {
     org_id: string;
     name: string;
     description: string;
+    steps?: any[];
+    transformer?: any;
     forbid_override: boolean;
     created_at: string;
 }
@@ -175,9 +177,15 @@ export const api = {
     // Policy management
     listPolicies: (orgID: string): Promise<Policy[]> =>
         fetchAuth(`/api/v1/orgs/${orgID}/policies`).then(r => r?.json()).then(data => data || []),
-    createPolicy: (orgID: string, req: { name: string, description: string, steps: any[], forbid_override: boolean }): Promise<Policy | null> =>
+    createPolicy: (orgID: string, req: { name: string, description: string, steps: any[], transformer?: any, forbid_override: boolean }): Promise<Policy | null> =>
         fetchAuth(`/api/v1/orgs/${orgID}/policies`, {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req),
+        }).then(r => r?.ok ? r.json() : null),
+    updatePolicy: (orgID: string, policyID: string, req: { name: string, description: string, steps: any[], transformer?: any, forbid_override: boolean }): Promise<Policy | null> =>
+        fetchAuth(`/api/v1/orgs/${orgID}/policies/${policyID}`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(req),
         }).then(r => r?.ok ? r.json() : null),

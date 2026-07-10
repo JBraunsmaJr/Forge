@@ -41,6 +41,13 @@ type JobSpec struct {
 	OrgID     string `json:"org_id,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
 	CommitSHA string `json:"commit_sha,omitempty"`
+	// Condition is a step-level expression evaluated by the agent at runtime.
+	// Scheduler-level keywords (success()/failure()/always()) are handled by
+	// unlockDownstream; env-var expressions ($BRANCH == 'main') are handled here.
+	Condition string `json:"condition,omitempty"`
+	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
+	// log it clearly (the scheduler already acted on it via unlockDownstream).
+	AlwaysRun bool `json:"always_run,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 	Status      JobStatus    `json:"status,omitempty"`
@@ -114,6 +121,10 @@ type CompleteRequest struct {
 	Duration     int64      `json:"duration_ms"`
 	LogEvents    []LogEvent `json:"log_events"`
 	EmittedSteps []StepDef  `json:"emitted_steps,omitempty"` // set by generator steps
+	// Skipped is set when the agent evaluated the step's runtime condition
+	// (e.g. $BRANCH == 'main') and found it to be false.  The scheduler
+	// marks the job "skipped" rather than "passed" or "failed".
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // LogEvent is a single structured log line from a running job.
@@ -183,6 +194,11 @@ type DebugSessionInfo struct {
 	ContainerID   string `json:"container_id"`
 	ExpiresInS    int    `json:"expires_in_s"`
 	TerminalWsURL string `json:"terminal_ws_url,omitempty"` // direct WS URL to the agent
+	// WsToken is a short-lived one-time token the browser appends as ?ws_token=
+	// when upgrading the WebSocket connection.  This avoids the long-lived API
+	// token appearing in server access logs (WebSocket URLs are typically logged
+	// by reverse proxies).
+	WsToken string `json:"ws_token,omitempty"`
 }
 
 // DebugJobSpec is what the scheduler sends to an agent when it leases a debug session.
@@ -261,6 +277,15 @@ type PolicyInfo struct {
 
 // CreatePolicyRequest creates a new policy for an org.
 type CreatePolicyRequest struct {
+	Name           string             `json:"name"`
+	Description    string             `json:"description"`
+	Steps          []StepDef          `json:"steps,omitempty"`
+	Transformer    *PolicyTransformer `json:"transformer,omitempty"`
+	ForbidOverride bool               `json:"forbid_override"`
+}
+
+// UpdatePolicyRequest updates an existing policy.
+type UpdatePolicyRequest struct {
 	Name           string             `json:"name"`
 	Description    string             `json:"description"`
 	Steps          []StepDef          `json:"steps,omitempty"`

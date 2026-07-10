@@ -160,6 +160,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/orgs", s.handleListOrgs)
 	mux.HandleFunc("GET /api/v1/orgs/{id}", s.handleGetOrg)
 	mux.HandleFunc("POST /api/v1/orgs/{id}/policies", s.handleCreatePolicy)
+	mux.HandleFunc("PUT /api/v1/orgs/{id}/policies/{polID}", s.handleUpdatePolicy)
 	mux.HandleFunc("GET /api/v1/orgs/{id}/policies", s.handleListPolicies)
 	mux.HandleFunc("DELETE /api/v1/orgs/{id}/policies/{polID}", s.handleDeletePolicy)
 
@@ -203,6 +204,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/debug/{id}/cancel-check", s.handleDebugCancelCheck)
 
 	mux.HandleFunc("GET /api/v1/debug/{id}/ws", s.handleDebugTerminalProxy)
+	mux.HandleFunc("GET /api/v1/debug/{id}/agent-ws", s.handleAgentDebugTerminal)
 
 	// Debug session agent side.
 	mux.HandleFunc("POST /api/v1/debug/lease", s.handleDebugLease)
@@ -610,9 +612,34 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(policies) > 0 {
 			var err error
+			workspaceDir := req.WorkspaceDir
+			if req.ProjectID != "" {
+				proj, _, scmToken, ok := s.projects.GetProject(req.ProjectID)
+				if ok {
+					commitSHA := req.CommitSHA
+					if commitSHA == "" {
+						commitSHA = "HEAD"
+					}
+
+					tmpDir, err := os.MkdirTemp("", "forge-policy-*")
+					if err == nil {
+						defer os.RemoveAll(tmpDir)
+						if err := s.gitCache.Sync(proj.RepoURL, scmToken); err == nil {
+							if err := s.extractSourceToDir(proj.RepoURL, commitSHA, tmpDir); err == nil {
+								workspaceDir = tmpDir
+							} else {
+								fmt.Printf("[scheduler] policy injection: failed to extract source: %v\n", err)
+							}
+						} else {
+							fmt.Printf("[scheduler] policy injection: failed to sync cache: %v\n", err)
+						}
+					}
+				}
+			}
+
 			steps, appliedPolicies, err = policyengine.Apply(
 				steps, policies,
-				req.PipelineName, req.WorkspaceDir, req.OrgID,
+				req.PipelineName, workspaceDir, req.OrgID,
 			)
 			if err != nil {
 
@@ -694,7 +721,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	runID, err := s.store.Complete(r.PathValue("id"), req.LeaseID, req.ExitCode, req.Duration, req.LogEvents, req.EmittedSteps)
+	runID, err := s.store.Complete(r.PathValue("id"), req.LeaseID, req.ExitCode, req.Duration, req.LogEvents, req.EmittedSteps, req.Skipped)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -801,6 +828,25 @@ func (s *Server) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("[scheduler] policy %q created for org %s\n", pol.Name, r.PathValue("id"))
 	writeJSON(w, http.StatusCreated, pol)
+}
+
+func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	var req api.UpdatePolicyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "policy name is required")
+		return
+	}
+	pol, err := s.orgs.UpdatePolicy(r.PathValue("id"), r.PathValue("polID"), req)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	fmt.Printf("[scheduler] policy %q updated for org %s\n", pol.Name, r.PathValue("id"))
+	writeJSON(w, http.StatusOK, pol)
 }
 
 func (s *Server) handleListPolicies(w http.ResponseWriter, r *http.Request) {

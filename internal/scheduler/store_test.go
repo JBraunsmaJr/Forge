@@ -100,7 +100,7 @@ func TestDependencyUnblocking(t *testing.T) {
 		t.Error("expected queue to be empty while lint is running")
 	}
 
-	if _, err := s.Complete(spec.JobID, spec.LeaseID, 0, 0, nil, nil); err != nil {
+	if _, err := s.Complete(spec.JobID, spec.LeaseID, 0, 0, nil, nil, false); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -217,11 +217,11 @@ func TestListRunsStatusFilter(t *testing.T) {
 
 	passedID, _ := s.SubmitRun("passing-run", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
 	spec, _ := s.LeaseNext("agent-test")
-	s.Complete(spec.JobID, spec.LeaseID, 0, 100, nil, nil)
+	s.Complete(spec.JobID, spec.LeaseID, 0, 100, nil, nil, false)
 
 	failedID, _ := s.SubmitRun("failing-run", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
 	spec2, _ := s.LeaseNext("agent-test")
-	s.Complete(spec2.JobID, spec2.LeaseID, 1, 100, nil, nil)
+	s.Complete(spec2.JobID, spec2.LeaseID, 1, 100, nil, nil, false)
 
 	s.SubmitRun("pending-run", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
 
@@ -268,7 +268,7 @@ func TestComplete_StaleLeaseIgnored(t *testing.T) {
 	s.ReclaimStaleJobs()
 	s.LeaseNext("agent-2")
 
-	_, err := s.Complete(spec.JobID, spec.LeaseID, 0, 0, nil, nil)
+	_, err := s.Complete(spec.JobID, spec.LeaseID, 0, 0, nil, nil, false)
 	if err == nil {
 		t.Error("expected error when completing with stale lease")
 	}
