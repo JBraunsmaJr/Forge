@@ -17,6 +17,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/scm"
 )
 
 type githubPushPayload struct {
@@ -425,7 +426,7 @@ func (s *Server) triggerWebhookRun(
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, commitSHA, steps, appliedPolicies)
+	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, commitSHA, meta.Provider, steps, appliedPolicies)
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}
@@ -434,6 +435,14 @@ func (s *Server) triggerWebhookRun(
 	jobsSubmittedTotal.WithLabelValues(proj.OrgID, proj.ID).Add(float64(len(steps)))
 
 	s.publishRunDetail(submittedID)
+
+	// Report pending status to SCM
+	targetURL := fmt.Sprintf("%s/runs/%s", s.baseURL, submittedID)
+	description := "Forge CI — pipeline started"
+	if err := scm.PostStatus(meta.Provider, repoURL, commitSHA, scmToken, "pending", targetURL, description, "forge/ci"); err != nil {
+		fmt.Printf("[webhook] failed to post pending status to %s: %v\n", meta.Provider, err)
+	}
+
 	return submittedID, nil
 }
 

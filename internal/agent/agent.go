@@ -836,6 +836,7 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 				DurationMs:       durationMs,
 				Logs:             pbLogs,
 				EmittedStepsJson: emittedStepsJSON,
+				Skipped:          false,
 			},
 		},
 	}
@@ -858,6 +859,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 				LeaseId:  spec.LeaseID,
 				ExitCode: 0,
 				Logs:     pbLogs,
+				Skipped:  true,
 			},
 		},
 	}

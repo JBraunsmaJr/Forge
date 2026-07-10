@@ -62,11 +62,13 @@ CREATE TABLE IF NOT EXISTS runs (
     org_id           TEXT        REFERENCES orgs(id) ON DELETE SET NULL,
     project_id       TEXT,
     commit_sha       TEXT,
+    scm_provider     TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS commit_sha TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS scm_provider TEXT;
 
 -- ── Jobs ─────────────────────────────────────────────────────────────────────
 -- References runs — must come after runs.

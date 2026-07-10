@@ -46,7 +46,7 @@ func makeStep(id string, deps ...string) api.StepDef {
 func TestSubmitAndLease(t *testing.T) {
 	s := openTestDB(t)
 
-	runID, err := s.SubmitRun("test-pipeline", "/workspace", "", "", "", []api.StepDef{
+	runID, err := s.SubmitRun("test-pipeline", "/workspace", "", "", "", "", []api.StepDef{
 		makeStep("lint"),
 	}, nil)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestLeaseEmpty(t *testing.T) {
 func TestDependencyUnblocking(t *testing.T) {
 	s := openTestDB(t)
 
-	_, err := s.SubmitRun("pipe", "/ws", "", "", "", []api.StepDef{
+	_, err := s.SubmitRun("pipe", "/ws", "", "", "", "", []api.StepDef{
 		makeStep("lint"),
 		makeStep("test", "lint"),
 	}, nil)
@@ -115,7 +115,7 @@ func TestDependencyUnblocking(t *testing.T) {
 
 func TestHeartbeat(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", []api.StepDef{makeStep("x")}, nil)
+	s.SubmitRun("p", "/ws", "", "", "", "", []api.StepDef{makeStep("x")}, nil)
 	spec, _ := s.LeaseNext("agent-1")
 
 	if err := s.Heartbeat(spec.JobID, spec.LeaseID, "agent-1"); err != nil {
@@ -125,7 +125,7 @@ func TestHeartbeat(t *testing.T) {
 
 func TestHeartbeat_WrongLease(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", []api.StepDef{makeStep("x")}, nil)
+	s.SubmitRun("p", "/ws", "", "", "", "", []api.StepDef{makeStep("x")}, nil)
 	spec, _ := s.LeaseNext("agent-1")
 
 	if err := s.Heartbeat(spec.JobID, "wrong-lease", "agent-1"); err == nil {
@@ -135,7 +135,7 @@ func TestHeartbeat_WrongLease(t *testing.T) {
 
 func TestReclaimStaleJobs(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", []api.StepDef{makeStep("x")}, nil)
+	s.SubmitRun("p", "/ws", "", "", "", "", []api.StepDef{makeStep("x")}, nil)
 	spec, _ := s.LeaseNext("agent-1")
 
 	// Age the heartbeat so the job looks stale.
@@ -159,7 +159,7 @@ func TestListRunsPagination(t *testing.T) {
 	s := openTestDB(t)
 
 	for i := 0; i < 5; i++ {
-		_, err := s.SubmitRun(fmt.Sprintf("page-run-%d", i), "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
+		_, err := s.SubmitRun(fmt.Sprintf("page-run-%d", i), "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
 		if err != nil {
 			t.Fatalf("SubmitRun %d: %v", i, err)
 		}
@@ -187,9 +187,9 @@ func TestListRunsPagination(t *testing.T) {
 func TestListRunsSearchFilter(t *testing.T) {
 	s := openTestDB(t)
 
-	s.SubmitRun("frontend-deploy", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
-	s.SubmitRun("backend-deploy", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
-	s.SubmitRun("database-migrate", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
+	s.SubmitRun("frontend-deploy", "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
+	s.SubmitRun("backend-deploy", "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
+	s.SubmitRun("database-migrate", "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
 
 	results := s.ListRuns(ListRunsOptions{Search: "deploy"})
 	if len(results) != 2 {
@@ -215,15 +215,15 @@ func TestListRunsSearchFilter(t *testing.T) {
 func TestListRunsStatusFilter(t *testing.T) {
 	s := openTestDB(t)
 
-	passedID, _ := s.SubmitRun("passing-run", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
+	passedID, _ := s.SubmitRun("passing-run", "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
 	spec, _ := s.LeaseNext("agent-test")
 	s.Complete(spec.JobID, spec.LeaseID, 0, 100, nil, nil, false)
 
-	failedID, _ := s.SubmitRun("failing-run", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
+	failedID, _ := s.SubmitRun("failing-run", "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
 	spec2, _ := s.LeaseNext("agent-test")
 	s.Complete(spec2.JobID, spec2.LeaseID, 1, 100, nil, nil, false)
 
-	s.SubmitRun("pending-run", "/ws", "", "", "", []api.StepDef{makeStep("step")}, nil)
+	s.SubmitRun("pending-run", "/ws", "", "", "", "", []api.StepDef{makeStep("step")}, nil)
 
 	_ = passedID
 	_ = failedID
@@ -261,7 +261,7 @@ func TestListRunsDefaultLimit(t *testing.T) {
 }
 func TestComplete_StaleLeaseIgnored(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", []api.StepDef{makeStep("x")}, nil)
+	s.SubmitRun("p", "/ws", "", "", "", "", []api.StepDef{makeStep("x")}, nil)
 	spec, _ := s.LeaseNext("agent-1")
 
 	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() - INTERVAL '60 seconds' WHERE id = $1`, spec.JobID)
@@ -285,7 +285,7 @@ func TestActiveAgentsCount(t *testing.T) {
 		t.Errorf("expected 0 active agents, got %d", count)
 	}
 
-	s.SubmitRun("p", "/ws", "", "", "", []api.StepDef{makeStep("x")}, nil)
+	s.SubmitRun("p", "/ws", "", "", "", "", []api.StepDef{makeStep("x")}, nil)
 	spec, _ := s.LeaseNext("agent-1")
 
 	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() WHERE id = $1`, spec.JobID)
@@ -295,7 +295,7 @@ func TestActiveAgentsCount(t *testing.T) {
 		t.Errorf("expected 1 active agent, got %d", count)
 	}
 
-	s.SubmitRun("p2", "/ws", "", "", "", []api.StepDef{makeStep("y")}, nil)
+	s.SubmitRun("p2", "/ws", "", "", "", "", []api.StepDef{makeStep("y")}, nil)
 	spec2, _ := s.LeaseNext("agent-2")
 	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() WHERE id = $1`, spec2.JobID)
 

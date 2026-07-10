@@ -76,10 +76,27 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 						fmt.Printf("[grpc] failed to unmarshal emitted steps: %v\n", err)
 					}
 				}
-				runID, err := s.scheduler.store.Complete(m.Complete.JobId, m.Complete.LeaseId, int(m.Complete.ExitCode), m.Complete.DurationMs, logs, emitted, false)
+				runID, err := s.scheduler.store.Complete(m.Complete.JobId, m.Complete.LeaseId, int(m.Complete.ExitCode), m.Complete.DurationMs, logs, emitted, m.Complete.Skipped)
 				if err != nil {
 					fmt.Printf("[grpc] store.Complete error for job %s: %v\n", m.Complete.JobId, err)
 				}
+
+				result := "passed"
+				if m.Complete.ExitCode != 0 {
+					result = "failed"
+				}
+
+				if detail, ok := s.scheduler.store.RunDetail(runID); ok {
+					stepID := s.scheduler.store.GetJobStepID(m.Complete.JobId)
+					if stepID == "" {
+						stepID = m.Complete.JobId
+					}
+					go s.scheduler.store.RecordStepResult(runID, detail.Name, stepID, result, m.Complete.DurationMs)
+
+					jobsCompletedTotal.WithLabelValues(detail.OrgID, detail.ProjectID, result).Inc()
+					jobDurationSeconds.WithLabelValues(detail.OrgID, detail.ProjectID).Observe(float64(m.Complete.DurationMs) / 1000.0)
+				}
+
 				s.scheduler.publishRunDetail(runID)
 				s.scheduler.publishJobLogs(m.Complete.JobId, logs)
 			case *pb.AgentMessage_LogBatch:

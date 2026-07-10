@@ -169,6 +169,7 @@ type RunDetail struct {
 	OrgID           string      `json:"org_id,omitempty"`
 	ProjectID       string      `json:"project_id,omitempty"`
 	CommitSHA       string      `json:"commit_sha,omitempty"`
+	SCMProvider     string      `json:"scm_provider,omitempty"`
 }
 
 // JobDetail carries everything the DAG renderer needs for one node.

@@ -25,6 +25,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/scm"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"github.com/gorilla/websocket"
@@ -47,6 +48,7 @@ type Server struct {
 	gitCache    *gitcache.Cache
 	secrets     *secrets.Client
 	internalURL string
+	baseURL     string
 	apiToken    string
 	addr        string
 	server      *http.Server
@@ -102,6 +104,10 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 		}
 	}
 
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+
 	return &Server{
 		store:       NewStore(db),
 		orgs:        newOrgStore(db),
@@ -113,6 +119,7 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 		gitCache:    gc,
 		secrets:     sc,
 		internalURL: internalURL,
+		baseURL:     strings.TrimSuffix(baseURL, "/"),
 		apiToken:    os.Getenv("FORGE_API_TOKEN"),
 		addr:        addr,
 	}
@@ -677,7 +684,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.CommitSHA, steps, appliedPolicies)
+	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.CommitSHA, "", steps, appliedPolicies)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -774,6 +781,42 @@ func (s *Server) publishRunDetail(runID string) {
 	if detail, ok := s.store.RunDetail(runID); ok {
 		data, _ := json.Marshal(detail)
 		s.broker.Publish(runID, string(data))
+
+		// If the run has reached a terminal state, report to SCM.
+		if detail.SCMProvider != "" && detail.SCMProvider != "generic" {
+			if detail.Status == "passed" || detail.Status == "failed" || detail.Status == "canceled" {
+				go s.reportSCMStatus(detail)
+			}
+		}
+	}
+}
+
+func (s *Server) reportSCMStatus(detail *api.RunDetail) {
+	proj, _, scmToken, ok := s.projects.GetProject(detail.ProjectID)
+	if !ok || scmToken == "" {
+		return
+	}
+
+	state := "pending"
+	description := "Forge CI — in progress"
+
+	switch detail.Status {
+	case "passed":
+		state = "success"
+		description = "Forge CI — all steps passed"
+	case "failed":
+		state = "failure"
+		description = "Forge CI — some steps failed"
+	case "canceled":
+		state = "error"
+		description = "Forge CI — run canceled"
+	default:
+		return
+	}
+
+	targetURL := fmt.Sprintf("%s/runs/%s", s.baseURL, detail.RunID)
+	if err := scm.PostStatus(detail.SCMProvider, proj.RepoURL, detail.CommitSHA, scmToken, state, targetURL, description, "forge/ci"); err != nil {
+		fmt.Printf("[scm] failed to report %s status for run %s: %v\n", state, detail.RunID[:8], err)
 	}
 }
 
@@ -1129,7 +1172,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1169,7 +1212,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1247,7 +1290,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

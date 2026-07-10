@@ -390,6 +390,7 @@ type CompleteRequest struct {
 	Logs             []*LogEvent            `protobuf:"bytes,4,rep,name=logs,proto3" json:"logs,omitempty"`
 	LeaseId          string                 `protobuf:"bytes,5,opt,name=lease_id,json=leaseId,proto3" json:"lease_id,omitempty"`
 	EmittedStepsJson string                 `protobuf:"bytes,6,opt,name=emitted_steps_json,json=emittedStepsJson,proto3" json:"emitted_steps_json,omitempty"`
+	Skipped          bool                   `protobuf:"varint,7,opt,name=skipped,proto3" json:"skipped,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -464,6 +465,13 @@ func (x *CompleteRequest) GetEmittedStepsJson() string {
 		return x.EmittedStepsJson
 	}
 	return ""
+}
+
+func (x *CompleteRequest) GetSkipped() bool {
+	if x != nil {
+		return x.Skipped
+	}
+	return false
 }
 
 type LogEvent struct {
@@ -981,7 +989,7 @@ const file_internal_pb_forge_proto_rawDesc = "" +
 	"\blease_id\x18\x02 \x01(\tR\aleaseId\"9\n" +
 	"\fHeartbeatAck\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x12\n" +
-	"\x04stop\x18\x02 \x01(\bR\x04stop\"\xd4\x01\n" +
+	"\x04stop\x18\x02 \x01(\bR\x04stop\"\xee\x01\n" +
 	"\x0fCompleteRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
 	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x1f\n" +
@@ -989,7 +997,8 @@ const file_internal_pb_forge_proto_rawDesc = "" +
 	"durationMs\x12#\n" +
 	"\x04logs\x18\x04 \x03(\v2\x0f.forge.LogEventR\x04logs\x12\x19\n" +
 	"\blease_id\x18\x05 \x01(\tR\aleaseId\x12,\n" +
-	"\x12emitted_steps_json\x18\x06 \x01(\tR\x10emittedStepsJson\"f\n" +
+	"\x12emitted_steps_json\x18\x06 \x01(\tR\x10emittedStepsJson\x12\x18\n" +
+	"\askipped\x18\a \x01(\bR\askipped\"f\n" +
 	"\bLogEvent\x12*\n" +
 	"\x02ts\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x14\n" +
 	"\x05level\x18\x02 \x01(\tR\x05level\x12\x18\n" +

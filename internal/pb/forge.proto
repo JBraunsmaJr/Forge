@@ -52,6 +52,7 @@ message CompleteRequest {
   repeated LogEvent logs = 4;
   string lease_id = 5;
   string emitted_steps_json = 6;
+  bool skipped = 7;
 }
 
 message LogEvent {

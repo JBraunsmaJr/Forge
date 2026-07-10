@@ -21,14 +21,14 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, commitSHA string, steps []api.StepDef, appliedPolicies []string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, commitSHA, steps, appliedPolicies)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, commitSHA, scmProvider, steps, appliedPolicies)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, commitSHA string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
 
 	policiesJSON, _ := json.Marshal(appliedPolicies)
 
@@ -44,9 +44,9 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, com
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, commit_sha)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, commitSHA,
+		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, commit_sha, scm_provider)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, commitSHA, scmProvider,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -624,10 +624,10 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	detail := &api.RunDetail{RunID: runID}
 	var policiesJSON []byte
-	var orgID, projectID, commitSHA sql.NullString
+	var orgID, projectID, commitSHA, scmProvider sql.NullString
 	err := s.db.QueryRow(
-		`SELECT name, applied_policies, created_at, org_id, project_id, commit_sha FROM runs WHERE id=$1`, runID,
-	).Scan(&detail.Name, &policiesJSON, &detail.CreatedAt, &orgID, &projectID, &commitSHA)
+		`SELECT name, applied_policies, created_at, org_id, project_id, commit_sha, scm_provider FROM runs WHERE id=$1`, runID,
+	).Scan(&detail.Name, &policiesJSON, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider)
 	if err != nil {
 		return nil, false
 	}
@@ -640,6 +640,9 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	}
 	if commitSHA.Valid {
 		detail.CommitSHA = commitSHA.String
+	}
+	if scmProvider.Valid {
+		detail.SCMProvider = scmProvider.String
 	}
 
 	var appliedPolicies []string
