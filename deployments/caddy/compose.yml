@@ -1,0 +1,25 @@
+services:
+  caddy:
+    image: slothcroissant/caddy-cloudflaredns:latest
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_TOKEN}
+    restart: unless-stopped
+
+  cloudflare-ddns:
+    image: favonia/cloudflare-ddns:latest
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_TOKEN}
+      - DOMAINS=${DOMAIN}
+      - PROXIED=false
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

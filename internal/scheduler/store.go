@@ -132,6 +132,13 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	leaseID := newID()
 	now := time.Now()
 
+	// Count queued jobs for debugging
+	var queuedCount int
+	s.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").Scan(&queuedCount)
+	if queuedCount > 0 {
+		fmt.Printf("=== FORGE DEBUG V3 === [store] LeaseNext: found %d queued jobs, attempting to lease for agent %s\n", queuedCount, agentID[:8])
+	}
+
 	row := s.db.QueryRow(`
 		WITH next AS (
 			SELECT id FROM jobs
@@ -185,9 +192,13 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 	)
 	if err == sql.ErrNoRows {
+		if queuedCount > 0 {
+			fmt.Printf("=== FORGE DEBUG V3 === [store] LeaseNext: %d jobs were queued but none could be leased (possibly all locked or skipped)\n", queuedCount)
+		}
 		return nil, false
 	}
 	if err != nil {
+		fmt.Printf("=== FORGE DEBUG V3 === [store] LeaseNext scan error for agent %s: %v\n", agentID, err)
 		return nil, false
 	}
 
@@ -268,6 +279,12 @@ func (s *Store) ActiveAgentsCount() (int, error) {
 		SELECT COUNT(DISTINCT agent_id) FROM jobs 
 		WHERE status = 'running' AND heartbeat_at > NOW() - INTERVAL '2 minutes'
 	`).Scan(&count)
+	return count, err
+}
+
+func (s *Store) ActiveJobsCount(agentID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE agent_id = $1 AND status = 'running'`, agentID).Scan(&count)
 	return count, err
 }
 

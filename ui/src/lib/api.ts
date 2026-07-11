@@ -16,8 +16,21 @@ export function authHeaders(extra: Record<string, string> = {}): Record<string, 
 }
 
 export function authUrl(url: string): string {
-    if (url.startsWith('http') && !url.includes(location.host)) {
-        return url;
+    if (url.startsWith('http')) {
+        try {
+            const u = new URL(url);
+            // Convert to relative if it's the same host OR it points to our own API.
+            // This prevents "Mixed Content" blocks when the backend returns absolute HTTP URLs.
+            if (u.host === location.host || u.pathname.startsWith('/api/v1/')) {
+                url = u.pathname + u.search + u.hash;
+            } else {
+                return url;
+            }
+        } catch (e) {
+            if (!url.includes(location.host)) {
+                return url;
+            }
+        }
     }
     const t = getToken();
     if (!t) return url;

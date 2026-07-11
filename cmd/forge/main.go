@@ -319,7 +319,10 @@ func schedulerCommand() {
 }
 
 func agentCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := os.Getenv("FORGE_SCHEDULER_URL")
+	if schedulerURL == "" {
+		schedulerURL = "http://localhost:8080"
+	}
 	if len(os.Args) >= 3 {
 		schedulerURL = os.Args[2]
 	}
@@ -399,7 +402,10 @@ func submitCommand() {
 		os.Exit(1)
 	}
 	pipelinePath := os.Args[2]
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := os.Getenv("FORGE_SCHEDULER_URL")
+	if schedulerURL == "" {
+		schedulerURL = "http://localhost:8080"
+	}
 	if len(os.Args) >= 4 {
 		schedulerURL = os.Args[3]
 	}

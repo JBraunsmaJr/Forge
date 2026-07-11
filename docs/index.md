@@ -62,4 +62,4 @@ graph TD
     Agent2 -- "Artifacts" --> S3
 ```
 
-The **scheduler** accepts pipeline submissions, applies org policies, stores jobs in PostgreSQL, and serves the Web UI. **Agents** poll the scheduler, lease jobs, execute them in Docker containers, stream logs back in real time, and upload/download artifacts to S3-compatible storage. The browser connects **directly** to agents for debug terminal sessions — the scheduler is not in the hot path for interactive use.
+The **scheduler** accepts pipeline submissions, applies org policies, stores jobs in PostgreSQL, and serves the Web UI. **Agents** poll the scheduler, lease jobs, execute them in Docker containers, stream logs back in real time, and upload/download artifacts to S3-compatible storage. All traffic, including live debug terminals, is routed through the scheduler.

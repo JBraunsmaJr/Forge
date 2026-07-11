@@ -5,7 +5,6 @@
 
     let viewingArtifact: Artifact | null = null;
     let objectUrl: string | null = null;
-    let loadingArtifactId: string | null = null;
 
     $: filteredArtifacts = $selectedJob 
         ? $artifacts.filter(a => a.job_id === $selectedJob.job_id)
@@ -35,52 +34,19 @@
 
     export let hideHeader = false;
 
-    async function viewArtifact(a: Artifact) {
+    function viewArtifact(a: Artifact) {
         closeViewer();
-        loadingArtifactId = a.id;
-        try {
-            const resp = await fetch(authUrl(a.download_url));
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const blob = await resp.blob();
-
-            // Force correct MIME type if browser/server didn't provide a specific one
-            let finalBlob = blob;
-            if (blob.type === '' || blob.type === 'application/octet-stream') {
-                const ext = a.filename.split('.').pop()?.toLowerCase();
-                const mimeTypes: Record<string, string> = {
-                    'html': 'text/html',
-                    'pdf': 'application/pdf',
-                    'txt': 'text/plain',
-                    'log': 'text/plain',
-                    'png': 'image/png',
-                    'jpg': 'image/jpeg',
-                    'jpeg': 'image/jpeg'
-                };
-                if (ext && mimeTypes[ext]) {
-                    finalBlob = new Blob([blob], { type: mimeTypes[ext] });
-                }
-            }
-
-            objectUrl = URL.createObjectURL(finalBlob);
-            viewingArtifact = a;
-        } catch (e) {
-            console.error("Failed to view artifact:", e);
-            alert("Failed to load artifact content.");
-        } finally {
-            loadingArtifactId = null;
-        }
+        viewingArtifact = a;
+        objectUrl = authUrl(a.download_url);
     }
 
     function closeViewer() {
         viewingArtifact = null;
-        if (objectUrl) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = null;
-        }
+        objectUrl = null;
     }
 
     onDestroy(() => {
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        // no cleanup needed for direct URLs
     });
 </script>
 
@@ -111,8 +77,8 @@
                     <span class="artifact-size">{formatBytes(a.size_bytes)}</span>
                     <div class="artifact-actions">
                         {#if isViewable(a)}
-                            <button class="artifact-view" on:click={() => viewArtifact(a)} disabled={loadingArtifactId !== null}>
-                                {loadingArtifactId === a.id ? 'loading...' : 'view'}
+                            <button class="artifact-view" on:click={() => viewArtifact(a)}>
+                                view
                             </button>
                         {/if}
                         <a 
@@ -140,6 +106,7 @@
                 <iframe 
                     title={viewingArtifact.name}
                     src={objectUrl}
+                    sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
                 ></iframe>
             </div>
         </div>

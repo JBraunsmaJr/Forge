@@ -230,7 +230,6 @@ Default scheduler URL: `http://localhost:8080`
 | `FORGE_API_TOKEN`     | —                | Required. Agent authentication token.                                                                           |
 | `FORGE_VAULT_ADDR`    | —                | Vault address for secret fetching.                                                                              |
 | `FORGE_VAULT_TOKEN`   | —                | Vault token.                                                                                                    |
-| `FORGE_AGENT_WS_ADDR` | `localhost:8082` | Public address for debug terminal WebSocket connections. Set to your machine's LAN IP for multi-machine setups. |
 
 ---
 

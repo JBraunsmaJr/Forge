@@ -15,7 +15,7 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_ARTIFACT_STORE` | `local`                  | Artifact backend: `local` or `s3`.                                                                                                 |
 | `FORGE_ARTIFACT_DIR`   | `/data/artifacts`        | Directory for local artifact storage.                                                                                              |
 | `FORGE_S3_ENDPOINT`    | —                        | S3-compatible endpoint URL. Leave empty for AWS S3. Example: `http://minio:9000`.                                                  |
-| `FORGE_S3_PUBLIC_URL`  | —                        | Public URL for artifacts when S3 endpoint is internal. Browsers will use this to view/download.                                    |
+| `FORGE_S3_PUBLIC_URL`  | —                        | Public URL for artifacts when S3 endpoint is internal. Browsers will use this to view/download. **Note**: If your dashboard is HTTPS, this must also be HTTPS (or left empty to use the built-in proxy). |
 | `FORGE_S3_BUCKET`      | `forge-artifacts`        | S3 bucket name.                                                                                                                    |
 | `FORGE_S3_REGION`      | `us-east-1`              | S3 region.                                                                                                                         |
 | `FORGE_S3_ACCESS_KEY`  | —                        | S3 access key ID.                                                                                                                  |
@@ -34,7 +34,6 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_VAULT_ADDR`    | —                | Vault server address. Required for steps that use `secrets:`. Example: `http://vault:8200`.                              |
 | `FORGE_VAULT_TOKEN`   | —                | Vault authentication token.                                                                                              |
 | `FORGE_GRPC_ADDR`    | —                | Optional. Explicit `host:port` for the gRPC session (e.g. `scheduler:50051`). If unset, derived from scheduler URL. |
-| `FORGE_AGENT_WS_ADDR` | `localhost:8082` | Public host:port for the agent's WebSocket debug terminal server. Set to the machine's LAN IP for remote browser access. |
 | `FORGE_DOCKER_MAX_GB`      | `50`             | Max GB Docker is allowed to use before LRU eviction triggers.                                                            |
 | `FORGE_DOCKER_MAX_PERCENT` | `80`             | Max disk usage percentage before LRU eviction triggers.                                                                 |
 
@@ -64,10 +63,9 @@ The agent connects to the scheduler via gRPC on port `50051` by default.
 
 The compose stack reads from a `.env` file (copy from `.env.example`):
 
-| Variable           | Default                 | Description                                                                                 |
-|--------------------|-------------------------|---------------------------------------------------------------------------------------------|
-| `FORGE_ROOT_TOKEN` | `forge-dev-admin-token` | Admin token preset for all services. Change for staging/production.                         |
-| `FORGE_AGENT_HOST` | `localhost`             | Hostname browsers use to reach agent WebSocket ports. Set to your LAN IP for remote access. |
+| Variable           | Default                 | Description                                                                 |
+|--------------------|-------------------------|-----------------------------------------------------------------------------|
+| `FORGE_ROOT_TOKEN` | `forge-dev-admin-token` | Admin token preset for all services. Change for staging/production.         |
 
 ### Compose service environment summary
 
@@ -82,18 +80,13 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 - `FORGE_API_TOKEN` — same as `FORGE_ROOT_TOKEN` (dev convenience; use a separate agent token in production)
 - `FORGE_VAULT_ADDR` — points to the `vault` service
 - `FORGE_VAULT_TOKEN` — `forge-dev-token`
-- `FORGE_AGENT_WS_ADDR` — `{FORGE_AGENT_HOST}:8082` / `:8083`
 
 ---
 
 ## Port Reference
 
-| Port | Service    | Description              |
-|------|------------|--------------------------|
 | 8080 | Scheduler  | HTTP API + Web UI        |
 | 50051| Scheduler  | gRPC Agent Communication  |
-| 8082 | Agent 1    | WebSocket debug terminal |
-| 8083 | Agent 2    | WebSocket debug terminal |
 | 5432 | PostgreSQL | Database                 |
 | 8200 | Vault      | Secrets storage          |
 | 9000 | MinIO      | S3 API                   |

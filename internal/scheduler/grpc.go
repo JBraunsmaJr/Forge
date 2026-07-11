@@ -9,6 +9,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/pb"
+	"google.golang.org/grpc/peer"
 )
 
 type grpcServer struct {
@@ -17,35 +18,70 @@ type grpcServer struct {
 }
 
 func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
-	var agentID string
-	var concurrency int32
+	p, _ := peer.FromContext(stream.Context())
+	addr := "unknown"
+	if p != nil {
+		addr = p.Addr.String()
+	}
 
-	// First message must be a register request
-	msg, err := stream.Recv()
+	// Set a timeout for the first message (registration)
+	ctx, cancel := context.WithTimeout(stream.Context(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		msg *pb.AgentMessage
+		err error
+	}
+	resChan := make(chan result, 1)
+
+	go func() {
+		msg, err := stream.Recv()
+		resChan <- result{msg, err}
+	}()
+
+	var msg *pb.AgentMessage
+	var err error
+	select {
+	case res := <-resChan:
+		msg = res.msg
+		err = res.err
+	case <-ctx.Done():
+		fmt.Printf("=== FORGE DEBUG V3 === [grpc] registration timeout from %s\n", addr)
+		return fmt.Errorf("registration timeout")
+	}
+
 	if err != nil {
+		fmt.Printf("=== FORGE DEBUG V3 === [grpc] failed to receive registration from %s: %v\n", addr, err)
 		return err
 	}
+	var agentID string
+	var concurrency int
 	if reg := msg.GetRegister(); reg != nil {
 		agentID = msg.AgentId
-		concurrency = reg.Concurrency
-		fmt.Printf("[grpc] agent %s registered (concurrency: %d)\n", agentID[:8], concurrency)
+		concurrency = int(reg.Concurrency)
+		if concurrency <= 0 {
+			concurrency = 1
+		}
+		fmt.Printf("=== FORGE DEBUG V3 === [grpc] agent %s registered from %s (concurrency: %d)\n", agentID[:8], addr, concurrency)
 	} else {
+		fmt.Printf("=== FORGE DEBUG V3 === [grpc] first message from %s was not registration\n", addr)
 		return fmt.Errorf("first message must be register")
 	}
 
-	ctx, cancel := context.WithCancel(stream.Context())
-	defer cancel()
+	// Use a new context for the rest of the session
+	sessionCtx, sessionCancel := context.WithCancel(stream.Context())
+	defer sessionCancel()
 
 	// Goroutine to receive messages from the agent (heartbeats, completion, logs)
 	go func() {
 		for {
 			msg, err := stream.Recv()
 			if err == io.EOF {
-				cancel()
+				sessionCancel()
 				return
 			}
 			if err != nil {
-				cancel()
+				sessionCancel()
 				return
 			}
 
@@ -122,13 +158,25 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-sessionCtx.Done():
 			return nil
 		case <-ticker.C:
+			// Check if agent has capacity
+			active, err := s.scheduler.store.ActiveJobsCount(agentID)
+			if err != nil {
+				fmt.Printf("=== FORGE DEBUG V3 === [grpc] error checking active jobs for agent %s: %v\n", agentID[:8], err)
+				continue
+			}
+
+			if active >= concurrency {
+				// Agent is at capacity, skip leasing for now
+				continue
+			}
+
 			// Try to lease a job for this agent
 			spec, ok := s.scheduler.store.LeaseNext(agentID)
 			if ok {
-				fmt.Printf("[grpc] pushing job %s to agent %s\n", spec.JobID[:8], agentID[:8])
+				fmt.Printf("=== FORGE DEBUG V3 === [grpc] pushing job %s to agent %s (active: %d/%d)\n", spec.JobID[:8], agentID[:8], active+1, concurrency)
 				s.scheduler.publishRunDetail(spec.RunID)
 
 				pbSpec := &pb.JobSpec{

@@ -120,13 +120,13 @@ Define security policies (Trivy scans, govulncheck, etc.) at the org level. They
     │                                │
 ┌───┴──────┐              ┌──────────┴──┐
 │  Agent 1  │              │   Agent 2   │
-│  :8082   │              │   :8083     │
+│          │              │             │
 │          │              │             │
 │docker run│              │ docker run  │
 └──────────┘              └─────────────┘
 ```
 
-The **scheduler** accepts pipeline submissions, applies org policies, stores jobs in PostgreSQL, and serves the Web UI. **Agents** poll the scheduler, lease jobs, execute them in Docker containers, stream logs back in real time, and upload/download artifacts to S3-compatible storage. The browser connects **directly** to agents for debug terminal sessions — the scheduler is not in the hot path for interactive use.
+The **scheduler** accepts pipeline submissions, applies org policies, stores jobs in PostgreSQL, and serves the Web UI. **Agents** poll the scheduler, lease jobs, execute them in Docker containers, stream logs back in real time, and upload/download artifacts to S3-compatible storage. All traffic, including live debug terminals, is routed through the scheduler.
 
 ---
 
@@ -260,6 +260,7 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 | [Debug Sessions](docs/debugging.md)              | Live terminal in failing job containers                             |
 | [CLI Reference](docs/cli-reference.md)           | All commands and flags                                              |
 | [Configuration](docs/configuration.md)           | Environment variables reference                                     |
+| [HTTPS / Proxy](docs/HTTPS.md)                  | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
 | [Architecture](docs/architecture.md)             | How Forge works under the hood                                      |
 
 ---

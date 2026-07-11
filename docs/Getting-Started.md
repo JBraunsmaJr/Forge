@@ -256,7 +256,9 @@ Forge automatically cleans up old job runs and their associated artifacts in sto
 
 ### TLS / Reverse Proxy
 
-Run a reverse proxy (nginx, Caddy, Traefik) in front of the scheduler. Forge itself does not handle TLS.
+Run a reverse proxy (nginx, Caddy, Traefik) in front of the scheduler. Forge itself does not handle TLS. 
+
+See the [HTTPS and Reverse Proxy Guide](HTTPS.md) for detailed setup instructions including Cloudflare and DuckDNS support.
 
 Caddy example:
 ```
@@ -267,11 +269,11 @@ forge.internal.example.com {
 
 ### Agent WebSocket for Debug Sessions
 
-Agent debug terminals require the browser to connect directly to each agent's WebSocket server. For production with agents behind a firewall:
+Agent debug terminals use a reverse connection model. The browser connects to the scheduler, which then proxies the connection to the agent.
 
-1. Set `FORGE_AGENT_WS_ADDR` to the agent's externally reachable address.
-2. Or run the agent with `--ws-addr 0.0.0.0:8082` and expose that port.
-3. Ensure your network allows direct browser → agent WebSocket connections.
+1. All WebSocket traffic goes through the scheduler's address.
+2. Ensure your reverse proxy (if any) allows WebSocket upgrades for the scheduler.
+3. No agent ports need to be exposed.
 
 ---
 

@@ -31,6 +31,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 //go:embed all:web/dist/*
@@ -205,7 +206,18 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		fmt.Printf("[scheduler] failed to listen for gRPC: %v\n", err)
 	} else {
-		gsrv := grpc.NewServer()
+		var kasp = keepalive.ServerParameters{
+			Time:    10 * time.Second, // Ping the client if it is idle for 10s
+			Timeout: 5 * time.Second,  // Wait 5s for the ping ack
+		}
+		var kapv = keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second, // Minimum time between client pings
+			PermitWithoutStream: true,            // Allow pings even when there are no active streams
+		}
+		gsrv := grpc.NewServer(
+			grpc.KeepaliveParams(kasp),
+			grpc.KeepaliveEnforcementPolicy(kapv),
+		)
 		pb.RegisterAgentServiceServer(gsrv, &grpcServer{scheduler: s})
 		go func() {
 			fmt.Printf("[scheduler] gRPC server listening at %v\n", lis.Addr())
@@ -269,7 +281,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		fmt.Printf("[scheduler] listening on %s\n", s.addr)
+		fmt.Printf("=== FORGE DEBUG V3 === [scheduler] listening on %s\n", s.addr)
 		fmt.Printf("[scheduler] web UI → http://localhost%s\n", s.addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErr <- err

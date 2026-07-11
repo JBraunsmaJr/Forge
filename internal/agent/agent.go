@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,7 +34,9 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -108,25 +111,62 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 
 // Run starts the agent's gRPC session and handles jobs. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
-	fmt.Printf("[agent %s] starting (gRPC), scheduler: %s\n", a.id[:8], a.schedulerURL)
-
 	// Determine gRPC address from schedulerURL or environment variable
-	grpcAddr := os.Getenv("FORGE_GRPC_ADDR")
+	grpcAddrRaw := os.Getenv("FORGE_GRPC_ADDR")
+	isSecure := strings.HasPrefix(a.schedulerURL, "https://")
+	if strings.HasPrefix(grpcAddrRaw, "https://") {
+		isSecure = true
+	} else if strings.HasPrefix(grpcAddrRaw, "http://") {
+		isSecure = false
+	}
+
+	grpcAddr := grpcAddrRaw
 	if grpcAddr != "" {
 		grpcAddr = strings.TrimPrefix(grpcAddr, "http://")
 		grpcAddr = strings.TrimPrefix(grpcAddr, "https://")
 		grpcAddr = strings.TrimSuffix(grpcAddr, "/")
+
+		// If no port is specified, add default based on security
+		if !strings.Contains(grpcAddr, ":") {
+			if isSecure {
+				grpcAddr += ":443"
+			} else {
+				grpcAddr += ":50051"
+			}
+		}
 	} else {
 		grpcAddr = "localhost:50051"
 		if u, err := url.Parse(a.schedulerURL); err == nil {
 			host := u.Hostname()
 			if host != "" {
-				grpcAddr = host + ":50051"
+				if isSecure {
+					port := u.Port()
+					if port == "" {
+						port = "443"
+					}
+					grpcAddr = host + ":" + port
+				} else {
+					grpcAddr = host + ":50051"
+				}
 			}
 		}
 	}
 
-	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var opts []grpc.DialOption
+	if isSecure {
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                10 * time.Second,
+		Timeout:             5 * time.Second,
+		PermitWithoutStream: true,
+	}))
+
+	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] dialing gRPC: %s (secure: %v)\n", a.id[:8], grpcAddr, isSecure)
+	conn, err := grpc.NewClient(grpcAddr, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to dial gRPC: %w", err)
 	}
@@ -135,12 +175,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.grpcClient = pb.NewAgentServiceClient(conn)
 
 	// Open bidirectional stream
+	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] opening gRPC session...\n", a.id[:8])
 	stream, err := a.grpcClient.Session(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open gRPC session: %w", err)
 	}
 
 	// Register agent
+	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] registering agent...\n", a.id[:8])
 	err = stream.Send(&pb.AgentMessage{
 		AgentId: a.id,
 		Payload: &pb.AgentMessage_Register{
@@ -152,6 +194,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to register: %w", err)
 	}
+	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] registration sent\n", a.id[:8])
 
 	// Clean up any dangling containers from previous runs.
 	executor.Cleanup()
@@ -175,18 +218,34 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 
-	fmt.Printf("[agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
+	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
+	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] connected and waiting for jobs\n", a.id[:8])
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				fmt.Printf("=== FORGE DEBUG V3 === [agent %s] still waiting for jobs (stream active)...\n", a.id[:8])
+			}
+		}
+	}()
 
 	// Receive loop: receive jobs from scheduler
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
+			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] gRPC stream closed by server (EOF)\n", a.id[:8])
 			return nil
 		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
+			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] gRPC receive error: %v\n", a.id[:8], err)
 			return fmt.Errorf("gRPC receive error: %w", err)
 		}
 
@@ -1019,7 +1078,12 @@ func (a *Agent) debugLoop(ctx context.Context) {
 			return
 		}
 		spec, ok, err := a.leaseDebug(ctx)
-		if err != nil || !ok {
+		if err != nil {
+			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] debug lease error: %v\n", a.id[:8], err)
+			a.sleep(ctx, 5*time.Second)
+			continue
+		}
+		if !ok {
 			a.sleep(ctx, 2*time.Second)
 			continue
 		}
