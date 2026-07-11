@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 // state should be one of: "pending", "success", "failure", "error".
 func PostStatus(provider, repoURL, sha, token, state, targetURL, description, context string) error {
 	if token == "" {
+		fmt.Printf("[scm] skipping status report for %s: no token provided\n", repoURL)
 		return nil // No token, no status
 	}
 
@@ -122,6 +124,7 @@ func doRequest(method, url, token string, payload any) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Forge-CI")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("PRIVATE-TOKEN", token)
 
@@ -133,7 +136,8 @@ func doRequest(method, url, token string, payload any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("SCM API returned HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("SCM API returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil

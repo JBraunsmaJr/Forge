@@ -358,6 +358,15 @@ type CreateProjectRequest struct {
 	BranchFilter []string `json:"branch_filter,omitempty"` // empty = all branches
 }
 
+// UpdateProjectRequest updates an existing project.
+type UpdateProjectRequest struct {
+	Name         *string  `json:"name,omitempty"`
+	RepoURL      *string  `json:"repo_url,omitempty"`
+	PipelinePath *string  `json:"pipeline_path,omitempty"`
+	SCMToken     *string  `json:"scm_token,omitempty"`
+	BranchFilter []string `json:"branch_filter,omitempty"`
+}
+
 // ManualTriggerRequest is used to manually start a pipeline run.
 type ManualTriggerRequest struct {
 	Branch string `json:"branch"`

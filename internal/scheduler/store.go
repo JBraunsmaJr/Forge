@@ -889,27 +889,29 @@ func (s *Store) GetJobStepID(jobID string) string {
 
 // RerunSteps returns the original step definitions and workspace dir for a run
 // so it can be resubmitted as a new run.
-func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, commitSHA string, err error) {
-	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(commit_sha,'') FROM runs WHERE id=$1`, runID).
-		Scan(&name, &workspaceDir, &orgID, &projectID, &commitSHA)
+func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, commitSHA string, appliedPolicies []string, err error) {
+	var policiesJSON []byte
+	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(commit_sha,''), applied_policies FROM runs WHERE id=$1`, runID).
+		Scan(&name, &workspaceDir, &orgID, &projectID, &commitSHA, &policiesJSON)
 	if err == sql.ErrNoRows {
-		return "", nil, "", "", "", "", fmt.Errorf("run %s not found", runID)
+		return "", nil, "", "", "", "", nil, fmt.Errorf("run %s not found", runID)
 	}
 	if err != nil {
-		return "", nil, "", "", "", "", err
+		return "", nil, "", "", "", "", nil, err
 	}
+	json.Unmarshal(policiesJSON, &appliedPolicies)
 
 	rows, err := s.db.Query(`
 		SELECT step_id, step_type, image, entrypoint, command, work_dir, env,
 		       inputs, timeout_ns, depends_on, secret_names, policy_source,
-		       docker_socket,
+		       docker_socket, condition, always_run,
 		       COALESCE(pipeline_ref::text, 'null'),
 		       COALESCE(artifact_uploads::text, '[]'),
 		       COALESCE(artifact_downloads::text, '[]'),
 		       status
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
-		return "", nil, "", "", "", "", err
+		return "", nil, "", "", "", "", nil, err
 	}
 	defer rows.Close()
 
@@ -919,11 +921,13 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		var entrypointJSON, commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
 		var timeoutNS int64
 		var dockerSocket bool
+		var condition string
+		var alwaysRun bool
 
 		if err := rows.Scan(
 			&stepID, &stepType, &image, &entrypointJSON, &commandJSON, &workDir, &envJSON,
 			&inputsJSON, &timeoutNS, &dependsJSON, &secretsJSON, &policySource,
-			&dockerSocket,
+			&dockerSocket, &condition, &alwaysRun,
 			&pipelineRefJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
 			&status,
 		); err != nil {
@@ -958,12 +962,14 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			DockerSocket:      dockerSocket,
 			Type:              stepType,
 			PolicySource:      policySource,
+			Condition:         condition,
+			AlwaysRun:         alwaysRun,
 			ArtifactUploads:   artifactUploads,
 			ArtifactDownloads: artifactDownloads,
 			Status:            api.JobStatus(status),
 		})
 	}
-	return name, steps, workspaceDir, orgID, projectID, commitSHA, nil
+	return name, steps, workspaceDir, orgID, projectID, commitSHA, appliedPolicies, nil
 }
 
 // RecordStepResult stores a step outcome for flaky detection analysis.

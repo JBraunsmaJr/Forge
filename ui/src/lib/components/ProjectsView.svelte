@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { api, type Project, type Org } from '../api';
     import { currentView } from '../stores';
-    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp } from '@lucide/svelte';
+    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings } from '@lucide/svelte';
     import SecretsManager from './SecretsManager.svelte';
 
     let projects: Project[] = [];
@@ -26,6 +26,56 @@
         pipeline_path: '',
         scm_token: ''
     };
+
+    let editingProject: Project | null = null;
+    let editForm = {
+        name: '',
+        repo_url: '',
+        pipeline_path: '',
+        scm_token: '',
+        branch_filter: [] as string[]
+    };
+    let branchFilterStr = '';
+
+    function startEdit(project: Project) {
+        editingProject = project;
+        editForm = {
+            name: project.name,
+            repo_url: project.repo_url,
+            pipeline_path: project.pipeline_path,
+            scm_token: '', // Never show existing token
+            branch_filter: [...(project.branch_filter || [])]
+        };
+        branchFilterStr = (project.branch_filter || []).join(', ');
+        error = '';
+    }
+
+    async function updateProject() {
+        if (!editingProject) return;
+        error = '';
+        try {
+            const req: any = {
+                name: editForm.name,
+                repo_url: editForm.repo_url,
+                pipeline_path: editForm.pipeline_path,
+                branch_filter: branchFilterStr.split(',').map(s => s.trim()).filter(s => s)
+            };
+            if (editForm.scm_token) {
+                req.scm_token = editForm.scm_token;
+            }
+
+            const success = await api.updateProject(editingProject.id, req);
+            if (success) {
+                editingProject = null;
+                await refreshProjects();
+            } else {
+                error = 'Failed to update project. Please check your inputs.';
+            }
+        } catch (e) {
+            console.error("Failed to update project:", e);
+            error = 'An error occurred while updating the project.';
+        }
+    }
 
     async function loadData() {
         loading = true;
@@ -185,6 +235,38 @@
         </div>
     {/if}
 
+    {#if editingProject}
+        <div class="create-card card">
+            <h3>Edit Project: {editingProject.name}</h3>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="e-name">Project Name</label>
+                    <input id="e-name" type="text" bind:value={editForm.name} />
+                </div>
+                <div class="form-group">
+                    <label for="e-repo">Repository URL</label>
+                    <input id="e-repo" type="text" bind:value={editForm.repo_url} />
+                </div>
+                <div class="form-group">
+                    <label for="e-path">Pipeline Path</label>
+                    <input id="e-path" type="text" bind:value={editForm.pipeline_path} />
+                </div>
+                <div class="form-group">
+                    <label for="e-token">SCM Token (Leave empty to keep current)</label>
+                    <input id="e-token" type="password" bind:value={editForm.scm_token} placeholder="••••••••" />
+                </div>
+                <div class="form-group full-width">
+                    <label for="e-branches">Branch Filter (Optional — comma separated)</label>
+                    <input id="e-branches" type="text" bind:value={branchFilterStr} placeholder="main, dev" />
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn-secondary" on:click={() => editingProject = null}>Cancel</button>
+                <button class="btn-primary" on:click={updateProject} disabled={!editForm.name || !editForm.repo_url}>Save Changes</button>
+            </div>
+        </div>
+    {/if}
+
     {#if loading}
         <div class="loading">Loading projects...</div>
     {:else if !projects || projects.length === 0}
@@ -223,6 +305,11 @@
                             {:else}
                                 <ChevronDown size={14} />
                             {/if}
+                        </button>
+
+                        <button class="btn-text" on:click={() => startEdit(project)}>
+                            <Settings size={14} />
+                            Settings
                         </button>
 
                         {#if openSecretsId === project.id}

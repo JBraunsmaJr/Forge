@@ -155,6 +155,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Project management
 	mux.HandleFunc("POST /api/v1/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/v1/projects", s.handleListProjects)
+	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
 
@@ -805,7 +806,13 @@ func (s *Server) publishRunDetail(runID string) {
 
 func (s *Server) reportSCMStatus(detail *api.RunDetail) {
 	proj, _, scmToken, ok := s.projects.GetProject(detail.ProjectID)
-	if !ok || scmToken == "" {
+	if !ok {
+		fmt.Printf("[scm] project %s not found for status report\n", detail.ProjectID)
+		return
+	}
+
+	if scmToken == "" {
+		fmt.Printf("[scm] no SCM token configured for project %s (%s)\n", proj.Name, proj.ID)
 		return
 	}
 
@@ -975,6 +982,25 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	orgID := r.URL.Query().Get("org_id")
 	writeJSON(w, http.StatusOK, s.projects.ListProjects(orgID))
+}
+
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	var req api.UpdateProjectRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.projects.UpdateProject(projectID, req); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleListBranches(w http.ResponseWriter, r *http.Request) {
@@ -1163,7 +1189,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1184,7 +1210,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, nil)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, appliedPolicies)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1199,7 +1225,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1224,7 +1250,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, nil)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, appliedPolicies)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1246,7 +1272,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	}
 	runID := detail.RunID
 
-	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1302,7 +1328,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, nil)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, "", steps, appliedPolicies)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -187,6 +187,12 @@ export const api = {
             body: JSON.stringify(req),
         }).then(r => r?.ok ? r.json() : null);
     },
+    updateProject: (id: string, req: { name?: string, repo_url?: string, pipeline_path?: string, scm_token?: string, branch_filter?: string[] }): Promise<boolean> =>
+        fetchAuth(`/api/v1/projects/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req),
+        }).then(r => r?.status === 204),
     triggerProject: (id: string, branch: string, commit?: string): Promise<{ run_id: string } | null> =>
         fetchAuth(`/api/v1/projects/${id}/trigger`, {
             method: 'POST',

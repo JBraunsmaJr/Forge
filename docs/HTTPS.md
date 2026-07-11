@@ -138,3 +138,37 @@ If you can download artifacts but "viewing" them fails with a mixed-content erro
     - **Recommended Fix**: Unset `FORGE_S3_PUBLIC_URL`. When this is unset, Forge automatically proxies artifact downloads through the scheduler. This ensures the browser only sees requests to your main `https://` domain.
     - **Alternative**: Enable HTTPS for your Minio instance and set `FORGE_S3_PUBLIC_URL` to the `https://` address.
 3.  **Relative Path Fix**: Recent versions of Forge UI automatically convert same-host URLs to relative paths to avoid mixed content. Ensure you have rebuilt your images with `docker compose build --no-cache`.
+
+---
+
+## SCM Status Reporting (GitHub/GitLab)
+
+Forge can report the status of pipeline runs (Pending, Success, Failure) back to your SCM provider. This appears as a green checkmark or red X next to your commits or pull requests.
+
+### 1. Configure SCM Token
+
+For Forge to talk to GitHub or GitLab, you must provide it with a Personal Access Token (PAT).
+
+- **GitHub**: Create a token with `repo:status` scope.
+- **GitLab**: Create a token with `api` scope.
+
+### 2. Add Token to Project
+
+You can add a token when creating a project or update an existing one using the Forge CLI:
+
+**Adding a new project with a token:**
+```bash
+forge project add my-project https://github.com/user/repo.git --token YOUR_SCM_TOKEN
+```
+
+**Updating an existing project:**
+```bash
+forge project update my-project --token YOUR_SCM_TOKEN
+```
+
+### 3. Verify Reporting
+
+If status reporting fails, check the scheduler logs for:
+- `[scm] skipping status report: no token provided`: You need to follow the steps above.
+- `SCM API returned HTTP 401`: Your token is invalid or expired.
+- `SCM API returned HTTP 404`: The repo URL in Forge might not match what the SCM provider expects, or the token lacks permissions for that repo.

@@ -72,6 +72,22 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 	sessionCtx, sessionCancel := context.WithCancel(stream.Context())
 	defer sessionCancel()
 
+	// Outgoing message channel to ensure thread-safe stream.Send
+	out := make(chan *pb.SchedulerMessage, 64)
+	go func() {
+		for {
+			select {
+			case <-sessionCtx.Done():
+				return
+			case msg := <-out:
+				if err := stream.Send(msg); err != nil {
+					sessionCancel()
+					return
+				}
+			}
+		}
+	}()
+
 	// Goroutine to receive messages from the agent (heartbeats, completion, logs)
 	go func() {
 		for {
@@ -89,14 +105,14 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 			case *pb.AgentMessage_Heartbeat:
 				err := s.scheduler.store.Heartbeat(m.Heartbeat.JobId, m.Heartbeat.LeaseId, msg.AgentId)
 				stop := err != nil
-				stream.Send(&pb.SchedulerMessage{
+				out <- &pb.SchedulerMessage{
 					Payload: &pb.SchedulerMessage_HeartbeatAck{
 						HeartbeatAck: &pb.HeartbeatAck{
 							JobId: m.Heartbeat.JobId,
 							Stop:  stop,
 						},
 					},
-				})
+				}
 			case *pb.AgentMessage_Complete:
 				logs := make([]api.LogEvent, len(m.Complete.Logs))
 				for i, l := range m.Complete.Logs {
@@ -221,12 +237,10 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					})
 				}
 
-				if err := stream.Send(&pb.SchedulerMessage{
+				out <- &pb.SchedulerMessage{
 					Payload: &pb.SchedulerMessage_Job{
 						Job: pbSpec,
 					},
-				}); err != nil {
-					return err
 				}
 			}
 		}

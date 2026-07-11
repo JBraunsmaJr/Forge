@@ -319,10 +319,7 @@ func schedulerCommand() {
 }
 
 func agentCommand() {
-	schedulerURL := os.Getenv("FORGE_SCHEDULER_URL")
-	if schedulerURL == "" {
-		schedulerURL = "http://localhost:8080"
-	}
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) >= 3 {
 		schedulerURL = os.Args[2]
 	}
@@ -402,10 +399,7 @@ func submitCommand() {
 		os.Exit(1)
 	}
 	pipelinePath := os.Args[2]
-	schedulerURL := os.Getenv("FORGE_SCHEDULER_URL")
-	if schedulerURL == "" {
-		schedulerURL = "http://localhost:8080"
-	}
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) >= 4 {
 		schedulerURL = os.Args[3]
 	}
@@ -478,7 +472,7 @@ func statusCommand() {
 		os.Exit(1)
 	}
 	runID := os.Args[2]
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) >= 4 {
 		schedulerURL = os.Args[3]
 	}
@@ -529,7 +523,7 @@ func jobIcon(s api.JobStatus) string {
 }
 
 func tokenCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge token <create|list|revoke> [args]")
 		os.Exit(1)
@@ -607,7 +601,7 @@ func cancelCommand() {
 		fmt.Fprintln(os.Stderr, "usage: forge cancel <run-id>")
 		os.Exit(1)
 	}
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	resp, err := cliPost(
 		fmt.Sprintf("%s/api/v1/runs/%s/cancel", schedulerURL, os.Args[2]),
 		"application/json", nil)
@@ -630,7 +624,7 @@ func rerunCommand() {
 		fmt.Fprintln(os.Stderr, "usage: forge rerun <run-id>")
 		os.Exit(1)
 	}
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	resp, err := cliPost(
 		fmt.Sprintf("%s/api/v1/runs/%s/rerun", schedulerURL, os.Args[2]),
 		"application/json", nil)
@@ -646,7 +640,7 @@ func rerunCommand() {
 }
 
 func runsCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge runs <prune> [--days N]")
 		os.Exit(1)
@@ -678,7 +672,7 @@ func runsCommand() {
 }
 
 func artifactsCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge artifacts <list|download> [args]")
 		fmt.Fprintln(os.Stderr, "")
@@ -777,7 +771,7 @@ func artifactsCommand() {
 }
 
 func flakyCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	days := "30"
 	minRuns := "5"
 	for i := 2; i < len(os.Args)-1; i++ {
@@ -992,9 +986,9 @@ steps:
 `
 
 func projectCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: forge project <add|list> [args]")
+		fmt.Fprintln(os.Stderr, "usage: forge project <add|list|update> [args]")
 		os.Exit(1)
 	}
 	switch os.Args[2] {
@@ -1062,6 +1056,70 @@ func projectCommand() {
 		fmt.Printf("\n  ⚠ Webhook secret (save this — it won't be shown again):\n")
 		fmt.Printf("  %s\n", proj.WebhookSecret)
 
+	case "update":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: forge project update <project-id-or-name> [--name <new-name>] [--repo <new-repo-url>] [--token <new-scm-token>] [--pipeline <new-path>]")
+			os.Exit(1)
+		}
+		projectID := os.Args[3]
+		req := api.UpdateProjectRequest{}
+		for i := 4; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--name":
+				i++
+				if i < len(os.Args) {
+					req.Name = &os.Args[i]
+				}
+			case "--repo":
+				i++
+				if i < len(os.Args) {
+					req.RepoURL = &os.Args[i]
+				}
+			case "--token":
+				i++
+				if i < len(os.Args) {
+					req.SCMToken = &os.Args[i]
+				}
+			case "--pipeline":
+				i++
+				if i < len(os.Args) {
+					req.PipelinePath = &os.Args[i]
+				}
+			case "--branch":
+				i++
+				if i < len(os.Args) {
+					req.BranchFilter = append(req.BranchFilter, os.Args[i])
+				}
+			}
+		}
+		body, _ := json.Marshal(req)
+		url := fmt.Sprintf("%s/api/v1/projects/%s", schedulerURL, projectID)
+
+		client := &http.Client{}
+		httpReq, err := http.NewRequest("PUT", url, bytes.NewReader(body))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if token := cliToken(); token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			var errResp api.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Fprintf(os.Stderr, "✗ project update failed (HTTP %d): %s\n", resp.StatusCode, errResp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ project updated\n")
+
 	case "list":
 		orgID := os.Getenv("FORGE_ORG")
 		url := schedulerURL + "/api/v1/projects"
@@ -1099,7 +1157,7 @@ func triggerCommand() {
 
 	branch := "main"
 	commit := ""
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -1141,7 +1199,7 @@ func triggerCommand() {
 }
 
 func orgCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge org <create|list> [args]")
 		os.Exit(1)
@@ -1187,7 +1245,7 @@ func orgCommand() {
 }
 
 func policyCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge policy <create|list|delete> [args]")
 		os.Exit(1)
@@ -1510,6 +1568,16 @@ func cliToken() string {
 	return os.Getenv("FORGE_API_TOKEN")
 }
 
+func cliSchedulerURL() string {
+	if u := os.Getenv("FORGE_SCHEDULER_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	if u := os.Getenv("FORGE_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	return "http://localhost:8080"
+}
+
 // cliPost makes an authenticated POST from the CLI.
 func cliPost(url, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest("POST", url, body)
@@ -1548,10 +1616,7 @@ func cliDelete(url string) (*http.Response, error) {
 }
 
 func pruneCommand() {
-	schedulerURL := os.Getenv("FORGE_URL")
-	if schedulerURL == "" {
-		schedulerURL = "http://localhost:8080"
-	}
+	schedulerURL := cliSchedulerURL()
 
 	arg := "30d"
 	if len(os.Args) > 2 {

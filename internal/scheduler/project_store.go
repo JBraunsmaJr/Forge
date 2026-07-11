@@ -94,6 +94,55 @@ func (p *ProjectStore) GetProjectByRepo(repoURL string) (*api.ProjectInfo, strin
 	return &info, secret, scmToken, true
 }
 
+// UpdateProject updates an existing project.
+func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) error {
+	// First resolve the actual ID if a name was provided
+	var actualID string
+	err := p.db.QueryRow(`SELECT id FROM projects WHERE id=$1 OR name=$1 LIMIT 1`, id).Scan(&actualID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("project not found")
+		}
+		return err
+	}
+
+	if req.Name != nil {
+		_, err := p.db.Exec(`UPDATE projects SET name=$1 WHERE id=$2`, *req.Name, actualID)
+		if err != nil {
+			return err
+		}
+	}
+	if req.RepoURL != nil {
+		_, err := p.db.Exec(`UPDATE projects SET repo_url=$1 WHERE id=$2`, *req.RepoURL, actualID)
+		if err != nil {
+			return err
+		}
+	}
+	if req.PipelinePath != nil {
+		_, err := p.db.Exec(`UPDATE projects SET pipeline_path=$1 WHERE id=$2`, *req.PipelinePath, actualID)
+		if err != nil {
+			return err
+		}
+	}
+	if req.SCMToken != nil {
+		_, err := p.db.Exec(`UPDATE projects SET scm_token=$1 WHERE id=$2`, *req.SCMToken, actualID)
+		if err != nil {
+			return err
+		}
+	}
+	if req.BranchFilter != nil {
+		branchFilterJSON, _ := json.Marshal(req.BranchFilter)
+		if len(req.BranchFilter) == 0 {
+			branchFilterJSON = []byte("[]")
+		}
+		_, err := p.db.Exec(`UPDATE projects SET branch_filter=$1 WHERE id=$2`, branchFilterJSON, actualID)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListProjects returns all projects for an org.
 func (p *ProjectStore) ListProjects(orgID string) []api.ProjectInfo {
 	q := `SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, COALESCE(branch_filter::text,'[]'), created_at FROM projects`
