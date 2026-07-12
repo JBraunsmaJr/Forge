@@ -1,11 +1,32 @@
 name: Forge-CI-CD
 
 steps:
+  - id: build-ui
+    name: Build UI
+    image: node:22-alpine
+    timeout: 5m
+    run: |
+      cd ui
+      npm install
+      npm run build
+      cd ..
+      tar -czf ui-dist.tar.gz -C internal/scheduler/web dist
+    artifacts:
+      upload:
+        - path: ui-dist.tar.gz
+
   - id: unit-tests
     name: Unit Tests
     image: golang:1.26.5-alpine
+    depends_on: [build-ui]
+    artifacts:
+      download:
+        - name: ui-dist.tar.gz
     timeout: 5m
-    run: go test ./...
+    run: |
+      mkdir -p internal/scheduler/web
+      tar -xzf ui-dist.tar.gz -C internal/scheduler/web
+      go test ./...
 
   - id: build-image
     name: Build Image
@@ -22,13 +43,15 @@ steps:
   - id: build-binaries
     name: Build Binaries
     image: golang:1.26.5-alpine
-    depends_on: [unit-tests]
+    depends_on: [unit-tests, build-ui]
     matrix:
       os: [linux, windows, darwin]
       arch: [amd64, arm64]
     env:
       CGO_ENABLED: "0"
     run: |
+      mkdir -p internal/scheduler/web
+      tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       export GOOS=${{ matrix.os }}
       export GOARCH=${{ matrix.arch }}
       EXT=""
@@ -37,6 +60,8 @@ steps:
       mkdir -p dist
       go build -ldflags="-s -w" -o "dist/${OUT}" ./cmd/forge
     artifacts:
+      download:
+        - name: ui-dist.tar.gz
       upload:
         - path: dist/forge-*
           name: forge-${{ matrix.os }}-${{ matrix.arch }}
