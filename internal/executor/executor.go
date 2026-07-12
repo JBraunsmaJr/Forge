@@ -141,9 +141,9 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		containerID = strings.TrimSpace(string(out))
 
 		// 2. Copy workspace IN
-		// We copy the entire directory into /workspace. Docker cp handles creating
-		// the destination if it doesn't exist.
-		cpIn := exec.CommandContext(ctx, "docker", "cp", e.WorkspaceDir, containerID+":/workspace")
+		// We copy the contents of the workspace directory into /workspace.
+		// The "/." suffix is important to copy contents rather than the directory itself.
+		cpIn := exec.CommandContext(ctx, "docker", "cp", e.WorkspaceDir+"/.", containerID+":/workspace")
 		if err := cpIn.Run(); err != nil {
 			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()

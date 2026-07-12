@@ -1582,15 +1582,6 @@ func (a *Agent) rebaseURL(rawURL string) string {
 		return u.String()
 	}
 
-	// Also rebase if the host is localhost or 127.0.0.1 - this handles
-	// cases where FORGE_S3_PUBLIC_URL is set to localhost but the agent
-	// is running inside a container and needs to reach the scheduler/minio.
-	if u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" {
-		u.Scheme = base.Scheme
-		u.Host = base.Host
-		return u.String()
-	}
-
 	return rawURL
 }
 
