@@ -49,13 +49,13 @@ steps:
   - id: release-approval
     name: Approve Release
     type: approval
-    depends_on: [build-image]
+    depends_on: [unit-tests, build-ui]
     condition: tag()
 
   - id: build-binaries
     name: Build Binaries
     image: golang:1.26.5-alpine
-    depends_on: [unit-tests, build-ui]
+    depends_on: [release-approval]
     matrix:
       os: [linux, windows, darwin]
       arch: [amd64, arm64]
@@ -83,7 +83,7 @@ steps:
   - id: github-release
     name: GitHub Release
     type: release
-    depends_on: [release-approval]
+    depends_on: [build-binaries]
     condition: tag()
     release:
       name: "Release ${{ env.FORGE_COMMIT_TAG }}"
