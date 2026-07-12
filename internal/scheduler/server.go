@@ -671,6 +671,13 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 		s.logError(job, fmt.Sprintf("Failed to list artifacts for run: %v", err))
 	}
 
+	// Diagnostic log of all available artifacts
+	var allNames []string
+	for _, a := range allArtifacts {
+		allNames = append(allNames, a.Name)
+	}
+	s.logInfo(job, fmt.Sprintf("Total artifacts found for run %s: %d (%v)", job.RunID[:8], len(allArtifacts), allNames))
+
 	seen := make(map[string]bool)
 	for _, rawArtName := range job.Release.Artifacts {
 		artPattern := interpolate(rawArtName, job.Env)
@@ -683,6 +690,7 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 					if !seen[art.ID] {
 						assetsToUpload = append(assetsToUpload, art)
 						seen[art.ID] = true
+						s.logInfo(job, fmt.Sprintf("Matched wildcard %q → %s", artPattern, art.Name))
 					}
 					matched = true
 				}
@@ -695,17 +703,13 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 			meta, err := s.artifacts.GetArtifact(ctx, job.RunID, artPattern)
 			if err != nil {
 				s.logError(job, fmt.Sprintf("Artifact %q not found in run %s", artPattern, job.RunID))
-				// Log available artifacts to help debug
-				var names []string
-				for _, a := range allArtifacts {
-					names = append(names, a.Name)
-				}
-				s.logInfo(job, fmt.Sprintf("Available artifacts in run %s: %v", job.RunID, names))
+				s.logInfo(job, fmt.Sprintf("Available artifacts in run %s: %v", job.RunID, allNames))
 				continue
 			}
 			if !seen[meta.ID] {
 				assetsToUpload = append(assetsToUpload, meta)
 				seen[meta.ID] = true
+				s.logInfo(job, fmt.Sprintf("Matched exact %q", meta.Name))
 			}
 		}
 	}
@@ -713,9 +717,8 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 	// 5. Upload assets
 	failed := false
 	for _, meta := range assetsToUpload {
-		s.logInfo(job, fmt.Sprintf("Uploading artifact %q (run: %s)...", meta.Name, job.RunID))
+		s.logInfo(job, fmt.Sprintf("Uploading artifact %q (size: %d bytes)...", meta.Name, meta.SizeBytes))
 
-		s.logInfo(job, fmt.Sprintf("Downloading %q (ID: %s) from storage...", meta.Filename, meta.ID))
 		content, _, err := s.artifacts.ServeDownload(ctx, meta.ID)
 		if err != nil {
 			s.logError(job, fmt.Sprintf("Failed to download artifact %q: %v", meta.Name, err))
@@ -723,8 +726,7 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 			continue
 		}
 
-		s.logInfo(job, fmt.Sprintf("Uploading %q to SCM release...", meta.Filename))
-		err = scm.UploadAsset(provider, proj.RepoURL, scmToken, uploadURL, releaseID, meta.Filename, content)
+		err = scm.UploadAsset(provider, proj.RepoURL, scmToken, uploadURL, releaseID, meta.Filename, meta.SizeBytes, content)
 		if closer, ok := content.(io.Closer); ok {
 			closer.Close()
 		}

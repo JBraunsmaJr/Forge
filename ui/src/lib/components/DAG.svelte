@@ -114,7 +114,7 @@
         const labels: Record<string, string> = { 
             passed:'passed', failed:'failed', running:'running…',
             queued:'queued', pending:'pending', canceled:'canceled',
-            timed_out: 'timed out'
+            timed_out: 'timed out', approval: 'waiting for approval'
         };
         return labels[status] || status;
     }

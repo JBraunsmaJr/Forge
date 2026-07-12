@@ -775,7 +775,9 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 			SELECT r.id, r.name, r.created_at,
 			       COUNT(j.id) AS job_count,
 			       CASE 
-			           WHEN bool_or(j.status IN ('running', 'queued', 'pending')) THEN 'running'
+			           WHEN bool_or(j.status IN ('running', 'queued')) THEN 'running'
+			           WHEN bool_or(j.status = 'approval') THEN 'approval'
+			           WHEN bool_or(j.status = 'pending') THEN 'running'
 			           WHEN bool_or(j.status IN ('failed', 'timed_out')) THEN 'failed'
 			           WHEN bool_or(j.status = 'canceled') THEN 'canceled'
 			           ELSE 'passed'
@@ -946,20 +948,44 @@ func (s *Store) jobStatuses(runID string) []api.JobStatus {
 }
 
 func overallStatus(statuses []api.JobStatus) api.JobStatus {
+	hasRunning := false
+	hasQueued := false
+	hasApproval := false
+	hasPending := false
+	hasFailed := false
+	hasCanceled := false
+
 	for _, s := range statuses {
-		if s == api.JobStatusRunning || s == api.JobStatusQueued || s == api.JobStatusPending {
-			return api.JobStatusRunning
+		switch s {
+		case api.JobStatusRunning:
+			hasRunning = true
+		case api.JobStatusQueued:
+			hasQueued = true
+		case api.JobStatusApproval:
+			hasApproval = true
+		case api.JobStatusPending:
+			hasPending = true
+		case api.JobStatusFailed, api.JobStatusTimedOut:
+			hasFailed = true
+		case api.JobStatusCanceled:
+			hasCanceled = true
 		}
 	}
-	for _, s := range statuses {
-		if s == api.JobStatusFailed || s == api.JobStatusTimedOut {
-			return api.JobStatusFailed
-		}
+
+	if hasRunning || hasQueued {
+		return api.JobStatusRunning
 	}
-	for _, s := range statuses {
-		if s == api.JobStatusCanceled {
-			return api.JobStatusCanceled
-		}
+	if hasApproval {
+		return api.JobStatusApproval
+	}
+	if hasPending {
+		return api.JobStatusRunning
+	}
+	if hasFailed {
+		return api.JobStatusFailed
+	}
+	if hasCanceled {
+		return api.JobStatusCanceled
 	}
 	return api.JobStatusPassed
 }

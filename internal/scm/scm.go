@@ -189,24 +189,25 @@ func createGitLabRelease(repoURL, token, tag, name, body string) (string, string
 }
 
 // UploadAsset uploads a file to an existing release.
-func UploadAsset(provider, repoURL, token, uploadURL, releaseID, filename string, content io.Reader) error {
+func UploadAsset(provider, repoURL, token, uploadURL, releaseID, filename string, size int64, content io.Reader) error {
 	switch provider {
 	case "github":
-		return uploadGitHubAsset(token, uploadURL, filename, content)
+		return uploadGitHubAsset(token, uploadURL, filename, size, content)
 	case "gitlab":
-		return uploadGitLabAsset(repoURL, token, releaseID, filename, content)
+		return uploadGitLabAsset(repoURL, token, releaseID, filename, size, content)
 	default:
 		return fmt.Errorf("unsupported provider: %s", provider)
 	}
 }
 
-func uploadGitHubAsset(token, uploadURL, filename string, content io.Reader) error {
+func uploadGitHubAsset(token, uploadURL, filename string, size int64, content io.Reader) error {
 	apiURL := fmt.Sprintf("%s?name=%s", uploadURL, filename)
 	req, err := http.NewRequest("POST", apiURL, content)
 	if err != nil {
 		return err
 	}
 
+	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("User-Agent", "Forge-CI")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -226,7 +227,7 @@ func uploadGitHubAsset(token, uploadURL, filename string, content io.Reader) err
 	return nil
 }
 
-func uploadGitLabAsset(repoURL, token, tag, filename string, content io.Reader) error {
+func uploadGitLabAsset(repoURL, token, tag, filename string, size int64, content io.Reader) error {
 	repoPath := getRepoPath(repoURL)
 	projectID := strings.ReplaceAll(repoPath, "/", "%2F")
 	baseURL := "https://gitlab.com"

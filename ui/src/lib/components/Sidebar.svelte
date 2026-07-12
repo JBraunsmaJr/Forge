@@ -41,6 +41,15 @@
         return `${Math.floor(s/3600)}h ago`;
     }
 
+    function statusBadge(status: string) {
+        const labels: Record<string, string> = {
+            passed: 'passed', failed: 'failed', running: 'running',
+            queued: 'queued', pending: 'pending', canceled: 'canceled',
+            timed_out: 'timed out', approval: 'waiting for approval'
+        };
+        return labels[status] || status;
+    }
+
     onMount(() => {
         refreshRunList();
         const interval = setInterval(refreshRunList, 5000);
@@ -95,7 +104,7 @@
                 <option value="passed">Passed</option>
                 <option value="failed">Failed</option>
                 <option value="canceled">Canceled</option>
-                <option value="approval">Approval</option>
+                <option value="approval">Waiting for Approval</option>
             </select>
         </div>
         <div id="run-list">
@@ -110,7 +119,7 @@
                     >
                         <div class="run-item-name">{run.name}</div>
                         <div class="run-item-meta">
-                            <span class="badge badge-{run.status}">{run.status}</span>
+                            <span class="badge badge-{run.status}">{statusBadge(run.status)}</span>
                             <span>{run.job_count} job{run.job_count !== 1 ? 's' : ''}</span>
                             <span>{timeAgo(run.created_at)}</span>
                         </div>
