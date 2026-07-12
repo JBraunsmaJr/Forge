@@ -150,7 +150,11 @@
 
     async function approveJob(job: Job) {
         if (confirm(`Approve step ${job.step_id}?`)) {
-            await api.approveJob(job.job_id);
+            const ok = await api.approveJob(job.job_id);
+            if (ok && $activeRun) {
+                const detail = await api.runDetail($activeRun.run_id);
+                if (detail) activeRun.set(detail);
+            }
         }
     }
 

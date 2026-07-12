@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -87,6 +88,10 @@ func main() {
 }
 
 func runCommand() {
+	// Detect current Git info
+	ref := currentGitRef()
+	commitSHA := currentGitCommit()
+
 	// Clean up any dangling containers from previous runs.
 	executor.Cleanup()
 	defer executor.Cleanup()
@@ -132,7 +137,7 @@ func runCommand() {
 	workspaceDir, _ := os.Getwd()
 
 	if !watch {
-		if !runOnce(pipelinePath, workspaceDir, envFile, secretFlags) {
+		if !runOnce(pipelinePath, workspaceDir, envFile, secretFlags, ref, commitSHA) {
 			os.Exit(1)
 		}
 		return
@@ -163,7 +168,7 @@ func runCommand() {
 
 	fmt.Printf("👀 Watching for changes in %s...\n", workspaceDir)
 
-	runOnce(pipelinePath, workspaceDir, envFile, secretFlags)
+	runOnce(pipelinePath, workspaceDir, envFile, secretFlags, ref, commitSHA)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -185,7 +190,10 @@ func runCommand() {
 		case <-debounceTimer.C:
 			fmt.Printf("\n🔄 Change detected, re-running...\n")
 			executor.Cleanup()
-			runOnce(pipelinePath, workspaceDir, envFile, secretFlags)
+			// Re-detect ref/commit on change
+			ref = currentGitRef()
+			commitSHA = currentGitCommit()
+			runOnce(pipelinePath, workspaceDir, envFile, secretFlags, ref, commitSHA)
 			fmt.Printf("\n👀 Watching for changes...\n")
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -196,7 +204,7 @@ func runCommand() {
 	}
 }
 
-func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string) bool {
+func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, ref, commitSHA string) bool {
 	fmt.Printf("📋 Compiling %s\n", pipelinePath)
 	p, err := compiler.Compile(pipelinePath)
 	if err != nil {
@@ -233,8 +241,17 @@ func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string) b
 		return false
 	}
 
-	// Resolve secrets for each step.
+	// Resolve secrets and inject SCM info for each step.
 	for _, step := range p.Steps {
+		if step.Env == nil {
+			step.Env = make(map[string]string)
+		}
+		step.Env["FORGE_REF"] = ref
+		step.Env["FORGE_COMMIT_SHA"] = commitSHA
+		if strings.HasPrefix(ref, "refs/tags/") {
+			step.Env["FORGE_COMMIT_TAG"] = strings.TrimPrefix(ref, "refs/tags/")
+		}
+
 		if len(step.Secrets) == 0 {
 			continue
 		}
@@ -464,6 +481,10 @@ func agentCommand() {
 }
 
 func submitCommand() {
+	// Detect current Git info
+	ref := currentGitRef()
+	commitSHA := currentGitCommit()
+
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge submit <pipeline-file> [scheduler-url]")
 		os.Exit(1)
@@ -549,6 +570,8 @@ func submitCommand() {
 		Steps:        steps,
 		WorkspaceDir: workspaceDir,
 		OrgID:        os.Getenv("FORGE_ORG"),
+		Ref:          ref,
+		CommitSHA:    commitSHA,
 	})
 
 	resp, err := cliPost(
@@ -1762,6 +1785,27 @@ func cliPost(url, contentType string, body io.Reader) (*http.Response, error) {
 		req.Header.Set("Authorization", "Bearer "+t)
 	}
 	return http.DefaultClient.Do(req)
+}
+
+func currentGitRef() string {
+	cmd := exec.Command("git", "symbolic-ref", "HEAD")
+	if out, err := cmd.Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	// Try tags
+	cmd = exec.Command("git", "describe", "--tags", "--exact-match")
+	if out, err := cmd.Output(); err == nil {
+		return "refs/tags/" + strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+func currentGitCommit() string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	if out, err := cmd.Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
 }
 
 // cliGet makes an authenticated GET from the CLI.

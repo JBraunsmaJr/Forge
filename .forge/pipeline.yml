@@ -46,6 +46,12 @@ steps:
       docker build -t ghcr.io/jbraunsmajr/forge/forge -f Dockerfile .
       docker push ghcr.io/jbraunsmajr/forge/forge
 
+  - id: release-approval
+    name: Approve Release
+    type: approval
+    depends_on: [build-image]
+    condition: tag()
+
   - id: build-binaries
     name: Build Binaries
     image: golang:1.26.5-alpine
@@ -73,12 +79,6 @@ steps:
       upload:
         - path: dist/forge-*
           name: forge-${{ matrix.os }}-${{ matrix.arch }}
-
-  - id: release-approval
-    name: Approve Release
-    type: approval
-    depends_on: [build-binaries, build-image]
-    condition: tag()
 
   - id: github-release
     name: GitHub Release

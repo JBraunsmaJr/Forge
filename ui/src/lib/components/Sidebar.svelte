@@ -95,6 +95,7 @@
                 <option value="passed">Passed</option>
                 <option value="failed">Failed</option>
                 <option value="canceled">Canceled</option>
+                <option value="approval">Approval</option>
             </select>
         </div>
         <div id="run-list">
@@ -274,6 +275,7 @@
     .badge-running { background: #1a2f4a; color: var(--blue); }
     .badge-passed  { background: #0d2e20; color: var(--green); }
     .badge-failed  { background: #2e1414; color: var(--red); }
+    .badge-approval { background: #3b2b10; color: var(--amber); }
     .badge-pending, .badge-queued { background: var(--surface2); color: var(--muted); }
     #empty-state { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 13px; }
 

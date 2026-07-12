@@ -6,7 +6,7 @@
     import ArtifactViewer from './ArtifactViewer.svelte';
     import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
-    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X } from '@lucide/svelte';
+    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
     export let onCloseDebug: () => void;
@@ -75,6 +75,21 @@
         closed: 'closed'
     };
 
+    async function handleApprove() {
+        if (!$selectedJob) return;
+        const ok = await api.approveJob($selectedJob.job_id);
+        if (ok) {
+            // refresh run detail
+            const detail = await api.runDetail($activeRun!.run_id);
+            activeRun.set(detail);
+            // Re-select the job to update its status in the panel
+            const updatedJob = detail?.jobs.find(j => j.job_id === $selectedJob!.job_id);
+            if (updatedJob) selectedJob.set(updatedJob);
+        } else {
+            alert('Failed to approve step');
+        }
+    }
+
     onDestroy(() => {
         clearInterval(ttlInterval);
     });
@@ -105,6 +120,12 @@
             </button>
         </div>
         <div class="actions">
+            {#if $selectedJob?.status === 'approval'}
+                <button class="approve-btn" on:click={handleApprove}>
+                    <Check size={14} />
+                    Approve Step
+                </button>
+            {/if}
             {#if activeTab === 'terminal' && debugSession.sessionID}
                 <div class="terminal-controls">
                     <span class="status {debugSession.status}">
@@ -201,6 +222,24 @@
     .actions {
         display: flex;
         align-items: center;
+    }
+    .approve-btn {
+        background: var(--green);
+        color: white;
+        border: none;
+        padding: 4px 12px;
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-right: 12px;
+        transition: opacity 0.2s;
+    }
+    .approve-btn:hover {
+        opacity: 0.9;
     }
     .expand-btn {
         background: none;
