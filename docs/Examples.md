@@ -75,7 +75,72 @@ The fan-in point — `depends_on: [matrix-generator]` on the release step — me
 
 ---
 
-## Example 2: Monorepo Smart CI
+## Example 2: Static Matrix Build
+
+**File:** `examples/.forge/static-matrix.yml`
+
+### What it does
+
+Runs the same test suite across multiple Node.js versions and operating systems in parallel using the built-in `matrix` field.
+
+```yaml
+name: static-matrix-example
+
+steps:
+  - id: test
+    image: node:${{ matrix.version }}
+    matrix:
+      version: [18, 20, 22]
+      os: [linux, alpine]
+    run: |
+      echo "Testing Node ${{ matrix.version }} on ${{ matrix.os }}"
+      node --version
+      npm test
+```
+
+### How it works
+
+The Forge compiler expands this step into 6 distinct jobs: `test-18-linux`, `test-18-alpine`, `test-20-linux`, etc. Variables are accessed using the `${{ matrix.key }}` syntax.
+
+---
+
+## Example 3: Reusable Step Templates
+
+**Files:** `examples/.forge/templates-demo.yml`, `examples/.forge/templates/go-build.yml`
+
+### What it does
+
+Demonstrates how to extract common step definitions into reusable template files.
+
+**templates/go-build.yml:**
+```yaml
+image: golang:1.24-alpine
+env:
+  CGO_ENABLED: "0"
+run: go build -o dist/${{ env.BINARY_NAME }} ./cmd/${{ env.BINARY_NAME }}
+```
+
+**templates-demo.yml:**
+```yaml
+steps:
+  - id: build-api
+    uses: templates/go-build.yml
+    env:
+      BINARY_NAME: api-server
+
+  - id: build-worker
+    uses: templates/go-build.yml
+    env:
+      BINARY_NAME: worker-process
+```
+
+### Why use templates?
+
+Templates reduce duplication and ensure consistency across multiple projects. If you need to update your base Go image or build flags, you only need to change it in one place.
+
+---
+
+## Example 4: Monorepo Smart CI
 
 **File:** `examples/.forge/monorepo-smart-ci.yml`  
 **Script:** `examples/scripts/ci/detect-changes.py`
@@ -139,7 +204,7 @@ Add a directory under `services/`. No pipeline changes needed — the detector s
 
 ---
 
-## Example 3: Progressive Deployment with Pipeline Chaining
+## Example 5: Progressive Deployment with Pipeline Chaining
 
 **Files:** `examples/.forge/progressive-deploy.yml`, `examples/.forge/deploy.yml`
 
@@ -205,7 +270,7 @@ This pattern requires:
 
 ---
 
-## Example 4: Cross-Team Library Release
+## Example 6: Cross-Team Library Release
 
 **File:** `examples/.forge/library-release.yml`  
 **Script:** `examples/scripts/ci/discover-consumers.py`
@@ -265,7 +330,7 @@ All consumers run in parallel — maximum fan-out, fan back in before publish.
 
 ---
 
-## Example 5: Conditional Logic and Event Triggers
+## Example 7: Conditional Logic and Event Triggers
 
 **File:** `examples/.forge/conditionals.yml`
 

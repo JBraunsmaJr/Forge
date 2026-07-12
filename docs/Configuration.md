@@ -31,9 +31,10 @@ All Forge components are configured via environment variables. There are no conf
 | Variable              | Default          | Description                                                                                                              |
 |-----------------------|------------------|--------------------------------------------------------------------------------------------------------------------------|
 | `FORGE_API_TOKEN`     | —                | **Required.** API token for scheduler authentication. Use a token with the `agent` role.                                 |
+| `FORGE_SCHEDULER_URL` | `http://localhost:8080` | The URL of the scheduler. Used for all agent-scheduler communication. Switch to `https://` for secure connections. |
 | `FORGE_VAULT_ADDR`    | —                | Vault server address. Required for steps that use `secrets:`. Example: `http://vault:8200`.                              |
 | `FORGE_VAULT_TOKEN`   | —                | Vault authentication token.                                                                                              |
-| `FORGE_GRPC_ADDR`    | —                | Optional. Explicit `host:port` for the gRPC session (e.g. `scheduler:50051`). If unset, derived from scheduler URL. |
+| `FORGE_GRPC_ADDR`    | —                | Optional. Explicit `host:port` for the gRPC session (e.g. `scheduler:50051`). If unset, derived from `FORGE_SCHEDULER_URL`. |
 | `FORGE_DOCKER_MAX_GB`      | `50`             | Max GB Docker is allowed to use before LRU eviction triggers.                                                            |
 | `FORGE_DOCKER_MAX_PERCENT` | `80`             | Max disk usage percentage before LRU eviction triggers.                                                                 |
 
@@ -41,10 +42,15 @@ All Forge components are configured via environment variables. There are no conf
 
 ## Agent gRPC Connection
 
-The agent connects to the scheduler via gRPC on port `50051` by default. 
+The agent connects to the scheduler via gRPC. The connection details are determined as follows:
 
-- If `FORGE_GRPC_ADDR` is set, the agent uses that address (stripping any `http://` or `https://` prefixes if present). It must be in `host:port` format.
-- If `FORGE_GRPC_ADDR` is NOT set, the agent derives the gRPC address from the scheduler's HTTP URL (e.g., `http://master.badger.net:8080` -> `master.badger.net:50051`).
+1.  If `FORGE_GRPC_ADDR` is set, the agent uses that address. It must be in `host:port` format. If it starts with `http://` or `https://`, the scheme is stripped.
+2.  If `FORGE_GRPC_ADDR` is NOT set, the agent derives the address from `FORGE_SCHEDULER_URL`:
+    - `https://forge.dev` -> `forge.dev:443` (Secure gRPC enabled)
+    - `http://scheduler:8080` -> `scheduler:50051` (Insecure gRPC)
+    - `https://forge.dev:8443` -> `forge.dev:8443` (Secure gRPC)
+
+Forge uses gRPC keepalives (10s pings) to maintain connections through proxies and load balancers.
 
 ---
 

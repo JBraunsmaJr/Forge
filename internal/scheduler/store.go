@@ -21,14 +21,14 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, commitSHA, scmProvider, steps, appliedPolicies)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, steps, appliedPolicies)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
 
 	policiesJSON, _ := json.Marshal(appliedPolicies)
 
@@ -44,9 +44,9 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, com
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, commit_sha, scm_provider)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, commitSHA, scmProvider,
+		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, ref, commit_sha, scm_provider)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, ref, commitSHA, scmProvider,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -74,7 +74,13 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, com
 		if status == "" {
 			status = "pending"
 			if len(step.DependsOn) == 0 {
-				status = "queued"
+				if stepType == "approval" {
+					status = string(api.JobStatusApproval)
+				} else if stepType == "release" {
+					status = string(api.JobStatusRelease)
+				} else {
+					status = "queued"
+				}
 			}
 		}
 
@@ -102,6 +108,7 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 	toJSON := func(v any) []byte { b, _ := json.Marshal(v); return b }
 
 	pipelineRefJSON := toJSON(step.PipelineRef)
+	releaseConfigJSON := toJSON(step.Release)
 	artifactUploadsJSON := toJSON(step.ArtifactUploads)
 	artifactDownloadsJSON := toJSON(step.ArtifactDownloads)
 
@@ -110,14 +117,14 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 			id, run_id, step_id, step_type, image, entrypoint, command, work_dir,
 			env, inputs, timeout_ns, depends_on, secret_names,
 			policy_source, condition, always_run, docker_socket, pipeline_ref,
-			artifact_uploads, artifact_downloads, status
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+			release_config, artifact_uploads, artifact_downloads, status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 		jobID, runID, step.ID, stepType, step.Image, toJSON(step.Entrypoint),
 		toJSON(command), workDir,
 		toJSON(step.Env), toJSON(step.Inputs), int64(timeout),
 		toJSON(step.DependsOn), toJSON(step.SecretNames),
 		step.PolicySource, step.Condition, step.AlwaysRun, step.DockerSocket, pipelineRefJSON,
-		artifactUploadsJSON, artifactDownloadsJSON,
+		releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
 		status,
 	)
 	return err
@@ -163,17 +170,61 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			COALESCE(jobs.condition, ''),
 			jobs.always_run,
 			COALESCE(jobs.pipeline_ref::text, 'null'),
+			COALESCE(jobs.release_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]')
 		`,
 		leaseID, agentID, now,
 	)
 
+	return s.scanJobSpec(row, leaseID)
+}
+
+// LeaseReleaseJob atomically finds and claims the next release job for the scheduler to process.
+func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
+	leaseID := newID()
+	now := time.Now()
+
+	row := s.db.QueryRow(`
+		WITH next AS (
+			SELECT id FROM jobs
+			WHERE  status = 'release'
+			LIMIT  1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs
+		SET    status       = 'running',
+		       lease_id     = $1,
+		       agent_id     = 'scheduler',
+		       leased_at    = $2,
+		       heartbeat_at = $2,
+		       started_at   = $2
+		FROM   next
+		WHERE  jobs.id = next.id
+		RETURNING
+			jobs.id, jobs.run_id, jobs.step_id, jobs.image, jobs.entrypoint,
+			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
+			jobs.timeout_ns, jobs.secret_names, jobs.step_type,
+			jobs.docker_socket,
+			COALESCE(jobs.condition, ''),
+			jobs.always_run,
+			COALESCE(jobs.pipeline_ref::text, 'null'),
+			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.artifact_uploads::text,   '[]'),
+			COALESCE(jobs.artifact_downloads::text, '[]')
+		`,
+		leaseID, now,
+	)
+
+	return s.scanJobSpec(row, leaseID)
+}
+
+func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	var (
 		jobID, runID, stepID, image, stepType      string
 		entrypointJSON, commandJSON, envJSON       []byte
 		inputsJSON, secretsJSON                    []byte
-		pipelineRefJSON                            string
+		pipelineRefJSON, releaseConfigJSON         string
 		artifactUploadsJSON, artifactDownloadsJSON string
 		workDir                                    string
 		timeoutNS                                  int64
@@ -189,16 +240,14 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		&condition,
 		&alwaysRun,
 		&pipelineRefJSON,
+		&releaseConfigJSON,
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 	)
 	if err == sql.ErrNoRows {
-		if queuedCount > 0 {
-			fmt.Printf("=== FORGE DEBUG V3 === [store] LeaseNext: %d jobs were queued but none could be leased (possibly all locked or skipped)\n", queuedCount)
-		}
 		return nil, false
 	}
 	if err != nil {
-		fmt.Printf("=== FORGE DEBUG V3 === [store] LeaseNext scan error for agent %s: %v\n", agentID, err)
+		fmt.Printf("[store] job scan error: %v\n", err)
 		return nil, false
 	}
 
@@ -213,10 +262,12 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 
 	var pipelineRef *api.PipelineRef
 	if pipelineRefJSON != "null" && pipelineRefJSON != "" {
-		var ref api.PipelineRef
-		if json.Unmarshal([]byte(pipelineRefJSON), &ref) == nil {
-			pipelineRef = &ref
-		}
+		json.Unmarshal([]byte(pipelineRefJSON), &pipelineRef)
+	}
+
+	var releaseConfig *api.ReleaseConfig
+	if releaseConfigJSON != "null" && releaseConfigJSON != "" {
+		json.Unmarshal([]byte(releaseConfigJSON), &releaseConfig)
 	}
 
 	var artifactUploads []api.ArtifactUploadSpec
@@ -224,10 +275,10 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	json.Unmarshal([]byte(artifactUploadsJSON), &artifactUploads)
 	json.Unmarshal([]byte(artifactDownloadsJSON), &artifactDownloads)
 
-	// Fetch org_id and project_id from the parent run for secret scoping.
-	var orgID, projectID, commitSHA string
-	s.db.QueryRow(`SELECT COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(commit_sha,'') FROM runs WHERE id=$1`, runID).
-		Scan(&orgID, &projectID, &commitSHA)
+	// Fetch org_id, project_id and ref from the parent run for secret scoping and conditions.
+	var orgID, projectID, ref, commitSHA string
+	s.db.QueryRow(`SELECT COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,'') FROM runs WHERE id=$1`, runID).
+		Scan(&orgID, &projectID, &ref, &commitSHA)
 
 	return &api.JobSpec{
 		JobID:             jobID,
@@ -248,8 +299,10 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		AlwaysRun:         alwaysRun,
 		OrgID:             orgID,
 		ProjectID:         projectID,
+		Ref:               ref,
 		CommitSHA:         commitSHA,
 		PipelineRef:       pipelineRef,
+		Release:           releaseConfig,
 		ArtifactUploads:   artifactUploads,
 		ArtifactDownloads: artifactDownloads,
 	}, true
@@ -309,7 +362,7 @@ func (s *Store) ReclaimStaleJobs() int {
 // Complete marks a job done, stores its logs, adds any emitted steps,
 // and unblocks downstream jobs whose dependencies are now satisfied.
 func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
-	logs []api.LogEvent, emittedSteps []api.StepDef, skipped bool) (string, error) {
+	logs []api.LogEvent, emittedSteps []api.StepDef, skipped bool, timedOut bool) (string, error) {
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -318,10 +371,12 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 	defer tx.Rollback()
 
 	status := "passed"
-	if skipped {
-		status = "skipped"
+	if timedOut {
+		status = string(api.JobStatusTimedOut)
+	} else if skipped {
+		status = string(api.JobStatusSkipped)
 	} else if exitCode != 0 {
-		status = "failed"
+		status = string(api.JobStatusFailed)
 	}
 	var runID, stepID string
 	err = tx.QueryRow(`
@@ -425,9 +480,13 @@ func (s *Store) insertEmittedSteps(tx *sql.Tx, runID, generatorJobID, generatorS
 // a job is ready when every step it depends on appears in the set of
 // passed step IDs for this run.
 func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
+	var ref string
+	if err := tx.QueryRow(`SELECT COALESCE(ref,'') FROM runs WHERE id=$1`, runID).Scan(&ref); err != nil {
+		return err
+	}
 
 	rows, err := tx.Query(
-		`SELECT step_id, status, depends_on, condition, always_run, id FROM jobs WHERE run_id=$1`, runID)
+		`SELECT step_id, status, depends_on, condition, always_run, id, step_type FROM jobs WHERE run_id=$1`, runID)
 	if err != nil {
 		return err
 	}
@@ -440,6 +499,7 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 		deps      []string
 		condition string
 		alwaysRun bool
+		stepType  string
 	}
 
 	allJobs := make(map[string]jobInfo)
@@ -448,7 +508,7 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 	for rows.Next() {
 		var ji jobInfo
 		var depsJSON []byte
-		if err := rows.Scan(&ji.stepID, &ji.status, &depsJSON, &ji.condition, &ji.alwaysRun, &ji.dbID); err != nil {
+		if err := rows.Scan(&ji.stepID, &ji.status, &depsJSON, &ji.condition, &ji.alwaysRun, &ji.dbID, &ji.stepType); err != nil {
 			return err
 		}
 		json.Unmarshal(depsJSON, &ji.deps)
@@ -486,22 +546,22 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 				break
 			}
 
-			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" {
+			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "approval" {
 				allFinished = false
 				break
 			}
-			if dep.status == "failed" || dep.status == "canceled" {
+			if dep.status == "failed" || dep.status == "canceled" || dep.status == "skipped" || dep.status == "timed_out" {
 				anyFailed = true
 			}
 
 			if emits, ok := generatorEmits[depID]; ok {
 				for _, emittedID := range emits {
 					emitted, ok := allJobs[emittedID]
-					if !ok || emitted.status == "pending" || emitted.status == "queued" || emitted.status == "running" {
+					if !ok || emitted.status == "pending" || emitted.status == "queued" || emitted.status == "running" || emitted.status == "approval" {
 						allFinished = false
 						break
 					}
-					if emitted.status == "failed" || emitted.status == "canceled" {
+					if emitted.status == "failed" || emitted.status == "canceled" || emitted.status == "skipped" || emitted.status == "timed_out" {
 						anyFailed = true
 					}
 				}
@@ -521,8 +581,14 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 			if !runPassed && !isAlways && !isFailure {
 				newStatus = string(api.JobStatusSkipped)
 			} else {
-				if evaluateCondition(job.condition, runPassed || job.alwaysRun) {
-					newStatus = string(api.JobStatusQueued)
+				if evaluateCondition(job.condition, runPassed || job.alwaysRun, ref) {
+					if job.stepType == "approval" {
+						newStatus = string(api.JobStatusApproval)
+					} else if job.stepType == "release" {
+						newStatus = string(api.JobStatusRelease)
+					} else {
+						newStatus = string(api.JobStatusQueued)
+					}
 				} else {
 					newStatus = string(api.JobStatusSkipped)
 				}
@@ -543,6 +609,86 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 	}
 
 	return nil
+}
+
+func (s *Store) ApproveJob(jobID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var runID string
+	err = tx.QueryRow(`
+		UPDATE jobs 
+		SET    status = 'queued' 
+		WHERE  id = $1 AND status = 'approval'
+		RETURNING run_id`, jobID).Scan(&runID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("job not found or not in approval state")
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) GetRunComparison(runID string) (*api.RunComparison, error) {
+	var projectID string
+	var durationMs int64
+	err := s.db.QueryRow(`
+		SELECT r.project_id, 
+		       COALESCE(EXTRACT(EPOCH FROM (MAX(j.finished_at) - MIN(j.started_at))) * 1000, 0)::BIGINT as duration_ms
+		FROM runs r
+		JOIN jobs j ON j.run_id = r.id
+		WHERE r.id = $1
+		GROUP BY r.id, r.project_id`, runID).Scan(&projectID, &durationMs)
+	if err != nil {
+		return nil, err
+	}
+
+	if projectID == "" {
+		return &api.RunComparison{RunID: runID, DurationMs: durationMs}, nil
+	}
+
+	// Calculate average of last 10 successful runs
+	var avgDuration float64
+	err = s.db.QueryRow(`
+		SELECT AVG(duration_ms) FROM (
+			SELECT COALESCE(EXTRACT(EPOCH FROM (MAX(j.finished_at) - MIN(j.started_at))) * 1000, 0) as duration_ms
+			FROM runs r
+			JOIN jobs j ON j.run_id = r.id
+			WHERE r.project_id = $1 AND r.id != $2
+			GROUP BY r.id
+			ORDER BY MAX(j.finished_at) DESC
+			LIMIT 10
+		) as last_runs`, projectID, runID).Scan(&avgDuration)
+
+	if err != nil || avgDuration == 0 {
+		return &api.RunComparison{RunID: runID, DurationMs: durationMs}, nil
+	}
+
+	diff := durationMs - int64(avgDuration)
+	percent := (float64(diff) / avgDuration) * 100
+
+	return &api.RunComparison{
+		RunID:              runID,
+		DurationMs:         durationMs,
+		AvgDurationMs:      int64(avgDuration),
+		DiffMs:             diff,
+		PercentChange:      percent,
+		RegressionDetected: percent > 10, // 10% threshold
+	}, nil
+}
+
+func (s *Store) GetJobRunID(jobID string) string {
+	var runID string
+	s.db.QueryRow(`SELECT run_id FROM jobs WHERE id=$1`, jobID).Scan(&runID)
+	return runID
 }
 
 // ── Query methods ─────────────────────────────────────────────────────────────
@@ -604,7 +750,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 			       COUNT(j.id) AS job_count,
 			       CASE 
 			           WHEN bool_or(j.status IN ('running', 'queued', 'pending')) THEN 'running'
-			           WHEN bool_or(j.status = 'failed') THEN 'failed'
+			           WHEN bool_or(j.status IN ('failed', 'timed_out')) THEN 'failed'
 			           WHEN bool_or(j.status = 'canceled') THEN 'canceled'
 			           ELSE 'passed'
 			       END as status
@@ -667,7 +813,7 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 
 	rows, err := s.db.Query(`
 		SELECT id, step_id, status, depends_on,
-		       duration_ms, exit_code, policy_source
+		       duration_ms, timeout_ns, started_at, finished_at, exit_code, policy_source
 		FROM   jobs WHERE run_id=$1`, runID)
 	if err != nil {
 		return nil, false
@@ -680,7 +826,7 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		var j api.JobDetail
 		var depsJSON []byte
 		rows.Scan(&j.JobID, &j.StepID, &j.Status, &depsJSON,
-			&j.DurationMs, &j.ExitCode, &j.PolicySource)
+			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource)
 		json.Unmarshal(depsJSON, &j.DependsOn)
 		if j.DependsOn == nil {
 			j.DependsOn = []string{}
@@ -780,7 +926,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 		}
 	}
 	for _, s := range statuses {
-		if s == api.JobStatusFailed {
+		if s == api.JobStatusFailed || s == api.JobStatusTimedOut {
 			return api.JobStatusFailed
 		}
 	}
@@ -889,15 +1035,15 @@ func (s *Store) GetJobStepID(jobID string) string {
 
 // RerunSteps returns the original step definitions and workspace dir for a run
 // so it can be resubmitted as a new run.
-func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, commitSHA string, appliedPolicies []string, err error) {
+func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, ref, commitSHA string, appliedPolicies []string, err error) {
 	var policiesJSON []byte
-	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(commit_sha,''), applied_policies FROM runs WHERE id=$1`, runID).
-		Scan(&name, &workspaceDir, &orgID, &projectID, &commitSHA, &policiesJSON)
+	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,''), applied_policies FROM runs WHERE id=$1`, runID).
+		Scan(&name, &workspaceDir, &orgID, &projectID, &ref, &commitSHA, &policiesJSON)
 	if err == sql.ErrNoRows {
-		return "", nil, "", "", "", "", nil, fmt.Errorf("run %s not found", runID)
+		return "", nil, "", "", "", "", "", nil, fmt.Errorf("run %s not found", runID)
 	}
 	if err != nil {
-		return "", nil, "", "", "", "", nil, err
+		return "", nil, "", "", "", "", "", nil, err
 	}
 	json.Unmarshal(policiesJSON, &appliedPolicies)
 
@@ -911,7 +1057,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       status
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
-		return "", nil, "", "", "", "", nil, err
+		return "", nil, "", "", "", "", "", nil, err
 	}
 	defer rows.Close()
 
@@ -969,7 +1115,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			Status:            api.JobStatus(status),
 		})
 	}
-	return name, steps, workspaceDir, orgID, projectID, commitSHA, appliedPolicies, nil
+	return name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, nil
 }
 
 // RecordStepResult stores a step outcome for flaky detection analysis.

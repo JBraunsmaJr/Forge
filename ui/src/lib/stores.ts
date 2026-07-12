@@ -8,5 +8,6 @@ export const artifacts = writable<Artifact[]>([]);
 export const connStatus = writable<'idle' | 'connecting' | 'live' | 'reconnecting' | 'done' | 'error'>('idle');
 export const authRequired = writable(false);
 
-export type View = 'runs' | 'projects' | 'orgs' | 'policies' | 'tokens';
+export type View = 'runs' | 'projects' | 'orgs' | 'policies' | 'tokens' | 'agents';
 export const currentView = writable<View>('runs');
+export const sidebarOpen = writable(false);

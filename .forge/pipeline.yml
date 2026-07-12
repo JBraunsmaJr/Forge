@@ -1,14 +1,11 @@
-name: Main-Workflow
+name: Forge-CI-CD
 
 steps:
   - id: unit-tests
     name: Unit Tests
     image: golang:1.26.5-alpine
     timeout: 5m
-    docker_socket: true
-    run: |
-      apk add --no-cache python3
-      go test ./...
+    run: go test ./...
 
   - id: build-image
     name: Build Image
@@ -21,5 +18,50 @@ steps:
       echo "$GITHUB_TOKEN" | docker login ghcr.io -u $GITHUB_USER --password-stdin
       docker build -t ghcr.io/jbraunsmajr/forge/forge -f Dockerfile .
       docker push ghcr.io/jbraunsmajr/forge/forge
+
+  - id: build-binaries
+    name: Build Binaries
+    image: golang:1.26.5-alpine
+    depends_on: [unit-tests]
+    matrix:
+      os: [linux, windows, darwin]
+      arch: [amd64, arm64]
+    env:
+      CGO_ENABLED: "0"
+    run: |
+      export GOOS=${{ matrix.os }}
+      export GOARCH=${{ matrix.arch }}
+      EXT=""
+      if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+      OUT="forge-${GOOS}-${GOARCH}${EXT}"
+      mkdir -p dist
+      go build -ldflags="-s -w" -o "dist/${OUT}" ./cmd/forge
+    artifacts:
+      upload:
+        - path: dist/forge-*
+          name: forge-${{ matrix.os }}-${{ matrix.arch }}
+
+  - id: release-approval
+    name: Approve Release
+    type: approval
+    depends_on: [build-binaries, build-image]
+    condition: tag()
+
+  - id: github-release
+    name: GitHub Release
+    type: release
+    depends_on: [release-approval]
+    condition: tag()
+    release:
+      name: "Release ${{ env.FORGE_COMMIT_TAG }}"
+      tag: "${{ env.FORGE_COMMIT_TAG }}"
+      body: "Forge Release ${{ env.FORGE_COMMIT_TAG }}\n\nAutomated release of Forge binaries."
+      artifacts:
+        - forge-linux-amd64
+        - forge-linux-arm64
+        - forge-windows-amd64
+        - forge-windows-arm64
+        - forge-darwin-amd64
+        - forge-darwin-arm64
       
       

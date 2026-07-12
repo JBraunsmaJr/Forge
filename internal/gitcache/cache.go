@@ -13,8 +13,8 @@ import (
 )
 
 type Cache struct {
-	dir string
-	mu  sync.Mutex
+	dir   string
+	locks sync.Map // map[string]*sync.Mutex
 }
 
 func New(dir string) (*Cache, error) {
@@ -22,6 +22,11 @@ func New(dir string) (*Cache, error) {
 		return nil, err
 	}
 	return &Cache{dir: dir}, nil
+}
+
+func (c *Cache) getLock(repoURL string) *sync.Mutex {
+	l, _ := c.locks.LoadOrStore(repoURL, &sync.Mutex{})
+	return l.(*sync.Mutex)
 }
 
 func (c *Cache) RepoDir(repoURL string) string {
@@ -63,8 +68,9 @@ func (c *Cache) authURL(repoURL, token string) string {
 }
 
 func (c *Cache) Sync(repoURL, token string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
 
 	dir := c.RepoDir(repoURL)
 	authURL := c.authURL(repoURL, token)
@@ -91,6 +97,10 @@ func (c *Cache) Sync(repoURL, token string) error {
 }
 
 func (c *Cache) ListBranches(repoURL string) ([]string, string, error) {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
 	dir := c.RepoDir(repoURL)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, "", fmt.Errorf("repository not found in cache")
@@ -124,6 +134,10 @@ func (c *Cache) ListBranches(repoURL string) ([]string, string, error) {
 }
 
 func (c *Cache) ReadFile(repoURL, commit, path string) ([]byte, error) {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
 	dir := c.RepoDir(repoURL)
 
 	// git show <commit>:<path>
@@ -131,7 +145,68 @@ func (c *Cache) ReadFile(repoURL, commit, path string) ([]byte, error) {
 	return cmd.Output()
 }
 
+func (c *Cache) ResolveCommit(repoURL, branch string) (string, error) {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
+	dir := c.RepoDir(repoURL)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return "", fmt.Errorf("repository not found in cache")
+	}
+
+	// Try origin/branch first (mirror clone usually maps refs/heads/* to refs/heads/*)
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "origin/"+branch)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Fallback to local branch name
+		cmd = exec.Command("git", "-C", dir, "rev-parse", branch)
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve commit for branch %s: %v", branch, string(output))
+		}
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (c *Cache) ResolveRef(repoURL, name string) (string, error) {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
+	dir := c.RepoDir(repoURL)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return "", fmt.Errorf("repository not found in cache")
+	}
+
+	// Try full ref first
+	if strings.HasPrefix(name, "refs/") {
+		cmd := exec.Command("git", "-C", dir, "show-ref", "--verify", name)
+		if err := cmd.Run(); err == nil {
+			return name, nil
+		}
+	}
+
+	// Try heads
+	cmd := exec.Command("git", "-C", dir, "show-ref", "--verify", "refs/heads/"+name)
+	if err := cmd.Run(); err == nil {
+		return "refs/heads/" + name, nil
+	}
+
+	// Try tags
+	cmd = exec.Command("git", "-C", dir, "show-ref", "--verify", "refs/tags/"+name)
+	if err := cmd.Run(); err == nil {
+		return "refs/tags/" + name, nil
+	}
+
+	return "", fmt.Errorf("ref %s not found", name)
+}
+
 func (c *Cache) WriteArchive(repoURL, commit string, w io.Writer) error {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
 	dir := c.RepoDir(repoURL)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return fmt.Errorf("repository not found in cache: %s", repoURL)

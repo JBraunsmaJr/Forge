@@ -62,6 +62,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 		if concurrency <= 0 {
 			concurrency = 1
 		}
+		s.scheduler.agents.Register(agentID, concurrency, msg.GetRegister().Labels)
 		fmt.Printf("=== FORGE DEBUG V3 === [grpc] agent %s registered from %s (concurrency: %d)\n", agentID[:8], addr, concurrency)
 	} else {
 		fmt.Printf("=== FORGE DEBUG V3 === [grpc] first message from %s was not registration\n", addr)
@@ -69,6 +70,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 	}
 
 	// Use a new context for the rest of the session
+	defer s.scheduler.agents.Disconnect(agentID)
 	sessionCtx, sessionCancel := context.WithCancel(stream.Context())
 	defer sessionCancel()
 
@@ -103,6 +105,10 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 
 			switch m := msg.Payload.(type) {
 			case *pb.AgentMessage_Heartbeat:
+				s.scheduler.agents.Heartbeat(msg.AgentId, m.Heartbeat.Status)
+				if m.Heartbeat.JobId == "" {
+					continue // Agent-wide status heartbeat
+				}
 				err := s.scheduler.store.Heartbeat(m.Heartbeat.JobId, m.Heartbeat.LeaseId, msg.AgentId)
 				stop := err != nil
 				out <- &pb.SchedulerMessage{
@@ -128,13 +134,15 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 						fmt.Printf("[grpc] failed to unmarshal emitted steps: %v\n", err)
 					}
 				}
-				runID, err := s.scheduler.store.Complete(m.Complete.JobId, m.Complete.LeaseId, int(m.Complete.ExitCode), m.Complete.DurationMs, logs, emitted, m.Complete.Skipped)
+				runID, err := s.scheduler.store.Complete(m.Complete.JobId, m.Complete.LeaseId, int(m.Complete.ExitCode), m.Complete.DurationMs, logs, emitted, m.Complete.Skipped, m.Complete.TimedOut)
 				if err != nil {
 					fmt.Printf("[grpc] store.Complete error for job %s: %v\n", m.Complete.JobId, err)
 				}
 
 				result := "passed"
-				if m.Complete.ExitCode != 0 {
+				if m.Complete.TimedOut {
+					result = "timed_out"
+				} else if m.Complete.ExitCode != 0 {
 					result = "failed"
 				}
 

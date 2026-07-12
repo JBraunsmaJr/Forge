@@ -38,6 +38,15 @@ message RegisterRequest {
 message HeartbeatRequest {
   string job_id = 1;
   string lease_id = 2;
+  AgentStatus status = 3;
+}
+
+message AgentStatus {
+  float disk_usage_gb = 1;
+  float disk_free_gb = 2;
+  int32 docker_images_count = 3;
+  int32 active_jobs_count = 4;
+  string version = 5;
 }
 
 message HeartbeatAck {
@@ -53,6 +62,7 @@ message CompleteRequest {
   string lease_id = 5;
   string emitted_steps_json = 6;
   bool skipped = 7;
+  bool timed_out = 8;
 }
 
 message LogEvent {

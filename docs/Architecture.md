@@ -99,7 +99,7 @@ Agents are stateless workers. Each agent:
 5. Heartbeats every 10 seconds to prove it's still alive
 6. Reports completion with exit code and final log set
 
-Agents also run a WebSocket server for debug terminal sessions. When a debug session is requested, the agent starts a Docker container, allocates a PTY inside it using `script`, and bridges the WebSocket directly to the container's stdin/stdout.
+Agents also run a debug listener. When a debug session is requested, the agent starts a Docker container and bridges its stdin/stdout to the scheduler via an internal connection. The scheduler then exposes this to the browser via a WebSocket. This "reverse connection" model ensures that agents do not need to expose any ports to the public internet or the browser.
 
 ### Heartbeat and failure recovery
 
@@ -226,18 +226,17 @@ Policies with `forbid_override: true` cause the submission to be rejected with H
 
 ## WebSocket Debug Terminal
 
-When a debug session is created, the agent starts a container and runs:
+When a debug session is created, the agent starts a container and bridges its PTY to the scheduler.
 
-```
-docker exec -i container sh -c "
-  script -q -c 'exec env TERM=xterm-256color COLUMNS=220 LINES=50 sh' /dev/null
-  || exec sh -i
-"
-```
+1.  Browser connects to `WS /api/v1/debug/{id}/ws` on the **scheduler**.
+2.  Scheduler proxies the connection to the **agent** through the existing gRPC session or an internal HTTP/2 connection.
+3.  Agent runs `docker exec` with a PTY:
+    ```
+    script -q -c 'exec env TERM=xterm-256color COLUMNS=220 LINES=50 sh' /dev/null || exec sh -i
+    ```
+4.  Bytes flow: Browser ↔ Scheduler ↔ Agent ↔ Container.
 
-`script` allocates a PTY inside the Linux container (independent of the host OS). The agent then bridges raw bytes between the WebSocket connection and the container's stdin/stdout. The browser uses xterm.js to render the terminal, including full ANSI escape code support.
-
-The browser connects directly to the agent — the scheduler is not in the data path. This keeps latency low for interactive use.
+The browser uses xterm.js to render the terminal, including full ANSI escape code support. By routing all traffic through the scheduler, Forge supports HTTPS and secure authentication without complex agent-side network configuration.
 
 ---
 
@@ -250,7 +249,7 @@ runs
 jobs
   id, run_id, step_id, step_type, image, command, work_dir,
   env, inputs, timeout_ns, depends_on, secret_names, policy_source,
-  pipeline_ref,
+  condition, always_run, pipeline_ref, emitted_step_ids,
   status, lease_id, agent_id, leased_at, heartbeat_at,
   exit_code, duration_ms, started_at, finished_at
 
@@ -267,7 +266,8 @@ api_tokens
   id, token_hash (SHA-256), name, role, created_at
 
 projects
-  id, org_id, name, repo_url, pipeline_path, webhook_secret, scm_token, created_at
+  id, org_id, name, repo_url, pipeline_path, cron, scheduled_pipeline_path,
+  branch_filter, webhook_secret, scm_token, created_at
 
 artifacts
   id, run_id, job_id, name, filename, size_bytes, content_type,

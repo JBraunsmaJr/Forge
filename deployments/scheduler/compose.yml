@@ -18,18 +18,28 @@ services:
 
   vault:
     image: hashicorp/vault:latest
+    command: server
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN:-forge-dev-token}
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_LOCAL_CONFIG: |
+        storage "file" {
+          path = "/vault/file"
+        }
+        listener "tcp" {
+          address     = "0.0.0.0:8200"
+          tls_disable = 1
+        }
+        ui = true
     ports:
       - "8200:8200"
     cap_add:
       - IPC_LOCK
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8200/v1/sys/health"]
+      test: ["CMD", "vault", "status"]
       interval: 5s
       timeout: 3s
       retries: 10
+    volumes:
+      - vault_data:/vault/file
     restart: unless-stopped
     networks:
       - forge
@@ -39,7 +49,7 @@ services:
     command: server /data --console-address ":9091"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-forgeadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-forgepassword}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -61,7 +71,7 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-        mc alias set forge http://minio:9000 ${MINIO_ROOT_USER:-forgeadmin} ${MINIO_ROOT_PASSWORD:-forgepassword} &&
+        mc alias set forge http://minio:9000 ${MINIO_ROOT_USER:-forgeadmin} ${MINIO_ROOT_PASSWORD} &&
         mc mb forge/forge-artifacts --ignore-existing &&
         echo 'forge-artifacts bucket ready'
       "
@@ -73,17 +83,17 @@ services:
     command: ["scheduler"]
     environment:
       FORGE_DB_URL: postgres://${POSTGRES_USER:-forge}:${POSTGRES_PASSWORD:-forge}@postgres:5432/${POSTGRES_DB:-forge}?sslmode=disable
-      FORGE_ROOT_TOKEN: ${FORGE_ROOT_TOKEN:-forge-dev-admin-token}
-      FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
+      FORGE_ROOT_TOKEN: ${FORGE_ROOT_TOKEN}
+      FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN}
       FORGE_VAULT_ADDR: http://vault:8200
-      FORGE_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-forge-dev-token}
+      FORGE_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN}
       FORGE_BASE_URL: ${FORGE_BASE_URL:-http://localhost:8080}
       FORGE_ARTIFACT_STORE: s3
       FORGE_S3_ENDPOINT: http://minio:9000
       FORGE_S3_BUCKET: forge-artifacts
       FORGE_S3_REGION: us-east-1
       FORGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-forgeadmin}
-      FORGE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-forgepassword}
+      FORGE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       FORGE_S3_PUBLIC_URL: ${FORGE_S3_PUBLIC_URL:-http://localhost:9000}
     ports:
       - "8080:8080"
@@ -104,26 +114,10 @@ services:
     networks:
       - forge
 
-  init:
-    image: ghcr.io/jbraunsmajr/forge/forge:latest
-    entrypoint: ["/bin/bash"]
-    command: ["/scripts/init.sh"]
-    environment:
-      FORGE_API_TOKEN: ${FORGE_ROOT_TOKEN:-forge-dev-admin-token}
-      FORGE_VAULT_ADDR: http://vault:8200
-      FORGE_VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN:-forge-dev-token}
-      SCHEDULER_URL: http://scheduler:8080
-    volumes:
-      - ../../scripts:/scripts:ro
-    depends_on:
-      scheduler:
-        condition: service_healthy
-    networks:
-      - forge
-
 volumes:
   postgres_data:
   minio_data:
+  vault_data:
 
 networks:
   forge:

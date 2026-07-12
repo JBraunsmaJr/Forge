@@ -27,6 +27,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/store"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
+	"github.com/fsnotify/fsnotify"
 )
 
 var version = "dev"
@@ -93,10 +94,13 @@ func runCommand() {
 	pipelinePath := ""
 	var secretFlags []string
 	var envFile string
+	watch := false
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--watch":
+			watch = true
 		case args[i] == "--secret" && i+1 < len(args):
 			i++
 			secretFlags = append(secretFlags, args[i])
@@ -125,22 +129,87 @@ func runCommand() {
 		}
 	}
 
+	workspaceDir, _ := os.Getwd()
+
+	if !watch {
+		if !runOnce(pipelinePath, workspaceDir, envFile, secretFlags) {
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Watch mode
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ watcher setup: %v\n", err)
+		os.Exit(1)
+	}
+	defer watcher.Close()
+
+	// Watch workspace recursively (excluding .git and .forge)
+	filepath.Walk(workspaceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name == ".git" || name == ".forge" || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			return watcher.Add(path)
+		}
+		return nil
+	})
+
+	fmt.Printf("👀 Watching for changes in %s...\n", workspaceDir)
+
+	runOnce(pipelinePath, workspaceDir, envFile, secretFlags)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	debounceTimer := time.NewTimer(0)
+	<-debounceTimer.C // stop it immediately
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				debounceTimer.Reset(500 * time.Millisecond)
+			}
+		case <-debounceTimer.C:
+			fmt.Printf("\n🔄 Change detected, re-running...\n")
+			executor.Cleanup()
+			runOnce(pipelinePath, workspaceDir, envFile, secretFlags)
+			fmt.Printf("\n👀 Watching for changes...\n")
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "watcher error: %v\n", err)
+		}
+	}
+}
+
+func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string) bool {
 	fmt.Printf("📋 Compiling %s\n", pipelinePath)
 	p, err := compiler.Compile(pipelinePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n✗ compile error: %v\n", err)
-		os.Exit(1)
+		return false
 	}
 	fmt.Printf("   %d steps compiled\n", len(p.Steps))
-
-	workspaceDir, _ := os.Getwd()
 
 	resolverOpts := []localenv.Option{
 		localenv.WithSecretFlags(secretFlags),
 		localenv.WithAutoEnvFile(workspaceDir),
 	}
 	if envFile != "" {
-
 		resolverOpts = []localenv.Option{
 			localenv.WithSecretFlags(secretFlags),
 			localenv.WithEnvFile(envFile),
@@ -161,7 +230,7 @@ func runCommand() {
 	resolver, err := localenv.New(resolverOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
-		os.Exit(1)
+		return false
 	}
 
 	// Resolve secrets for each step.
@@ -176,7 +245,7 @@ func runCommand() {
 			val, err := resolver.Resolve(name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\n✗ %v\n", err)
-				os.Exit(1)
+				return false
 			}
 			step.Env[name] = val
 			step.RedactValues = append(step.RedactValues, val)
@@ -195,7 +264,7 @@ func runCommand() {
 	exec, err := executor.New(workspaceDir, logDir, cacheDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ executor setup: %v\n", err)
-		os.Exit(1)
+		return false
 	}
 	exec.IsLocal = true
 
@@ -205,21 +274,22 @@ func runCommand() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigs
-		fmt.Fprintf(os.Stderr, "\n⚡ interrupted — canceling...\n")
-		cancel()
+		select {
+		case <-sigs:
+			fmt.Fprintf(os.Stderr, "\n⚡ interrupted — canceling...\n")
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
 	result, err := exec.RunPipeline(ctx, p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ pipeline error: %v\n", err)
-		os.Exit(1)
+		return false
 	}
 
 	runner.PrintSummary(result)
-	if !result.Passed {
-		os.Exit(1)
-	}
+	return result.Passed
 }
 
 func validateCommand() {
@@ -988,7 +1058,7 @@ steps:
 func projectCommand() {
 	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: forge project <add|list|update> [args]")
+		fmt.Fprintln(os.Stderr, "usage: forge project <add|list|update|schedule> [args]")
 		os.Exit(1)
 	}
 	switch os.Args[2] {
@@ -1119,6 +1189,66 @@ func projectCommand() {
 			os.Exit(1)
 		}
 		fmt.Printf("✓ project updated\n")
+
+	case "schedule":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: forge project schedule <project-id-or-name> [--cron <expression>] [--pipeline <path>] [--delete]")
+			os.Exit(1)
+		}
+		projectID := os.Args[3]
+		req := api.UpdateProjectRequest{}
+		deleteSchedule := false
+		for i := 4; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--cron":
+				i++
+				if i < len(os.Args) {
+					req.Cron = &os.Args[i]
+				}
+			case "--pipeline":
+				i++
+				if i < len(os.Args) {
+					req.ScheduledPath = &os.Args[i]
+				}
+			case "--delete":
+				deleteSchedule = true
+			}
+		}
+
+		if deleteSchedule {
+			empty := ""
+			req.Cron = &empty
+			req.ScheduledPath = &empty
+		}
+
+		body, _ := json.Marshal(req)
+		url := fmt.Sprintf("%s/api/v1/projects/%s", schedulerURL, projectID)
+
+		client := &http.Client{}
+		httpReq, _ := http.NewRequest("PUT", url, bytes.NewReader(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+		if token := os.Getenv("FORGE_API_TOKEN"); token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			var errResp api.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Fprintf(os.Stderr, "✗ schedule update failed (HTTP %d): %s\n", resp.StatusCode, errResp.Error)
+			os.Exit(1)
+		}
+		if deleteSchedule {
+			fmt.Printf("✓ schedule deleted for project %s\n", projectID)
+		} else {
+			fmt.Printf("✓ schedule updated for project %s\n", projectID)
+		}
 
 	case "list":
 		orgID := os.Getenv("FORGE_ORG")

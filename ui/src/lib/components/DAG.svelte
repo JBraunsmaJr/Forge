@@ -1,12 +1,16 @@
 <script lang="ts">
     import { activeRun, selectedJob, artifacts } from '../stores';
-    import { api, type Job } from '../api';
-    import { RotateCcw, XCircle, Package } from '@lucide/svelte';
+    import { api, type Job, type RunComparison } from '../api';
+    import { RotateCcw, XCircle, Package, CheckCircle, TrendingUp, TrendingDown } from '@lucide/svelte';
+
+    import DetailsPanel from './DetailsPanel.svelte';
 
     const MIN_NODE_W = 160, NODE_H = 52, COL_GAP = 90, ROW_GAP = 24, PAD = 32;
     const STATUS_COLORS: Record<string, any> = {
         passed:   { fill: '#062016', stroke: '#10b981', text: '#3ecf8e', sub: '#065f46' },
         failed:   { fill: '#2d0a0a', stroke: '#ef4444', text: '#f87171', sub: '#7f1d1d' },
+        timed_out: { fill: '#2d0a0a', stroke: '#ef4444', text: '#f87171', sub: '#7f1d1d' },
+        approval: { fill: '#2d1a0a', stroke: '#f59e0b', text: '#fbbf24', sub: '#78350f' },
         running:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
         queued:   { fill: '#161b22', stroke: '#6b7280', text: '#9ca3af', sub: '#374151' },
         pending:  { fill: '#0d1117', stroke: '#30363d', text: '#484f58', sub: '#21262d' },
@@ -95,10 +99,19 @@
         return `${(ms/1000).toFixed(1)}s`;
     }
 
+    function fmtTimeout(ns: number) {
+        if (!ns) return '';
+        const seconds = Math.floor(ns / 1000000000);
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        return `${minutes}m`;
+    }
+
     function statusBadge(status: string) {
         const labels: Record<string, string> = { 
             passed:'passed', failed:'failed', running:'running…',
-            queued:'queued', pending:'pending', canceled:'canceled' 
+            queued:'queued', pending:'pending', canceled:'canceled',
+            timed_out: 'timed out'
         };
         return labels[status] || status;
     }
@@ -135,7 +148,25 @@
         }
     }
 
+    async function approveJob(job: Job) {
+        if (confirm(`Approve step ${job.step_id}?`)) {
+            await api.approveJob(job.job_id);
+        }
+    }
+
     export let onOpenDebug: (job: Job) => void;
+
+    let comparison: RunComparison | null = null;
+
+    async function fetchComparison(runID: string | undefined) {
+        if (!runID) {
+            comparison = null;
+            return;
+        }
+        comparison = await api.runComparison(runID);
+    }
+
+    $: fetchComparison($activeRun?.run_id);
 </script>
 
 <div id="dag-panel">
@@ -147,6 +178,17 @@
                 {#each $activeRun.applied_policies || [] as policy}
                     <span class="policy-badge">🛡 {policy}</span>
                 {/each}
+
+                {#if comparison && comparison.diff_ms !== 0}
+                    <span class="comparison-badge" class:regression={comparison.regression_detected}>
+                        {#if comparison.regression_detected}
+                            <TrendingUp size={12} />
+                        {:else}
+                            <TrendingDown size={12} />
+                        {/if}
+                        {fmtDuration(Math.abs(comparison.diff_ms))} {comparison.diff_ms > 0 ? 'slower' : 'faster'} than avg
+                    </span>
+                {/if}
             {:else}
                 no run selected
             {/if}
@@ -303,7 +345,7 @@
                                     y={j.policy_source ? pos.y + 40 : pos.y + 38}
                                     fill={isSelected ? '#94a3b8' : c.sub}
                                 >
-                                    {statusBadge(j.status)}{#if j.duration_ms} · {fmtDuration(j.duration_ms)}{/if}
+                                    {statusBadge(j.status)}{#if j.duration_ms} · {fmtDuration(j.duration_ms)}{/if}{#if j.status === 'timed_out' && j.timeout_ns} · after {fmtTimeout(j.timeout_ns)}{/if}
                                 </text>
 
                                 <foreignObject x={pos.x + pos.w - 58} y={pos.y + 4} width="52" height="24">
@@ -312,6 +354,15 @@
                                             <div class="artifact-icon" title="Produces Artifacts">
                                                 <Package size={14} color={isSelected ? '#818cf8' : c.stroke} />
                                             </div>
+                                        {/if}
+                                        {#if j.status === 'approval'}
+                                            <button 
+                                                class="node-rerun-btn approve" 
+                                                title="Approve Step"
+                                                on:click|stopPropagation={() => approveJob(j)}
+                                            >
+                                                <CheckCircle size={14} />
+                                            </button>
                                         {/if}
                                         {#if j.status === 'passed' || j.status === 'failed' || j.status === 'canceled'}
                                             <button 
@@ -387,6 +438,26 @@
         margin-left: 8px;
     }
 
+    .comparison-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: rgba(16, 185, 129, 0.1);
+        color: #10b981;
+        padding: 1px 8px;
+        border-radius: 8px;
+        font-size: 10px;
+        font-weight: 700;
+        margin-left: 12px;
+        vertical-align: middle;
+        text-transform: none;
+        letter-spacing: 0;
+    }
+    .comparison-badge.regression {
+        background: rgba(239, 68, 68, 0.1);
+        color: #ef4444;
+    }
+
     .dag-node { cursor: pointer; }
     .dag-node rect { transition: all .2s; }
     .dag-node:hover rect { filter: brightness(1.2); transform: translateY(-1px); }
@@ -415,6 +486,9 @@
     .node-rerun-btn:hover {
         background: rgba(255,255,255,0.1);
         color: var(--accent);
+    }
+    .node-rerun-btn.approve:hover {
+        color: #fbbf24;
     }
     .node-debug-link {
         font-size: 10px;

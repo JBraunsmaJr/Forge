@@ -65,11 +65,11 @@ func (p *ProjectStore) GetProject(projectIDOrName string) (*api.ProjectInfo, str
 	var secret, scmToken, branchFilterJSON string
 	err := p.db.QueryRow(`
 		SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, webhook_secret, scm_token,
-		       COALESCE(branch_filter::text,'[]'), created_at
+		       COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path
 		FROM projects WHERE id=$1 OR name=$1
 		LIMIT 1`, projectIDOrName,
 	).Scan(&info.ID, &info.OrgID, &info.Name, &info.RepoURL, &info.PipelinePath,
-		&secret, &scmToken, &branchFilterJSON, &info.CreatedAt)
+		&secret, &scmToken, &branchFilterJSON, &info.CreatedAt, &info.Cron, &info.ScheduledPath)
 	if err != nil {
 		return nil, "", "", false
 	}
@@ -83,10 +83,10 @@ func (p *ProjectStore) GetProjectByRepo(repoURL string) (*api.ProjectInfo, strin
 	var secret, scmToken, branchFilterJSON string
 	err := p.db.QueryRow(`
 		SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, webhook_secret, scm_token,
-		       COALESCE(branch_filter::text,'[]'), created_at
+		       COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path
 		FROM projects WHERE repo_url=$1`, repoURL,
 	).Scan(&info.ID, &info.OrgID, &info.Name, &info.RepoURL, &info.PipelinePath,
-		&secret, &scmToken, &branchFilterJSON, &info.CreatedAt)
+		&secret, &scmToken, &branchFilterJSON, &info.CreatedAt, &info.Cron, &info.ScheduledPath)
 	if err != nil {
 		return nil, "", "", false
 	}
@@ -124,6 +124,18 @@ func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) er
 			return err
 		}
 	}
+	if req.Cron != nil {
+		_, err := p.db.Exec(`UPDATE projects SET cron=$1 WHERE id=$2`, *req.Cron, actualID)
+		if err != nil {
+			return err
+		}
+	}
+	if req.ScheduledPath != nil {
+		_, err := p.db.Exec(`UPDATE projects SET scheduled_pipeline_path=$1 WHERE id=$2`, *req.ScheduledPath, actualID)
+		if err != nil {
+			return err
+		}
+	}
 	if req.SCMToken != nil {
 		_, err := p.db.Exec(`UPDATE projects SET scm_token=$1 WHERE id=$2`, *req.SCMToken, actualID)
 		if err != nil {
@@ -145,7 +157,7 @@ func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) er
 
 // ListProjects returns all projects for an org.
 func (p *ProjectStore) ListProjects(orgID string) []api.ProjectInfo {
-	q := `SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, COALESCE(branch_filter::text,'[]'), created_at FROM projects`
+	q := `SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path FROM projects`
 	args := []any{}
 	if orgID != "" {
 		q += ` WHERE org_id=$1`
@@ -163,7 +175,7 @@ func (p *ProjectStore) ListProjects(orgID string) []api.ProjectInfo {
 	for rows.Next() {
 		var proj api.ProjectInfo
 		var branchFilterJSON string
-		rows.Scan(&proj.ID, &proj.OrgID, &proj.Name, &proj.RepoURL, &proj.PipelinePath, &branchFilterJSON, &proj.CreatedAt)
+		rows.Scan(&proj.ID, &proj.OrgID, &proj.Name, &proj.RepoURL, &proj.PipelinePath, &branchFilterJSON, &proj.CreatedAt, &proj.Cron, &proj.ScheduledPath)
 		json.Unmarshal([]byte(branchFilterJSON), &proj.BranchFilter)
 		result = append(result, proj)
 	}

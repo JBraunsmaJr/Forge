@@ -130,6 +130,34 @@ The **scheduler** accepts pipeline submissions, applies org policies, stores job
 
 ---
 
+## Installation
+
+### CLI Binary
+
+Install the Forge CLI on Linux, macOS, or Windows using the one-liner scripts:
+
+**Linux / macOS:**
+```bash
+curl -sSL https://forge.dev/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://forge.dev/install.ps1 | iex
+```
+
+### Self-Hosted Core (Docker)
+
+Deploy the Forge scheduler and core services (Postgres, Vault, MinIO) to your own server:
+
+```bash
+curl -sSL https://forge.dev/deploy.sh | bash
+```
+
+This will create a `forge-server` directory, generate secure tokens, and launch the stack using Docker Compose.
+
+---
+
 ## Quick Start (5 minutes)
 
 ### Prerequisites
@@ -255,7 +283,7 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 | [Pipeline Reference](docs/pipeline-reference.md) | Every pipeline field documented with examples                       |
 | [Examples Guide](docs/examples.md)               | Dynamic matrices, monorepos, pipeline chaining, progressive deploys |
 | [Secrets Management](docs/secrets.md)            | Vault integration with project/org/global scoping                   |
-| [Artifact Storage](docs/artifacts.md)            | Local filesystem and S3-compatible backends                         |
+| [Artifact Storage](docs/configuration.md#artifact-storage)    | Local filesystem and S3-compatible backends                         |
 | [Policy Engine](docs/policies.md)                | Org-wide security injection                                         |
 | [Debug Sessions](docs/debugging.md)              | Live terminal in failing job containers                             |
 | [CLI Reference](docs/cli-reference.md)           | All commands and flags                                              |
@@ -271,8 +299,12 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 |-------------------------------------|---------------------------------|-------------------------|--------------------------------|
 | Pipeline logic in source files      | ❌ YAML strings                  | ❌ YAML strings          | ✅ `script:` field              |
 | Runtime job generation              | ❌ Static matrix only            | ❌ Static matrix only    | ✅ Generator steps              |
+| Matrix builds (built-in)            | ✅                               | ✅                       | ✅                              |
+| Pipeline templates (`uses:`)        | ⚠️ Reusable workflows (limited) | ✅ `extends:` / `include:` | ✅ Reusable steps              |
 | Pipeline chaining                   | ⚠️ Reusable workflows (limited) | ⚠️ `trigger:` (limited) | ✅ First-class `type: pipeline` |
 | Artifact handoff between pipelines  | ❌                               | ❌                       | ✅                              |
+| Manual Approvals                    | ✅ Environments                  | ✅                       | ✅ `type: approval`             |
+| Scheduled Pipelines                 | ✅ `on: schedule`                | ✅                       | ✅ Project-level Cron           |
 | Debug failing jobs                  | ❌ Re-run and add echo           | ❌                       | ✅ Live terminal                |
 | Policy injection                    | ❌                               | ❌                       | ✅ Org-level policies           |
 | Scoped secrets (project/org/global) | ❌                               | ⚠️ Group variables      | ✅                              |

@@ -32,6 +32,8 @@
         name: '',
         repo_url: '',
         pipeline_path: '',
+        cron: '',
+        scheduled_pipeline_path: '',
         scm_token: '',
         branch_filter: [] as string[]
     };
@@ -43,6 +45,8 @@
             name: project.name,
             repo_url: project.repo_url,
             pipeline_path: project.pipeline_path,
+            cron: project.cron || '',
+            scheduled_pipeline_path: project.scheduled_pipeline_path || '',
             scm_token: '', // Never show existing token
             branch_filter: [...(project.branch_filter || [])]
         };
@@ -58,6 +62,8 @@
                 name: editForm.name,
                 repo_url: editForm.repo_url,
                 pipeline_path: editForm.pipeline_path,
+                cron: editForm.cron,
+                scheduled_pipeline_path: editForm.scheduled_pipeline_path,
                 branch_filter: branchFilterStr.split(',').map(s => s.trim()).filter(s => s)
             };
             if (editForm.scm_token) {
@@ -130,15 +136,11 @@
         error = '';
         try {
             const res = await api.triggerProject(id, triggerBranch);
-            if (res) {
-                triggeringId = null;
-                currentView.set('runs');
-            } else {
-                error = 'Failed to trigger pipeline. Make sure the branch exists and contains a valid pipeline file.';
-            }
-        } catch (e) {
+            triggeringId = null;
+            currentView.set('runs');
+        } catch (e: any) {
             console.error("Trigger failed:", e);
-            error = 'An error occurred while triggering the pipeline.';
+            error = e.message || 'Failed to trigger pipeline. Make sure the branch exists and contains a valid pipeline file.';
         } finally {
             triggering = false;
         }
@@ -259,6 +261,14 @@
                     <label for="e-branches">Branch Filter (Optional — comma separated)</label>
                     <input id="e-branches" type="text" bind:value={branchFilterStr} placeholder="main, dev" />
                 </div>
+                <div class="form-group">
+                    <label for="e-cron">Cron Schedule (Optional, e.g. "0 2 * * *")</label>
+                    <input id="e-cron" type="text" bind:value={editForm.cron} placeholder="0 2 * * *" />
+                </div>
+                <div class="form-group">
+                    <label for="e-scheduled-path">Scheduled Pipeline Path (Optional)</label>
+                    <input id="e-scheduled-path" type="text" bind:value={editForm.scheduled_pipeline_path} placeholder=".forge/nightly.yml" />
+                </div>
             </div>
             <div class="form-actions">
                 <button class="btn-secondary" on:click={() => editingProject = null}>Cancel</button>
@@ -348,25 +358,9 @@
 </div>
 
 <style>
-    .view-container {
-        padding: 24px;
-        max-width: 1000px;
-        margin: 0 auto;
-    }
-    .view-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 24px;
-    }
     .header-actions {
         display: flex;
         gap: 12px;
-    }
-    h1 {
-        margin: 0;
-        font-size: 24px;
-        font-weight: 600;
     }
     .error-banner {
         background: var(--red-muted);
@@ -406,6 +400,14 @@
         gap: 16px;
         margin-bottom: 20px;
     }
+    @media (max-width: 600px) {
+        .form-grid {
+            grid-template-columns: 1fr;
+        }
+        .full-width {
+            grid-column: auto;
+        }
+    }
     .full-width {
         grid-column: span 2;
     }
@@ -417,42 +419,12 @@
     }
     .form-group input, .form-group select {
         width: 100%;
-        padding: 8px 12px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--text);
         box-sizing: border-box;
     }
     .form-actions {
         display: flex;
         justify-content: flex-end;
         gap: 8px;
-    }
-    .btn-primary {
-        background: var(--accent);
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    .btn-primary:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-    .btn-secondary {
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--border);
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
     }
     .btn-text {
         background: transparent;

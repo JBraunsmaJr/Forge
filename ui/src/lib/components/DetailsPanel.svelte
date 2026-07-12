@@ -4,13 +4,14 @@
     import { onMount, onDestroy } from 'svelte';
     import LogViewer from './LogViewer.svelte';
     import ArtifactViewer from './ArtifactViewer.svelte';
+    import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
-    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, X } from '@lucide/svelte';
+    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
     export let onCloseDebug: () => void;
 
-    let activeTab: 'logs' | 'artifacts' | 'terminal' = 'logs';
+    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' = 'logs';
     let expanded = false;
 
     $: if (debugSession.sessionID && activeTab !== 'terminal') {
@@ -98,6 +99,10 @@
                     Terminal
                 </button>
             {/if}
+            <button class:active={activeTab === 'timing'} on:click={() => activeTab = 'timing'}>
+                <Clock size={12} />
+                Timing
+            </button>
         </div>
         <div class="actions">
             {#if activeTab === 'terminal' && debugSession.sessionID}
@@ -132,18 +137,26 @@
                 sessionID={debugSession.sessionID} 
                 status={debugSession.status} 
             />
+        {:else if activeTab === 'timing'}
+            <div class="timing-tab-content">
+                <GanttChart jobs={$activeRun?.jobs || []} />
+            </div>
         {/if}
     </div>
 </div>
 
 <style>
+    .timing-tab-content {
+        flex: 1;
+        overflow-y: auto;
+    }
     #details-panel {
         display: flex;
         flex-direction: column;
         background: var(--surface);
         border-top: 1px solid var(--border);
-        height: 280px;
-        transition: height 0.15s ease-out;
+        height: 320px;
+        transition: all 0.15s ease-out;
         flex-shrink: 0;
     }
     #details-panel.expanded {

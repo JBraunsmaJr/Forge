@@ -16,6 +16,39 @@ This guide walks through every deployment mode from "run one pipeline on my lapt
 
 ---
 
+## Installation
+
+### CLI Binary
+
+Install the Forge CLI on Linux, macOS, or Windows using the one-liner scripts:
+
+**Linux / macOS:**
+```bash
+curl -sSL https://forge.dev/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://forge.dev/install.ps1 | iex
+```
+
+### Self-Hosted Core (Docker)
+
+Deploy the Forge scheduler and core services (Postgres, Vault, MinIO) to your own server:
+
+```bash
+curl -sSL https://forge.dev/deploy.sh | bash
+```
+
+This will:
+1.  Check for Docker and Curl.
+2.  Create a `forge-server` directory.
+3.  Download the production Docker Compose stack.
+4.  Generate secure tokens for `FORGE_ROOT_TOKEN` and `FORGE_AGENT_TOKEN`.
+5.  Launch the services in the background.
+
+---
+
 ## Mode 1: Local Runs
 
 No infrastructure needed. The `forge run` command executes a pipeline directly on your machine using your local Docker daemon.
@@ -34,6 +67,9 @@ go build -o forge ./cmd/forge
 
 # Run a pipeline
 ./forge run examples/docker-ci.json
+
+# Run with automatic re-run on file changes
+./forge run examples/docker-ci.json --watch
 
 # Validate without running
 ./forge validate examples/docker-ci.json
@@ -104,7 +140,7 @@ Set for this session:
   $env:FORGE_API_TOKEN = 'fgt_a3b4c5d6e7f8...'
 ```
 
-Save this token. Open http://localhost:8080 and enter it when prompted.
+Save this token. Open http://localhost:8080 and enter it when prompted. You can now view your runs, manage orgs, and monitor runner health from the dashboard.
 
 ### Step 5: Create an Agent Token
 
@@ -269,11 +305,12 @@ forge.internal.example.com {
 
 ### Agent WebSocket for Debug Sessions
 
-Agent debug terminals use a reverse connection model. The browser connects to the scheduler, which then proxies the connection to the agent.
+Agent debug terminals use a reverse connection model. All WebSocket traffic is routed through the scheduler.
 
-1. All WebSocket traffic goes through the scheduler's address.
-2. Ensure your reverse proxy (if any) allows WebSocket upgrades for the scheduler.
-3. No agent ports need to be exposed.
+1.  Browser connects to the scheduler's address (`/api/v1/debug/{id}/ws`).
+2.  Scheduler proxies the session to the appropriate agent.
+3.  No agent ports need to be exposed to the internet.
+4.  Ensure your reverse proxy (if any) allows WebSocket upgrades for the scheduler.
 
 ---
 

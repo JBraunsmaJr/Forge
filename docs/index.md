@@ -15,11 +15,15 @@ Traditional CI/CD systems rely on static YAML. When you need complex logic (dyna
 ## Core Features
 
 - 🚀 **Dynamic Pipelines**: Emit steps at runtime based on your code's state.
+- 🐳 **Matrix Builds**: Parallel execution across versions and environments.
+- 🧱 **Pipeline Templates**: Reusable step definitions to keep pipelines DRY.
 - 🐳 **Container Native**: Every step runs in a clean Docker container.
 - 🛠️ **Live Debugging**: SSH/Terminal directly into failing job containers from the Web UI.
 - 🛡️ **Org-wide Policies**: Automatically inject security scans into every pipeline.
 - 📦 **Smart Artifacts**: Built-in artifact store with automatic fan-in/fan-out.
-- 📊 **Real-time UI**: Watch logs and status updates as they happen via SSE.
+- 📊 **Real-time UI**: Modern, responsive dashboard with Gantt charts, log streaming, and regression detection.
+- 🩺 **Runner Health**: Detailed dashboard for monitoring self-hosted agents.
+- ⏰ **Scheduled Pipelines**: Cron-based triggers for nightly builds and maintenance.
 
 ---
 

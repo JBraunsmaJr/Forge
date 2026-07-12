@@ -8,13 +8,16 @@ import "time"
 type JobStatus string
 
 const (
-	JobStatusPending  JobStatus = "pending"  // waiting for dependencies
-	JobStatusQueued   JobStatus = "queued"   // ready, waiting for an agent
-	JobStatusRunning  JobStatus = "running"  // claimed by an agent
-	JobStatusPassed   JobStatus = "passed"   // exit code 0
-	JobStatusFailed   JobStatus = "failed"   // exit code != 0
-	JobStatusSkipped  JobStatus = "skipped"  // condition evaluated to false or cache hit
-	JobStatusCanceled JobStatus = "canceled" // canceled before it ran
+	JobStatusPending  JobStatus = "pending"   // waiting for dependencies
+	JobStatusQueued   JobStatus = "queued"    // ready, waiting for an agent
+	JobStatusRunning  JobStatus = "running"   // claimed by an agent
+	JobStatusPassed   JobStatus = "passed"    // exit code 0
+	JobStatusFailed   JobStatus = "failed"    // exit code != 0
+	JobStatusTimedOut JobStatus = "timed_out" // exit code 1 (or other) but specifically due to timeout
+	JobStatusApproval JobStatus = "approval"  // waiting for manual approval
+	JobStatusSkipped  JobStatus = "skipped"   // condition evaluated to false or cache hit
+	JobStatusCanceled JobStatus = "canceled"  // canceled before it ran
+	JobStatusRelease  JobStatus = "release"   // queued for SCM release (handled by scheduler)
 )
 
 // JobSpec is what the scheduler sends to an agent when it leases a job.
@@ -40,6 +43,7 @@ type JobSpec struct {
 	// Secret lookup order: project → org → global → legacy.
 	OrgID     string `json:"org_id,omitempty"`
 	ProjectID string `json:"project_id,omitempty"`
+	Ref       string `json:"ref,omitempty"`
 	CommitSHA string `json:"commit_sha,omitempty"`
 	// Condition is a step-level expression evaluated by the agent at runtime.
 	// Scheduler-level keywords (success()/failure()/always()) are handled by
@@ -50,7 +54,9 @@ type JobSpec struct {
 	AlwaysRun bool `json:"always_run,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
-	Status      JobStatus    `json:"status,omitempty"`
+	// Release is populated when Type == "release".
+	Release *ReleaseConfig `json:"release,omitempty"`
+	Status  JobStatus      `json:"status,omitempty"`
 }
 
 // SubmitRunRequest is sent by the CLI to submit a pipeline for execution.
@@ -60,6 +66,7 @@ type SubmitRunRequest struct {
 	WorkspaceDir string    `json:"workspace_dir"`
 	OrgID        string    `json:"org_id,omitempty"`     // enables policy injection
 	ProjectID    string    `json:"project_id,omitempty"` // scopes secrets to this project
+	Ref          string    `json:"ref,omitempty"`        // Git ref, e.g. "refs/heads/main"
 	CommitSHA    string    `json:"commit_sha,omitempty"`
 }
 
@@ -86,7 +93,9 @@ type StepDef struct {
 	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
-	Status      JobStatus    `json:"status,omitempty"`
+	// Release is populated when Type == "release".
+	Release *ReleaseConfig `json:"release,omitempty"`
+	Status  JobStatus      `json:"status,omitempty"`
 }
 
 // SubmitRunResponse is returned after a successful pipeline submission.
@@ -125,6 +134,9 @@ type CompleteRequest struct {
 	// (e.g. $BRANCH == 'main') and found it to be false.  The scheduler
 	// marks the job "skipped" rather than "passed" or "failed".
 	Skipped bool `json:"skipped,omitempty"`
+	// TimedOut is set when the agent terminates the job because it exceeded
+	// its configured timeout.
+	TimedOut bool `json:"timed_out,omitempty"`
 }
 
 // LogEvent is a single structured log line from a running job.
@@ -174,13 +186,16 @@ type RunDetail struct {
 
 // JobDetail carries everything the DAG renderer needs for one node.
 type JobDetail struct {
-	JobID        string    `json:"job_id"`
-	StepID       string    `json:"step_id"`
-	Status       JobStatus `json:"status"`
-	DependsOn    []string  `json:"depends_on"`
-	DurationMs   int64     `json:"duration_ms"`
-	ExitCode     int       `json:"exit_code"`
-	PolicySource string    `json:"policy_source,omitempty"`
+	JobID        string     `json:"job_id"`
+	StepID       string     `json:"step_id"`
+	Status       JobStatus  `json:"status"`
+	DependsOn    []string   `json:"depends_on"`
+	DurationMs   int64      `json:"duration_ms"`
+	TimeoutNS    int64      `json:"timeout_ns"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	ExitCode     int        `json:"exit_code"`
+	PolicySource string     `json:"policy_source,omitempty"`
 }
 
 // CreateDebugRequest asks the scheduler to start a debug session for a job.
@@ -338,6 +353,8 @@ type ProjectInfo struct {
 	Name          string    `json:"name"`
 	RepoURL       string    `json:"repo_url"`
 	PipelinePath  string    `json:"pipeline_path"`
+	Cron          string    `json:"cron,omitempty"`
+	ScheduledPath string    `json:"scheduled_pipeline_path,omitempty"`
 	BranchFilter  []string  `json:"branch_filter,omitempty"`
 	WebhookSecret string    `json:"webhook_secret,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -360,11 +377,13 @@ type CreateProjectRequest struct {
 
 // UpdateProjectRequest updates an existing project.
 type UpdateProjectRequest struct {
-	Name         *string  `json:"name,omitempty"`
-	RepoURL      *string  `json:"repo_url,omitempty"`
-	PipelinePath *string  `json:"pipeline_path,omitempty"`
-	SCMToken     *string  `json:"scm_token,omitempty"`
-	BranchFilter []string `json:"branch_filter,omitempty"`
+	Name          *string  `json:"name,omitempty"`
+	RepoURL       *string  `json:"repo_url,omitempty"`
+	PipelinePath  *string  `json:"pipeline_path,omitempty"`
+	Cron          *string  `json:"cron,omitempty"`
+	ScheduledPath *string  `json:"scheduled_pipeline_path,omitempty"`
+	SCMToken      *string  `json:"scm_token,omitempty"`
+	BranchFilter  []string `json:"branch_filter,omitempty"`
 }
 
 // ManualTriggerRequest is used to manually start a pipeline run.
@@ -380,6 +399,7 @@ type WebhookRunMeta struct {
 	RepoURL   string `json:"repo_url"`
 	RepoName  string `json:"repo_name"`
 	Branch    string `json:"branch"`
+	Ref       string `json:"ref,omitempty"` // full Git ref, e.g. "refs/heads/main" or "refs/tags/v1.0.0"
 	CommitSHA string `json:"commit_sha"`
 	CommitMsg string `json:"commit_message"`
 	Author    string `json:"author"`
@@ -436,6 +456,14 @@ type ArtifactUploadSpec struct {
 type ArtifactDownloadSpec struct {
 	Name string `json:"name"`
 	Dest string `json:"dest"`
+}
+
+// ReleaseConfig holds parameters for creating an SCM release.
+type ReleaseConfig struct {
+	Name      string   `json:"name"`      // Release name/title
+	Tag       string   `json:"tag"`       // Git tag name
+	Body      string   `json:"body"`      // Release description
+	Artifacts []string `json:"artifacts"` // Names of artifacts to attach to the release
 }
 
 // ArtifactMeta describes a stored artifact returned by the scheduler
@@ -504,4 +532,26 @@ type FlakyStep struct {
 	Failures     int     `json:"failures"`
 	FlakeRate    float64 `json:"flake_rate"` // failures / total_runs
 	LastSeen     string  `json:"last_seen"`
+}
+
+// AgentInfo carries health and status info for a self-hosted runner.
+type AgentInfo struct {
+	ID              string            `json:"id"`
+	LastHeartbeat   time.Time         `json:"last_heartbeat"`
+	Concurrency     int               `json:"concurrency"`
+	ActiveJobsCount int               `json:"active_jobs_count"`
+	DockerImages    int               `json:"docker_images"`
+	Version         string            `json:"version"`
+	Labels          map[string]string `json:"labels"`
+	Connected       bool              `json:"connected"`
+}
+
+// RunComparison compares a run's duration against historical averages.
+type RunComparison struct {
+	RunID              string  `json:"run_id"`
+	DurationMs         int64   `json:"duration_ms"`
+	AvgDurationMs      int64   `json:"avg_duration_ms"`
+	DiffMs             int64   `json:"diff_ms"`
+	PercentChange      float64 `json:"percent_change"`
+	RegressionDetected bool    `json:"regression_detected"`
 }

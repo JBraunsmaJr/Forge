@@ -1,6 +1,9 @@
 package pipeline
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Pipeline is the compiled, canonical representation of a pipeline.
 // It is what the compiler produces from a .forge/pipeline.yaml file.
@@ -45,6 +48,10 @@ type Step struct {
 	// RedactValues holds the actual secret values fetched at runtime.
 	RedactValues []string
 
+	// Release holds configuration for SCM releases (GitHub/GitLab).
+	// Only used if Type == "release".
+	Release *ReleaseConfig
+
 	// DockerSocket mounts the host Docker daemon socket (/var/run/docker.sock)
 	// into the step container. Use for steps that need to run docker commands
 	// themselves (Docker-outside-Docker pattern). Requires docker-cli in the image.
@@ -88,6 +95,14 @@ type ArtifactUploadSpec struct {
 type ArtifactDownloadSpec struct {
 	Name string // logical name from a prior step's upload
 	Dest string // destination path inside /workspace
+}
+
+// ReleaseConfig holds parameters for creating an SCM release.
+type ReleaseConfig struct {
+	Name      string   // Release name/title
+	Tag       string   // Git tag name
+	Body      string   // Release description
+	Artifacts []string // Names of artifacts to attach to the release
 }
 
 // StepStatus represents where a step is in its lifecycle.
@@ -145,4 +160,67 @@ type StepResult struct {
 	// GeneratedStepsJSON is set by generator steps — it's the raw JSON
 	// array of new step definitions emitted to stdout.
 	GeneratedStepsJSON []byte
+}
+
+// Validate checks the pipeline for internal consistency, including cycle detection.
+func (p *Pipeline) Validate() error {
+	if p.Name == "" {
+		return fmt.Errorf("pipeline name is required")
+	}
+	if len(p.Steps) == 0 {
+		return fmt.Errorf("pipeline must have at least one step")
+	}
+	return ValidateSteps(p.Steps)
+}
+
+// ValidateSteps checks a set of steps for duplicate IDs, missing dependencies, and cycles.
+func ValidateSteps(steps []*Step) error {
+	ids := make(map[string]struct{})
+	for _, s := range steps {
+		if s.ID == "" {
+			continue
+		}
+		if _, ok := ids[s.ID]; ok {
+			return fmt.Errorf("duplicate step ID: %s", s.ID)
+		}
+		ids[s.ID] = struct{}{}
+	}
+
+	adj := make(map[string][]string)
+	for _, s := range steps {
+		adj[s.ID] = s.DependsOn
+	}
+
+	visited := make(map[string]bool)
+	onStack := make(map[string]bool)
+
+	var check func(string) error
+	check = func(u string) error {
+		visited[u] = true
+		onStack[u] = true
+		for _, v := range adj[u] {
+			if _, ok := adj[v]; !ok {
+				return fmt.Errorf("step %s depends on non-existent step %s", u, v)
+			}
+			if onStack[v] {
+				return fmt.Errorf("cycle detected: step %s is part of a dependency loop", v)
+			}
+			if !visited[v] {
+				if err := check(v); err != nil {
+					return err
+				}
+			}
+		}
+		onStack[u] = false
+		return nil
+	}
+
+	for _, s := range steps {
+		if !visited[s.ID] {
+			if err := check(s.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

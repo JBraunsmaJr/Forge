@@ -84,13 +84,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var branch, commitSHA, repoURL, repoFullName, commitMsg, author string
+	var branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author string
 	var prNumber int
 
 	if event == "push" {
-		branch, commitSHA, repoURL, repoFullName, commitMsg, author, err = parseGitHubPush(body)
+		branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author, err = parseGitHubPush(body)
 	} else {
-		branch, commitSHA, repoURL, repoFullName, commitMsg, author, prNumber, err = parseGitHubPR(body)
+		branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author, prNumber, err = parseGitHubPR(body)
 		if err == nil {
 			// Only trigger on opened or updated PRs.
 			var payload githubPRPayload
@@ -122,13 +122,14 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		RepoURL:   repoURL,
 		RepoName:  repoFullName,
 		Branch:    branch,
+		Ref:       ref,
 		CommitSHA: commitSHA,
 		CommitMsg: commitMsg,
 		Author:    author,
 		PRNumber:  prNumber,
 	}
 
-	runID, err := s.triggerWebhookRun(proj, repoURL, branch, commitSHA, rawURL, scmToken, meta)
+	runID, err := s.triggerWebhookRun(proj, repoURL, branch, commitSHA, rawURL, scmToken, meta, false)
 	if err != nil {
 		fmt.Printf("[webhook] github trigger failed: %v\n", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -214,15 +215,15 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 
-	var branch, commitSHA, repoURL, repoFullName, commitMsg, author, eventType string
+	var branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author, eventType string
 	var prNumber int
 	var err error
 
 	if event == "Push Hook" {
-		branch, commitSHA, repoURL, repoFullName, commitMsg, author, err = parseGitLabPush(body)
+		branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author, err = parseGitLabPush(body)
 		eventType = "push"
 	} else {
-		branch, commitSHA, repoURL, repoFullName, commitMsg, author, prNumber, err = parseGitLabMR(body)
+		branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author, prNumber, err = parseGitLabMR(body)
 		if err == nil {
 			var payload gitlabMRPayload
 			json.Unmarshal(body, &payload)
@@ -253,13 +254,14 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 		RepoURL:   repoURL,
 		RepoName:  repoFullName,
 		Branch:    branch,
+		Ref:       ref,
 		CommitSHA: commitSHA,
 		CommitMsg: commitMsg,
 		Author:    author,
 		PRNumber:  prNumber,
 	}
 
-	runID, err := s.triggerWebhookRun(proj, repoURL, branch, commitSHA, rawURL, scmToken, meta)
+	runID, err := s.triggerWebhookRun(proj, repoURL, branch, commitSHA, rawURL, scmToken, meta, false)
 	if err != nil {
 		fmt.Printf("[webhook] gitlab trigger failed: %v\n", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -299,7 +301,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		CommitSHA: commitSHA,
 	}
 
-	runID, err := s.triggerWebhookRun(proj, proj.RepoURL, branch, commitSHA, rawURL, scmToken, meta)
+	runID, err := s.triggerWebhookRun(proj, proj.RepoURL, branch, commitSHA, rawURL, scmToken, meta, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -314,10 +316,13 @@ func (s *Server) triggerWebhookRun(
 	repoURL, branch, commitSHA string,
 	pipelineRawURL, scmToken string,
 	meta api.WebhookRunMeta,
+	skipSync bool,
 ) (string, error) {
 
-	if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
-		return "", fmt.Errorf("syncing repo: %w", err)
+	if !skipSync {
+		if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
+			return "", fmt.Errorf("syncing repo: %w", err)
+		}
 	}
 
 	pipelinePath := proj.PipelinePath
@@ -362,6 +367,27 @@ func (s *Server) triggerWebhookRun(
 
 		injectSCMMetadata(env, meta)
 
+		var pipelineRef *api.PipelineRef
+		if s.PipelineRef != nil {
+			pipelineRef = &api.PipelineRef{
+				Path:             s.PipelineRef.Path,
+				Wait:             s.PipelineRef.Wait,
+				Variables:        s.PipelineRef.Variables,
+				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
+				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
+			}
+		}
+
+		var release *api.ReleaseConfig
+		if s.Release != nil {
+			release = &api.ReleaseConfig{
+				Name:      s.Release.Name,
+				Tag:       s.Release.Tag,
+				Body:      s.Release.Body,
+				Artifacts: s.Release.Artifacts,
+			}
+		}
+
 		steps[i] = api.StepDef{
 			ID:           s.ID,
 			Image:        s.Image,
@@ -376,6 +402,8 @@ func (s *Server) triggerWebhookRun(
 			Condition:    s.Condition,
 			AlwaysRun:    s.AlwaysRun,
 			Type:         s.Type,
+			PipelineRef:  pipelineRef,
+			Release:      release,
 		}
 	}
 
@@ -426,7 +454,7 @@ func (s *Server) triggerWebhookRun(
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, commitSHA, meta.Provider, steps, appliedPolicies)
+	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, steps, appliedPolicies)
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}
@@ -527,19 +555,25 @@ func injectSCMMetadata(env map[string]string, meta api.WebhookRunMeta) {
 	env["FORGE_REPO_URL"] = meta.RepoURL
 	env["FORGE_REPO_NAME"] = meta.RepoName
 	env["FORGE_BRANCH"] = meta.Branch
+	env["FORGE_REF"] = meta.Ref
 	env["FORGE_COMMIT_SHA"] = meta.CommitSHA
 	env["FORGE_EVENT"] = meta.Event
+	if strings.HasPrefix(meta.Ref, "refs/tags/") {
+		env["FORGE_COMMIT_TAG"] = strings.TrimPrefix(meta.Ref, "refs/tags/")
+	}
 	if meta.PRNumber > 0 {
 		env["FORGE_PR_NUMBER"] = fmt.Sprintf("%d", meta.PRNumber)
 	}
 }
 
-func parseGitHubPush(body []byte) (branch, commitSHA, repoURL, repoFullName, commitMsg, author string, err error) {
+func parseGitHubPush(body []byte) (branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author string, err error) {
 	var payload githubPushPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", "", "", "", "", "", err
+		return "", "", "", "", "", "", "", err
 	}
-	branch = strings.TrimPrefix(payload.Ref, "refs/heads/")
+	ref = payload.Ref
+	branch = strings.TrimPrefix(ref, "refs/heads/")
+	branch = strings.TrimPrefix(branch, "refs/tags/")
 	commitSHA = payload.After
 	repoURL = payload.Repository.CloneURL
 	repoFullName = payload.Repository.FullName
@@ -548,12 +582,13 @@ func parseGitHubPush(body []byte) (branch, commitSHA, repoURL, repoFullName, com
 	return
 }
 
-func parseGitHubPR(body []byte) (branch, commitSHA, repoURL, repoFullName, commitMsg, author string, prNumber int, err error) {
+func parseGitHubPR(body []byte) (branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author string, prNumber int, err error) {
 	var payload githubPRPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", "", "", "", "", "", 0, err
+		return "", "", "", "", "", "", "", 0, err
 	}
 	branch = payload.PullRequest.Head.Ref
+	ref = "refs/pull/" + fmt.Sprintf("%d", payload.PullRequest.Number) + "/head"
 	commitSHA = payload.PullRequest.Head.SHA
 	repoURL = payload.Repository.CloneURL
 	repoFullName = payload.Repository.FullName
@@ -563,12 +598,14 @@ func parseGitHubPR(body []byte) (branch, commitSHA, repoURL, repoFullName, commi
 	return
 }
 
-func parseGitLabPush(body []byte) (branch, commitSHA, repoURL, repoFullName, commitMsg, author string, err error) {
+func parseGitLabPush(body []byte) (branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author string, err error) {
 	var payload gitlabPushPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", "", "", "", "", "", err
+		return "", "", "", "", "", "", "", err
 	}
-	branch = strings.TrimPrefix(payload.Ref, "refs/heads/")
+	ref = payload.Ref
+	branch = strings.TrimPrefix(ref, "refs/heads/")
+	branch = strings.TrimPrefix(branch, "refs/tags/")
 	commitSHA = payload.After
 	repoURL = payload.Project.HTTPURLToRepo
 	repoFullName = payload.Project.PathWithNamespace
@@ -579,12 +616,13 @@ func parseGitLabPush(body []byte) (branch, commitSHA, repoURL, repoFullName, com
 	return
 }
 
-func parseGitLabMR(body []byte) (branch, commitSHA, repoURL, repoFullName, commitMsg, author string, prNumber int, err error) {
+func parseGitLabMR(body []byte) (branch, ref, commitSHA, repoURL, repoFullName, commitMsg, author string, prNumber int, err error) {
 	var payload gitlabMRPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", "", "", "", "", "", 0, err
+		return "", "", "", "", "", "", "", 0, err
 	}
 	branch = payload.ObjectAttributes.SourceBranch
+	ref = "refs/merge-requests/" + fmt.Sprintf("%d", payload.ObjectAttributes.IID) + "/head"
 	commitSHA = payload.ObjectAttributes.LastCommit.ID
 	repoURL = payload.Project.HTTPURLToRepo
 	repoFullName = payload.Project.PathWithNamespace
