@@ -141,9 +141,11 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		containerID = strings.TrimSpace(string(out))
 
 		// 2. Copy workspace IN
-		cpIn := exec.CommandContext(ctx, "docker", "cp", e.WorkspaceDir+"/.", containerID+":/workspace")
+		// We copy the entire directory into /workspace. Docker cp handles creating
+		// the destination if it doesn't exist.
+		cpIn := exec.CommandContext(ctx, "docker", "cp", e.WorkspaceDir, containerID+":/workspace")
 		if err := cpIn.Run(); err != nil {
-			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error()})
+			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
@@ -202,8 +204,11 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 
 	if e.UseCopy && containerID != "" {
 		// 4. Copy workspace OUT (to capture any changes/artifacts)
+		// We copy from /workspace back to the host workspace.
 		cpOut := exec.CommandContext(ctx, "docker", "cp", containerID+":/workspace/.", e.WorkspaceDir)
-		cpOut.Run() // non-fatal if it fails
+		if err := cpOut.Run(); err != nil {
+			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error()})
+		}
 
 		// 5. Cleanup container
 		exec.Command("docker", "rm", "-f", containerID).Run()

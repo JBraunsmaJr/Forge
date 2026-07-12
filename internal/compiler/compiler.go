@@ -445,7 +445,7 @@ func compileStep(js jsonStep, index int) (*pipeline.Step, error) {
 		scriptPath := "/workspace/" + strings.TrimLeft(js.Script, "/")
 		command = []string{interp, scriptPath}
 	} else if js.Run != "" {
-		command = []string{"sh", "-c", js.Run}
+		command = []string{"sh", "-c", "set -e\n" + js.Run}
 	} else if len(js.Command) > 0 {
 		command = js.Command
 	}

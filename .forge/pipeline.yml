@@ -10,6 +10,8 @@ steps:
       npm install
       npm run build
       cd ..
+      # Verify build output exists
+      ls -la internal/scheduler/web/dist
       tar -czf ui-dist.tar.gz -C internal/scheduler/web dist
     artifacts:
       upload:
@@ -24,8 +26,12 @@ steps:
         - name: ui-dist.tar.gz
     timeout: 5m
     run: |
+      # Debug: check if artifact was downloaded
+      ls -la
       mkdir -p internal/scheduler/web
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
+      # Debug: verify extraction
+      ls -la internal/scheduler/web/dist
       go test ./...
 
   - id: build-image
@@ -50,6 +56,8 @@ steps:
     env:
       CGO_ENABLED: "0"
     run: |
+      # Debug: check if artifact was downloaded
+      ls -la
       mkdir -p internal/scheduler/web
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       export GOOS=${{ matrix.os }}

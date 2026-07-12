@@ -1575,12 +1575,22 @@ func (a *Agent) rebaseURL(rawURL string) string {
 	}
 
 	// Only rebase URLs whose path starts with /api/v1/ - those are
-	// scheduler endpoints. Pre-signed S3/Minio URLs never have an /api/v1/ prefix
+	// scheduler endpoints.
 	if strings.HasPrefix(u.Path, "/api/v1/") {
 		u.Scheme = base.Scheme
 		u.Host = base.Host
 		return u.String()
 	}
+
+	// Also rebase if the host is localhost or 127.0.0.1 - this handles
+	// cases where FORGE_S3_PUBLIC_URL is set to localhost but the agent
+	// is running inside a container and needs to reach the scheduler/minio.
+	if u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" {
+		u.Scheme = base.Scheme
+		u.Host = base.Host
+		return u.String()
+	}
+
 	return rawURL
 }
 
@@ -1784,7 +1794,7 @@ func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) {
 		matches, err := filepath.Glob(pattern)
 
 		if err != nil || len(matches) == 0 {
-			fmt.Printf("[agent %s] artifact pattern %q matched no files\n", a.id[:8], ul.Path)
+			fmt.Printf("[agent %s] artifact pattern %q matched no files in %s\n", a.id[:8], ul.Path, workspaceDir)
 			continue
 		}
 
@@ -1908,11 +1918,16 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 	)
 
 	if err != nil {
+		fmt.Printf("[agent %s] artifact %q confirm failed: %v\n", a.id[:8], name, err)
 		return fmt.Errorf("confirm: %w", err)
+	}
+	if confirmResp.StatusCode != http.StatusNoContent && confirmResp.StatusCode != http.StatusOK {
+		fmt.Printf("[agent %s] artifact %q confirm returned HTTP %d\n", a.id[:8], name, confirmResp.StatusCode)
 	}
 
 	io.Copy(io.Discard, confirmResp.Body)
 	confirmResp.Body.Close()
+	fmt.Printf("[agent %s] artifact %q uploaded successfully (%d bytes)\n", a.id[:8], name, size)
 	return nil
 }
 
