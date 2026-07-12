@@ -90,11 +90,6 @@ steps:
       tag: "${{ env.FORGE_COMMIT_TAG }}"
       body: "Forge Release ${{ env.FORGE_COMMIT_TAG }}\n\nAutomated release of Forge binaries."
       artifacts:
-        - forge-linux-amd64
-        - forge-linux-arm64
-        - forge-windows-amd64
-        - forge-windows-arm64
-        - forge-darwin-amd64
-        - forge-darwin-arm64
+        - forge-*
       
       

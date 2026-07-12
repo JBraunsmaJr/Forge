@@ -144,7 +144,6 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy the host's "workspace" directory into the container's root.
 		// Since the host directory is named "workspace", it will become "/workspace" in the container.
 		src := filepath.Clean(e.WorkspaceDir)
-		fmt.Printf("=== FORGE DEBUG V3 === [executor] copying workspace IN: %s -> %s:/\n", src, containerID[:12])
 		cpIn := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
 		if err := cpIn.Run(); err != nil {
 			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
@@ -209,7 +208,6 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy "/workspace" from the container back to the host's job directory.
 		src := containerID + ":/workspace"
 		dst := filepath.Dir(filepath.Clean(e.WorkspaceDir))
-		fmt.Printf("=== FORGE DEBUG V3 === [executor] copying workspace OUT: %s -> %s\n", src, dst)
 		cpOut := exec.CommandContext(ctx, "docker", "cp", src, dst)
 		if err := cpOut.Run(); err != nil {
 			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error(), "src": src, "dst": dst})

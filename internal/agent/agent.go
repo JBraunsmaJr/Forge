@@ -11,11 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -167,7 +169,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		PermitWithoutStream: true,
 	}))
 
-	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] dialing gRPC: %s (secure: %v)\n", a.id[:8], grpcAddr, isSecure)
+	fmt.Printf("[agent %s] dialing gRPC: %s (secure: %v)\n", a.id[:8], grpcAddr, isSecure)
 	conn, err := grpc.NewClient(grpcAddr, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to dial gRPC: %w", err)
@@ -177,14 +179,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.grpcClient = pb.NewAgentServiceClient(conn)
 
 	// Open bidirectional stream
-	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] opening gRPC session...\n", a.id[:8])
 	stream, err := a.grpcClient.Session(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open gRPC session: %w", err)
 	}
 
 	// Register agent
-	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] registering agent...\n", a.id[:8])
 	err = stream.Send(&pb.AgentMessage{
 		AgentId: a.id,
 		Payload: &pb.AgentMessage_Register{
@@ -196,7 +196,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to register: %w", err)
 	}
-	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] registration sent\n", a.id[:8])
 
 	// Clean up any dangling containers from previous runs.
 	executor.Cleanup()
@@ -221,8 +220,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 
-	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
-	fmt.Printf("=== FORGE DEBUG V3 === [agent %s] connected and waiting for jobs\n", a.id[:8])
+	fmt.Printf("[agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
+	fmt.Printf("[agent %s] connected and waiting for jobs\n", a.id[:8])
 
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -232,7 +231,6 @@ func (a *Agent) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				fmt.Printf("=== FORGE DEBUG V3 === [agent %s] still waiting for jobs (stream active)...\n", a.id[:8])
 			}
 		}
 	}()
@@ -241,14 +239,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
-			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] gRPC stream closed by server (EOF)\n", a.id[:8])
+			fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
 			return nil
 		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] gRPC receive error: %v\n", a.id[:8], err)
+			fmt.Printf("[agent %s] gRPC receive error: %v\n", a.id[:8], err)
 			return fmt.Errorf("gRPC receive error: %w", err)
 		}
 
@@ -649,6 +647,15 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Type:         spec.Type,
 	}
 
+	if step.Image == "" {
+		err := fmt.Errorf("job has no container image defined")
+		return a.reportComplete(spec, 1, 0, []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   err.Error(),
+		}}, "", false)
+	}
+
 	/*
 		Default WorkDir to /workspace if not set
 		Policy-injected steps from transformers may often omit WorkDir since then
@@ -738,9 +745,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		}
 	}
 
-	// Download artifacts declared by this step
 	if len(spec.ArtifactDownloads) > 0 {
-		fmt.Printf("=== FORGE DEBUG V3 === [agent %s] downloading %d artifact(s)\n", a.id[:8], len(spec.ArtifactDownloads))
 		if err := a.downloadArtifacts(spec, jobWorkspace); err != nil {
 			fmt.Printf("[agent %s] artifact download failed: %v\n", a.id[:8], err)
 			return a.reportComplete(spec, 1, 0, []api.LogEvent{{
@@ -748,19 +753,6 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				Level:     "ERROR",
 				Message:   fmt.Sprintf("artifact download failed: %v", err),
 			}}, "", false)
-		}
-		// List workspace after download
-		if files, err := os.ReadDir(jobWorkspace); err == nil {
-			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] workspace after download:\n", a.id[:8])
-			for _, f := range files {
-				fmt.Printf("  - %s (%v bytes)\n", f.Name(), func() int64 {
-					i, _ := f.Info()
-					if i != nil {
-						return i.Size()
-					}
-					return 0
-				}())
-			}
 		}
 	}
 
@@ -1163,7 +1155,7 @@ func (a *Agent) debugLoop(ctx context.Context) {
 		}
 		spec, ok, err := a.leaseDebug(ctx)
 		if err != nil {
-			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] debug lease error: %v\n", a.id[:8], err)
+			log.Printf("[agent %s] debug lease error: %v", a.id[:8], err)
 			a.sleep(ctx, 5*time.Second)
 			continue
 		}
@@ -1762,32 +1754,62 @@ func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID s
 // downloadArtifacts fetches declared artifacts from the scheduler before the step runs.
 func (a *Agent) downloadArtifacts(spec *api.JobSpec, workspaceDir string) error {
 	for _, dl := range spec.ArtifactDownloads {
-		meta, err := a.getArtifact(spec.RunID, dl.Name)
-		if err != nil {
-			return fmt.Errorf("artifact %q: %w", dl.Name, err)
+		var toDownload []*api.ArtifactMeta
+
+		if strings.ContainsAny(dl.Name, "*?[]") {
+			all, err := a.listArtifacts(spec.RunID)
+			if err != nil {
+				return fmt.Errorf("listing artifacts for wildcard %q: %w", dl.Name, err)
+			}
+			matched := false
+			for i := range all {
+				if ok, _ := path.Match(dl.Name, all[i].Name); ok {
+					toDownload = append(toDownload, &all[i])
+					matched = true
+				}
+			}
+			if !matched {
+				fmt.Printf("[agent %s] wildcard artifact %q matched no files\n", a.id[:8], dl.Name)
+			}
+		} else {
+			meta, err := a.getArtifact(spec.RunID, dl.Name)
+			if err != nil {
+				return fmt.Errorf("artifact %q: %w", dl.Name, err)
+			}
+			toDownload = append(toDownload, meta)
 		}
 
-		/*
-				Scheduler may return a download URL that uses FORGE_BASE_URL (e.g. http://localhost:8080).
-			    Inside a Docker container, localhost refers to the agent itself, not the scheduler. Replace the
-			    URL's host with the known scheduler address so the download always works from inside Docker.
-		*/
-		downloadURL := a.rebaseURL(meta.DownloadURL)
+		for _, meta := range toDownload {
+			/*
+					Scheduler may return a download URL that uses FORGE_BASE_URL (e.g. http://localhost:8080).
+				    Inside a Docker container, localhost refers to the agent itself, not the scheduler. Replace the
+				    URL's host with the known scheduler address so the download always works from inside Docker.
+			*/
+			downloadURL := a.rebaseURL(meta.DownloadURL)
 
-		dest := dl.Dest
-		if dest == "" {
-			dest = dl.Name
+			dest := dl.Dest
+			if dest == "" || strings.ContainsAny(dl.Name, "*?[]") {
+				// If wildcard or no dest specified, use the logical name as filename
+				// If dl.Dest was specified but it's a wildcard match, we should probably
+				// treat dl.Dest as a directory.
+				if dl.Dest != "" {
+					dest = filepath.Join(dl.Dest, meta.Name)
+				} else {
+					dest = meta.Name
+				}
+			}
+
+			if !strings.HasPrefix(dest, "/") {
+				dest = filepath.Join(workspaceDir, dest)
+			}
+			if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+				return fmt.Errorf("creating download dir for %q: %w", meta.Name, err)
+			}
+			if err := a.downloadFile(downloadURL, dest); err != nil {
+				return fmt.Errorf("downloading artifact %q: %w", meta.Name, err)
+			}
+			fmt.Printf("[agent %s] downloaded artifact %q → %s\n", a.id[:8], meta.Name, dest)
 		}
-		if !strings.HasPrefix(dest, "/") {
-			dest = filepath.Join(workspaceDir, dest)
-		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			return fmt.Errorf("creating download dir for %q: %w", dl.Name, err)
-		}
-		if err := a.downloadFile(downloadURL, dest); err != nil {
-			return fmt.Errorf("downloading artifact %q: %w", dl.Name, err)
-		}
-		fmt.Printf("=== FORGE DEBUG V3 === [agent %s] downloaded artifact %q → %s\n", a.id[:8], dl.Name, dest)
 	}
 	return nil
 }
@@ -1836,6 +1858,25 @@ func (a *Agent) getArtifact(runId, name string) (*api.ArtifactMeta, error) {
 	var meta api.ArtifactMeta
 	json.NewDecoder(resp.Body).Decode(&meta)
 	return &meta, nil
+}
+
+func (a *Agent) listArtifacts(runId string) ([]api.ArtifactMeta, error) {
+	url := fmt.Sprintf("%s/api/v1/runs/%s/artifacts", a.schedulerURL, runId)
+	resp, err := a.authGet(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var list []api.ArtifactMeta
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {

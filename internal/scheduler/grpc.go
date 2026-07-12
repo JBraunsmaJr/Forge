@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -46,12 +47,10 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 		msg = res.msg
 		err = res.err
 	case <-ctx.Done():
-		fmt.Printf("=== FORGE DEBUG V3 === [grpc] registration timeout from %s\n", addr)
 		return fmt.Errorf("registration timeout")
 	}
 
 	if err != nil {
-		fmt.Printf("=== FORGE DEBUG V3 === [grpc] failed to receive registration from %s: %v\n", addr, err)
 		return err
 	}
 	var agentID string
@@ -63,9 +62,8 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 			concurrency = 1
 		}
 		s.scheduler.agents.Register(agentID, concurrency, msg.GetRegister().Labels)
-		fmt.Printf("=== FORGE DEBUG V3 === [grpc] agent %s registered from %s (concurrency: %d)\n", agentID[:8], addr, concurrency)
+		log.Printf("[grpc] agent %s registered from %s (concurrency: %d)", agentID[:8], addr, concurrency)
 	} else {
-		fmt.Printf("=== FORGE DEBUG V3 === [grpc] first message from %s was not registration\n", addr)
 		return fmt.Errorf("first message must be register")
 	}
 
@@ -188,7 +186,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 			// Check if agent has capacity
 			active, err := s.scheduler.store.ActiveJobsCount(agentID)
 			if err != nil {
-				fmt.Printf("=== FORGE DEBUG V3 === [grpc] error checking active jobs for agent %s: %v\n", agentID[:8], err)
+				log.Printf("[grpc] error checking active jobs for agent %s: %v", agentID[:8], err)
 				continue
 			}
 
@@ -200,7 +198,6 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 			// Try to lease a job for this agent
 			spec, ok := s.scheduler.store.LeaseNext(agentID)
 			if ok {
-				fmt.Printf("=== FORGE DEBUG V3 === [grpc] pushing job %s to agent %s (active: %d/%d)\n", spec.JobID[:8], agentID[:8], active+1, concurrency)
 				s.scheduler.publishRunDetail(spec.RunID)
 
 				pbSpec := &pb.JobSpec{

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -356,7 +357,6 @@ func (s *Server) Start(ctx context.Context) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		fmt.Printf("=== FORGE DEBUG V3 === [scheduler] listening on %s\n", s.addr)
 		fmt.Printf("[scheduler] web UI → http://localhost%s\n", s.addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
@@ -593,24 +593,44 @@ func (s *Server) releaseMonitor(ctx context.Context) {
 }
 
 func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[scheduler] PANIC in executeRelease for job %s: %v\n", job.JobID, r)
+			s.logError(job, fmt.Sprintf("INTERNAL ERROR: %v", r))
+			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+			s.publishRunDetail(job.RunID)
+		}
+	}()
+
+	if job.Release == nil {
+		s.logError(job, "Release configuration is missing")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+
 	// 1. Get run details
 	run, ok := s.store.RunDetail(job.RunID)
 	if !ok {
+		s.logError(job, "Run details not found")
 		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
 		return
 	}
 
 	// 2. Get project for token
 	proj, _, scmToken, ok := s.projects.GetProject(run.ProjectID)
 	if !ok {
-		s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: "Project not found"}})
+		s.logError(job, "Project not found")
 		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
 		return
 	}
 
 	if scmToken == "" {
-		s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: "SCM token not configured"}})
+		s.logError(job, "SCM token not configured for project")
 		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
 		return
 	}
 
@@ -621,8 +641,9 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 		} else if strings.Contains(proj.RepoURL, "gitlab.com") {
 			provider = "gitlab"
 		} else {
-			s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: "Unknown SCM provider"}})
+			s.logError(job, "Unknown SCM provider — cannot create release")
 			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+			s.publishRunDetail(job.RunID)
 			return
 		}
 	}
@@ -634,41 +655,85 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 	tag := interpolate(job.Release.Tag, job.Env)
 	body := interpolate(job.Release.Body, job.Env)
 
-	s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "info", Message: fmt.Sprintf("Creating %s release: %s (%s)...", provider, name, tag)}})
+	s.logInfo(job, fmt.Sprintf("Creating %s release: %s (%s)...", provider, name, tag))
 	releaseID, uploadURL, err := scm.CreateRelease(provider, proj.RepoURL, scmToken, tag, name, body)
 	if err != nil {
-		s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: fmt.Sprintf("Release creation failed: %v", err)}})
+		s.logError(job, fmt.Sprintf("Release creation failed: %v", err))
 		s.store.Complete(job.JobID, job.LeaseID, 1, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
 		return
 	}
 
-	// 4. Upload assets
-	failed := false
-	for _, artName := range job.Release.Artifacts {
-		s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "info", Message: fmt.Sprintf("Uploading artifact %s...", artName)}})
+	// 4. Collect assets to upload
+	var assetsToUpload []*artifacts.ArtifactMeta
+	allArtifacts, err := s.artifacts.ListArtifacts(ctx, job.RunID)
+	if err != nil {
+		s.logError(job, fmt.Sprintf("Failed to list artifacts for run: %v", err))
+	}
 
-		meta, err := s.artifacts.GetArtifact(ctx, job.RunID, artName)
-		if err != nil {
-			s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: fmt.Sprintf("Artifact %s not found: %v", artName, err)}})
-			failed = true
-			continue
+	seen := make(map[string]bool)
+	for _, rawArtName := range job.Release.Artifacts {
+		artPattern := interpolate(rawArtName, job.Env)
+
+		if strings.ContainsAny(artPattern, "*?[]") {
+			matched := false
+			for i := range allArtifacts {
+				art := &allArtifacts[i]
+				if ok, _ := path.Match(artPattern, art.Name); ok {
+					if !seen[art.ID] {
+						assetsToUpload = append(assetsToUpload, art)
+						seen[art.ID] = true
+					}
+					matched = true
+				}
+			}
+			if !matched {
+				s.logError(job, fmt.Sprintf("No artifacts matched pattern %q", artPattern))
+			}
+		} else {
+			// Exact match
+			meta, err := s.artifacts.GetArtifact(ctx, job.RunID, artPattern)
+			if err != nil {
+				s.logError(job, fmt.Sprintf("Artifact %q not found in run %s", artPattern, job.RunID))
+				// Log available artifacts to help debug
+				var names []string
+				for _, a := range allArtifacts {
+					names = append(names, a.Name)
+				}
+				s.logInfo(job, fmt.Sprintf("Available artifacts in run %s: %v", job.RunID, names))
+				continue
+			}
+			if !seen[meta.ID] {
+				assetsToUpload = append(assetsToUpload, meta)
+				seen[meta.ID] = true
+			}
 		}
+	}
 
+	// 5. Upload assets
+	failed := false
+	for _, meta := range assetsToUpload {
+		s.logInfo(job, fmt.Sprintf("Uploading artifact %q (run: %s)...", meta.Name, job.RunID))
+
+		s.logInfo(job, fmt.Sprintf("Downloading %q (ID: %s) from storage...", meta.Filename, meta.ID))
 		content, _, err := s.artifacts.ServeDownload(ctx, meta.ID)
 		if err != nil {
-			s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: fmt.Sprintf("Failed to download artifact %s: %v", artName, err)}})
+			s.logError(job, fmt.Sprintf("Failed to download artifact %q: %v", meta.Name, err))
 			failed = true
 			continue
 		}
 
+		s.logInfo(job, fmt.Sprintf("Uploading %q to SCM release...", meta.Filename))
 		err = scm.UploadAsset(provider, proj.RepoURL, scmToken, uploadURL, releaseID, meta.Filename, content)
-		content.Close()
+		if closer, ok := content.(io.Closer); ok {
+			closer.Close()
+		}
 
 		if err != nil {
-			s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "error", Message: fmt.Sprintf("Failed to upload %s: %v", meta.Filename, err)}})
+			s.logError(job, fmt.Sprintf("Failed to upload %s: %v", meta.Filename, err))
 			failed = true
 		} else {
-			s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{Timestamp: time.Now(), Level: "info", Message: fmt.Sprintf("Uploaded %s", meta.Filename)}})
+			s.logInfo(job, fmt.Sprintf("Uploaded %s", meta.Filename))
 		}
 	}
 
@@ -678,6 +743,28 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 	}
 	s.store.Complete(job.JobID, job.LeaseID, exitCode, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
 	s.publishRunDetail(job.RunID)
+}
+
+func (s *Server) logInfo(job *api.JobSpec, msg string) {
+	err := s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{
+		Timestamp: time.Now(),
+		Level:     "info",
+		Message:   msg,
+	}})
+	if err != nil {
+		fmt.Printf("[scheduler] log error for job %s: %v (msg: %s)\n", job.JobID[:8], err, msg)
+	}
+}
+
+func (s *Server) logError(job *api.JobSpec, msg string) {
+	err := s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{
+		Timestamp: time.Now(),
+		Level:     "error",
+		Message:   msg,
+	}})
+	if err != nil {
+		fmt.Printf("[scheduler] log error for job %s: %v (msg: %s)\n", job.JobID[:8], err, msg)
+	}
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -975,7 +1062,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", steps, appliedPolicies)
+	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", steps, appliedPolicies, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1489,12 +1576,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	fmt.Printf("[scheduler] rerun of %s → new run %s\n", runID[:8], newRunID[:8])
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1522,19 +1604,12 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 	newName = "rerun: " + newName
 
 	for i := range steps {
-		if steps[i].Status == api.JobStatusPassed {
-			// Keep as passed
-		} else {
+		if steps[i].Status != api.JobStatusPassed {
 			steps[i].Status = "" // Rerun
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	fmt.Printf("[scheduler] rerun-failed of %s → new run %s\n", runID[:8], newRunID[:8])
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1598,21 +1673,10 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	for i := range steps {
 		if toRerun[steps[i].ID] {
 			steps[i].Status = ""
-		} else if steps[i].Status == api.JobStatusPassed {
-			// Keep as passed
-		} else {
-			// Job didn't pass, but isn't part of the rerun set.
-			// It remains in its current status, which will block its own downstreams
-			// (unless they are also in toRerun).
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	fmt.Printf("[scheduler] rerun-job %s of %s → new run %s\n", targetStepID, runID[:8], newRunID[:8])
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }

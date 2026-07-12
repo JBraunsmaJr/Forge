@@ -34,10 +34,13 @@
         return Math.max(MIN_NODE_W, 14 + contentW + actionsW);
     }
 
-    function computeLayout(jobs: Job[]) {
-        if (!jobs || jobs.length === 0) {
+    function computeLayout(jobsInput: Job[]) {
+        if (!jobsInput || jobsInput.length === 0) {
             return { positions: {}, svgW: 0, svgH: 0 };
         }
+
+        // Sort jobs by step_id to ensure deterministic layout
+        const jobs = [...jobsInput].sort((a, b) => a.step_id.localeCompare(b.step_id));
 
         try {
             const depth: Record<string, number> = {};

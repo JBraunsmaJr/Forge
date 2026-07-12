@@ -472,7 +472,7 @@ func (s *Server) triggerWebhookRun(
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, steps, appliedPolicies)
+	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, steps, appliedPolicies, "")
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}

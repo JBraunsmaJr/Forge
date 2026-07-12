@@ -21,14 +21,14 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, steps, appliedPolicies)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string, parentRunID string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, steps, appliedPolicies, parentRunID)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string, parentRunID string) (string, error) {
 
 	policiesJSON, _ := json.Marshal(appliedPolicies)
 
@@ -43,10 +43,15 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 		orgIDParam = orgID
 	}
 
+	var parentRunParam interface{}
+	if parentRunID != "" {
+		parentRunParam = parentRunID
+	}
+
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, ref, commit_sha, scm_provider)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, ref, commitSHA, scmProvider,
+		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, ref, commitSHA, scmProvider, parentRunParam,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -86,6 +91,21 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 
 		if err := insertJob(tx, runID, step, command, workDir, stepType, timeout, status); err != nil {
 			return "", fmt.Errorf("insert job %s: %w", step.ID, err)
+		}
+
+		// If this is a rerun and the job was already passed, copy its artifacts
+		if parentRunID != "" && status == string(api.JobStatusPassed) {
+			_, err = tx.Exec(`
+				INSERT INTO artifacts (id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, confirmed, created_at)
+				SELECT md5(random()::text || clock_timestamp()::text), $1, 'rerun-skipped', name, filename, size_bytes, content_type, storage_key, true, created_at
+				FROM artifacts
+				WHERE run_id = $2 AND job_id IN (
+					SELECT id FROM jobs WHERE run_id = $2 AND step_id = $3
+				) AND confirmed = true
+			`, runID, parentRunID, step.ID)
+			if err != nil {
+				fmt.Printf("[store] failed to copy artifacts for rerun step %s: %v\n", step.ID, err)
+			}
 		}
 	}
 
@@ -138,13 +158,6 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	leaseID := newID()
 	now := time.Now()
-
-	// Count queued jobs for debugging
-	var queuedCount int
-	s.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").Scan(&queuedCount)
-	if queuedCount > 0 {
-		fmt.Printf("=== FORGE DEBUG V3 === [store] LeaseNext: found %d queued jobs, attempting to lease for agent %s\n", queuedCount, agentID[:8])
-	}
 
 	row := s.db.QueryRow(`
 		WITH next AS (
@@ -393,16 +406,18 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 		return "", fmt.Errorf("updating job: %w", err)
 	}
 
-	if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
-		return "", fmt.Errorf("clearing logs: %w", err)
-	}
-	for _, log := range logs {
-		_, err = tx.Exec(
-			`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1,$2,$3,$4)`,
-			jobID, log.Timestamp, log.Level, log.Message,
-		)
-		if err != nil {
-			return "", fmt.Errorf("inserting log: %w", err)
+	if len(logs) > 0 {
+		if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
+			return "", fmt.Errorf("clearing logs: %w", err)
+		}
+		for _, log := range logs {
+			_, err = tx.Exec(
+				`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1,$2,$3,$4)`,
+				jobID, log.Timestamp, log.Level, log.Message,
+			)
+			if err != nil {
+				return "", fmt.Errorf("inserting log: %w", err)
+			}
 		}
 	}
 
@@ -595,7 +610,12 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 			}
 
 			if newStatus != "" {
-				_, err := tx.Exec(`UPDATE jobs SET status=$1 WHERE id=$2`, newStatus, job.dbID)
+				var err error
+				if newStatus == string(api.JobStatusApproval) {
+					_, err = tx.Exec(`UPDATE jobs SET status=$1, started_at=NOW() WHERE id=$2`, newStatus, job.dbID)
+				} else {
+					_, err = tx.Exec(`UPDATE jobs SET status=$1 WHERE id=$2`, newStatus, job.dbID)
+				}
 				if err != nil {
 					return err
 				}
@@ -621,13 +641,19 @@ func (s *Store) ApproveJob(jobID string) error {
 	var runID string
 	err = tx.QueryRow(`
 		UPDATE jobs 
-		SET    status = 'queued' 
+		SET    status = 'passed', 
+		       finished_at = NOW(),
+		       duration_ms = COALESCE(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000, 0)::BIGINT
 		WHERE  id = $1 AND status = 'approval'
 		RETURNING run_id`, jobID).Scan(&runID)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("job not found or not in approval state")
 	}
 	if err != nil {
+		return err
+	}
+
+	if err := s.unlockDownstream(tx, runID); err != nil {
 		return err
 	}
 
