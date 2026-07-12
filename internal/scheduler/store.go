@@ -1052,6 +1052,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       inputs, timeout_ns, depends_on, secret_names, policy_source,
 		       docker_socket, condition, always_run,
 		       COALESCE(pipeline_ref::text, 'null'),
+		       COALESCE(release_config::text, 'null'),
 		       COALESCE(artifact_uploads::text, '[]'),
 		       COALESCE(artifact_downloads::text, '[]'),
 		       status
@@ -1063,7 +1064,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 
 	for rows.Next() {
 		var stepID, stepType, image, workDir, policySource string
-		var pipelineRefJSON, artifactUploadsJSON, artifactDownloadsJSON, status string
+		var pipelineRefJSON, releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON, status string
 		var entrypointJSON, commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
 		var timeoutNS int64
 		var dockerSocket bool
@@ -1074,7 +1075,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			&stepID, &stepType, &image, &entrypointJSON, &commandJSON, &workDir, &envJSON,
 			&inputsJSON, &timeoutNS, &dependsJSON, &secretsJSON, &policySource,
 			&dockerSocket, &condition, &alwaysRun,
-			&pipelineRefJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
+			&pipelineRefJSON, &releaseConfigJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
 			&status,
 		); err != nil {
 			continue
@@ -1085,6 +1086,8 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		var inputs []string
 		var artifactUploads []api.ArtifactUploadSpec
 		var artifactDownloads []api.ArtifactDownloadSpec
+		var pipelineRef *api.PipelineRef
+		var releaseConfig *api.ReleaseConfig
 		json.Unmarshal(entrypointJSON, &entrypoint)
 		json.Unmarshal(commandJSON, &command)
 		json.Unmarshal(envJSON, &env)
@@ -1093,6 +1096,12 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		json.Unmarshal(secretsJSON, &secretNames)
 		json.Unmarshal([]byte(artifactUploadsJSON), &artifactUploads)
 		json.Unmarshal([]byte(artifactDownloadsJSON), &artifactDownloads)
+		if pipelineRefJSON != "null" {
+			json.Unmarshal([]byte(pipelineRefJSON), &pipelineRef)
+		}
+		if releaseConfigJSON != "null" {
+			json.Unmarshal([]byte(releaseConfigJSON), &releaseConfig)
+		}
 
 		steps = append(steps, api.StepDef{
 			ID:                stepID,
@@ -1112,6 +1121,8 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			AlwaysRun:         alwaysRun,
 			ArtifactUploads:   artifactUploads,
 			ArtifactDownloads: artifactDownloads,
+			PipelineRef:       pipelineRef,
+			Release:           releaseConfig,
 			Status:            api.JobStatus(status),
 		})
 	}

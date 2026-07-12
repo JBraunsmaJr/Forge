@@ -486,18 +486,61 @@ func submitCommand() {
 	// Convert pipeline steps -> api.StepDefs for the HTTP request.
 	steps := make([]api.StepDef, len(p.Steps))
 	for i, s := range p.Steps {
+		var uploads []api.ArtifactUploadSpec
+		for _, u := range s.ArtifactUploads {
+			uploads = append(uploads, api.ArtifactUploadSpec{
+				Path: u.Path,
+				Name: u.Name,
+			})
+		}
+		var downloads []api.ArtifactDownloadSpec
+		for _, d := range s.ArtifactDownloads {
+			downloads = append(downloads, api.ArtifactDownloadSpec{
+				Name: d.Name,
+				Dest: d.Dest,
+			})
+		}
+
+		var pipelineRef *api.PipelineRef
+		if s.PipelineRef != nil {
+			pipelineRef = &api.PipelineRef{
+				Path:             s.PipelineRef.Path,
+				Wait:             s.PipelineRef.Wait,
+				Variables:        s.PipelineRef.Variables,
+				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
+				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
+			}
+		}
+
+		var release *api.ReleaseConfig
+		if s.Release != nil {
+			release = &api.ReleaseConfig{
+				Name:      s.Release.Name,
+				Tag:       s.Release.Tag,
+				Body:      s.Release.Body,
+				Artifacts: s.Release.Artifacts,
+			}
+		}
+
 		steps[i] = api.StepDef{
-			ID:           s.ID,
-			Image:        s.Image,
-			Entrypoint:   s.Entrypoint,
-			Command:      s.Command,
-			WorkDir:      s.WorkDir,
-			Env:          s.Env,
-			DependsOn:    s.DependsOn,
-			Inputs:       s.Inputs,
-			Timeout:      s.Timeout,
-			SecretNames:  s.Secrets, // names only values never leave the agent.
-			DockerSocket: s.DockerSocket,
+			ID:                s.ID,
+			Image:             s.Image,
+			Entrypoint:        s.Entrypoint,
+			Command:           s.Command,
+			WorkDir:           s.WorkDir,
+			Env:               s.Env,
+			DependsOn:         s.DependsOn,
+			Inputs:            s.Inputs,
+			Timeout:           s.Timeout,
+			SecretNames:       s.Secrets,
+			DockerSocket:      s.DockerSocket,
+			Condition:         s.Condition,
+			AlwaysRun:         s.AlwaysRun,
+			Type:              s.Type,
+			ArtifactUploads:   uploads,
+			ArtifactDownloads: downloads,
+			PipelineRef:       pipelineRef,
+			Release:           release,
 		}
 	}
 

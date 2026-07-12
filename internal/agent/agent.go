@@ -578,7 +578,8 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Each job gets its own unique directory to prevent collisions
 		during parallel runs on the same agent.
 	*/
-	jobWorkspace := filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
+	jobBaseDir := filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
+	jobWorkspace := filepath.Join(jobBaseDir, "workspace")
 	if err := os.MkdirAll(jobWorkspace, 0755); err != nil {
 		err = fmt.Errorf("creating job workspace: %w", err)
 		a.reportComplete(spec, 1, 0, []api.LogEvent{{
@@ -588,7 +589,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		}}, "", false)
 		return err
 	}
-	defer os.RemoveAll(jobWorkspace)
+	defer os.RemoveAll(jobBaseDir)
 
 	/*
 		If the job belongs to a repository (ProjectID + CommitSHA are set),
@@ -739,6 +740,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	// Download artifacts declared by this step
 	if len(spec.ArtifactDownloads) > 0 {
+		fmt.Printf("=== FORGE DEBUG V3 === [agent %s] downloading %d artifact(s)\n", a.id[:8], len(spec.ArtifactDownloads))
 		if err := a.downloadArtifacts(spec, jobWorkspace); err != nil {
 			fmt.Printf("[agent %s] artifact download failed: %v\n", a.id[:8], err)
 			return a.reportComplete(spec, 1, 0, []api.LogEvent{{
@@ -746,6 +748,19 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				Level:     "ERROR",
 				Message:   fmt.Sprintf("artifact download failed: %v", err),
 			}}, "", false)
+		}
+		// List workspace after download
+		if files, err := os.ReadDir(jobWorkspace); err == nil {
+			fmt.Printf("=== FORGE DEBUG V3 === [agent %s] workspace after download:\n", a.id[:8])
+			for _, f := range files {
+				fmt.Printf("  - %s (%v bytes)\n", f.Name(), func() int64 {
+					i, _ := f.Info()
+					if i != nil {
+						return i.Size()
+					}
+					return 0
+				}())
+			}
 		}
 	}
 
@@ -1165,8 +1180,10 @@ func (a *Agent) debugLoop(ctx context.Context) {
 // handleDebugSession starts a debug container and relays commands until closed.
 func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) {
 	// Always use an isolated workspace for each debug session to avoid Bug 2.
-	workspaceDir := filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+	baseDir := filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+	workspaceDir := filepath.Join(baseDir, "workspace")
 	os.MkdirAll(workspaceDir, 0755)
+	defer os.RemoveAll(baseDir)
 
 	// Bug 1: If the workspace is empty and we have repo info, perform a checkout.
 	if spec.ProjectID != "" && spec.CommitSHA != "" {
@@ -1220,7 +1237,9 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	// Copy workspace into debug container
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", workspaceDir+"/.", containerID+":/workspace")
+	// We copy the host's "workspace" directory into the container's root.
+	src := filepath.Clean(workspaceDir)
+	cpCmd := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
 	if err := cpCmd.Run(); err != nil {
 		fmt.Printf("[agent %s] failed to copy workspace into debug container: %v\n", a.id[:8], err)
 		exec.Command("docker", "rm", "-f", containerID).Run()
@@ -1238,7 +1257,6 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		exec.Command("docker", "stop", containerID).Run()
 		exec.Command("docker", "rm", "-f", containerID).Run()
 		a.debugConts.Delete(spec.SessionID)
-		os.RemoveAll(workspaceDir)
 		fmt.Printf("[agent %s] debug container %s stopped\n", a.id[:8], containerID[:12])
 	}()
 
@@ -1769,7 +1787,7 @@ func (a *Agent) downloadArtifacts(spec *api.JobSpec, workspaceDir string) error 
 		if err := a.downloadFile(downloadURL, dest); err != nil {
 			return fmt.Errorf("downloading artifact %q: %w", dl.Name, err)
 		}
-		fmt.Printf("[agent %s] downloaded artifact %q → %s\n", a.id[:8], dl.Name, dest)
+		fmt.Printf("=== FORGE DEBUG V3 === [agent %s] downloaded artifact %q → %s\n", a.id[:8], dl.Name, dest)
 	}
 	return nil
 }
@@ -2050,17 +2068,61 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		for k, v := range ref.Variables {
 			env[k] = v
 		}
+		var uploads []api.ArtifactUploadSpec
+		for _, u := range s.ArtifactUploads {
+			uploads = append(uploads, api.ArtifactUploadSpec{
+				Path: u.Path,
+				Name: u.Name,
+			})
+		}
+		var downloads []api.ArtifactDownloadSpec
+		for _, d := range s.ArtifactDownloads {
+			downloads = append(downloads, api.ArtifactDownloadSpec{
+				Name: d.Name,
+				Dest: d.Dest,
+			})
+		}
+
+		var pipelineRef *api.PipelineRef
+		if s.PipelineRef != nil {
+			pipelineRef = &api.PipelineRef{
+				Path:             s.PipelineRef.Path,
+				Wait:             s.PipelineRef.Wait,
+				Variables:        s.PipelineRef.Variables,
+				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
+				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
+			}
+		}
+
+		var release *api.ReleaseConfig
+		if s.Release != nil {
+			release = &api.ReleaseConfig{
+				Name:      s.Release.Name,
+				Tag:       s.Release.Tag,
+				Body:      s.Release.Body,
+				Artifacts: s.Release.Artifacts,
+			}
+		}
+
 		steps = append(steps, api.StepDef{
-			ID:          s.ID,
-			Image:       s.Image,
-			Command:     s.Command,
-			WorkDir:     s.WorkDir,
-			Env:         env,
-			DependsOn:   s.DependsOn,
-			Inputs:      s.Inputs,
-			Timeout:     s.Timeout,
-			SecretNames: s.Secrets,
-			Type:        s.Type,
+			ID:                s.ID,
+			Image:             s.Image,
+			Entrypoint:        s.Entrypoint,
+			Command:           s.Command,
+			WorkDir:           s.WorkDir,
+			Env:               env,
+			DependsOn:         s.DependsOn,
+			Inputs:            s.Inputs,
+			Timeout:           s.Timeout,
+			SecretNames:       s.Secrets,
+			DockerSocket:      s.DockerSocket,
+			Condition:         s.Condition,
+			AlwaysRun:         s.AlwaysRun,
+			Type:              s.Type,
+			ArtifactUploads:   uploads,
+			ArtifactDownloads: downloads,
+			PipelineRef:       pipelineRef,
+			Release:           release,
 		})
 	}
 

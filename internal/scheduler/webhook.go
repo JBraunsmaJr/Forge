@@ -388,22 +388,40 @@ func (s *Server) triggerWebhookRun(
 			}
 		}
 
+		var uploads []api.ArtifactUploadSpec
+		for _, u := range s.ArtifactUploads {
+			uploads = append(uploads, api.ArtifactUploadSpec{
+				Path: u.Path,
+				Name: u.Name,
+			})
+		}
+		var downloads []api.ArtifactDownloadSpec
+		for _, d := range s.ArtifactDownloads {
+			downloads = append(downloads, api.ArtifactDownloadSpec{
+				Name: d.Name,
+				Dest: d.Dest,
+			})
+		}
+
 		steps[i] = api.StepDef{
-			ID:           s.ID,
-			Image:        s.Image,
-			Command:      s.Command,
-			WorkDir:      s.WorkDir,
-			Env:          env,
-			DependsOn:    s.DependsOn,
-			Inputs:       s.Inputs,
-			Timeout:      s.Timeout,
-			SecretNames:  s.Secrets,
-			DockerSocket: s.DockerSocket,
-			Condition:    s.Condition,
-			AlwaysRun:    s.AlwaysRun,
-			Type:         s.Type,
-			PipelineRef:  pipelineRef,
-			Release:      release,
+			ID:                s.ID,
+			Image:             s.Image,
+			Entrypoint:        s.Entrypoint,
+			Command:           s.Command,
+			WorkDir:           s.WorkDir,
+			Env:               env,
+			DependsOn:         s.DependsOn,
+			Inputs:            s.Inputs,
+			Timeout:           s.Timeout,
+			SecretNames:       s.Secrets,
+			DockerSocket:      s.DockerSocket,
+			Condition:         s.Condition,
+			AlwaysRun:         s.AlwaysRun,
+			Type:              s.Type,
+			ArtifactUploads:   uploads,
+			ArtifactDownloads: downloads,
+			PipelineRef:       pipelineRef,
+			Release:           release,
 		}
 	}
 

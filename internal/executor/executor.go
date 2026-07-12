@@ -141,9 +141,11 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		containerID = strings.TrimSpace(string(out))
 
 		// 2. Copy workspace IN
-		// We copy the contents of the workspace directory into /workspace.
-		// The "/." suffix is important to copy contents rather than the directory itself.
-		cpIn := exec.CommandContext(ctx, "docker", "cp", e.WorkspaceDir+"/.", containerID+":/workspace")
+		// We copy the host's "workspace" directory into the container's root.
+		// Since the host directory is named "workspace", it will become "/workspace" in the container.
+		src := filepath.Clean(e.WorkspaceDir)
+		fmt.Printf("=== FORGE DEBUG V3 === [executor] copying workspace IN: %s -> %s:/\n", src, containerID[:12])
+		cpIn := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
 		if err := cpIn.Run(); err != nil {
 			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
@@ -204,10 +206,13 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 
 	if e.UseCopy && containerID != "" {
 		// 4. Copy workspace OUT (to capture any changes/artifacts)
-		// We copy from /workspace back to the host workspace.
-		cpOut := exec.CommandContext(ctx, "docker", "cp", containerID+":/workspace/.", e.WorkspaceDir)
+		// We copy "/workspace" from the container back to the host's job directory.
+		src := containerID + ":/workspace"
+		dst := filepath.Dir(filepath.Clean(e.WorkspaceDir))
+		fmt.Printf("=== FORGE DEBUG V3 === [executor] copying workspace OUT: %s -> %s\n", src, dst)
+		cpOut := exec.CommandContext(ctx, "docker", "cp", src, dst)
 		if err := cpOut.Run(); err != nil {
-			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error()})
+			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
 
 		// 5. Cleanup container
@@ -397,7 +402,8 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		}
 		containerID = strings.TrimSpace(string(out))
 
-		cpIn := exec.Command("docker", "cp", e.WorkspaceDir+"/.", containerID+":/workspace")
+		src := filepath.Clean(e.WorkspaceDir)
+		cpIn := exec.Command("docker", "cp", src, containerID+":/")
 		if err := cpIn.Run(); err != nil {
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
