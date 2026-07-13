@@ -143,6 +143,8 @@ services:
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
       FORGE_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
+      FORGE_WORKSPACE: /var/lib/forge/workspace
+      FORGE_CACHE_DIR: /var/lib/forge/cache
       # ── Docker image cleanup ───────────────────────────────────────────────
       # Agents prune the host Docker daemon on a schedule to prevent disk fill.
       # FORGE_PRUNE_SCHEDULE  — how often to run 'docker system prune -f'.
@@ -156,6 +158,7 @@ services:
       FORGE_DOCKER_MAX_PERCENT: ${FORGE_DOCKER_MAX_PERCENT:-80}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - cache_data:/var/lib/forge/cache
     working_dir: /tmp
     depends_on:
       scheduler:

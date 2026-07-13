@@ -32,6 +32,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
+	"github.com/JBraunsmaJr/forge/internal/glob"
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
@@ -756,7 +757,11 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "", false)
 				}
 				fmt.Printf("[agent %s] cache hit for %s discarded: artifacts missing from source run\n", a.id[:8], step.ID)
+			} else {
+				fmt.Printf("[agent %s] cache miss for step %s (hash: %s)\n", a.id[:8], step.ID, hash)
 			}
+		} else {
+			fmt.Printf("[agent %s] cache computation failed for step %s: %v\n", a.id[:8], step.ID, err)
 		}
 	}
 
@@ -1852,12 +1857,7 @@ func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) []string
 	var uploaded []string
 	for _, ul := range spec.ArtifactUploads {
 		pattern := ul.Path
-		if !strings.HasPrefix(pattern, "/") {
-			pattern = filepath.Join(workspaceDir, pattern)
-		}
-
-		matches, err := filepath.Glob(pattern)
-
+		matches, err := glob.Glob(workspaceDir, pattern)
 		if err != nil || len(matches) == 0 {
 			fmt.Printf("[agent %s] artifact pattern %q matched no files in %s\n", a.id[:8], ul.Path, workspaceDir)
 			continue

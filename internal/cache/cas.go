@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JBraunsmaJr/forge/internal/glob"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
@@ -243,7 +244,7 @@ func hashInputFiles(h io.Writer, globs []string, workspaceDir string) error {
 	// Collect all matched paths.
 	var paths []string
 	for _, pattern := range globs {
-		matched, err := filepath.Glob(filepath.Join(workspaceDir, pattern))
+		matched, err := glob.Glob(workspaceDir, pattern)
 		if err != nil {
 			return fmt.Errorf("glob %q: %w", pattern, err)
 		}
