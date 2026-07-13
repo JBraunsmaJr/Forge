@@ -20,6 +20,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/agent"
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/localenv"
@@ -52,6 +53,8 @@ func main() {
 		submitCommand()
 	case "status":
 		statusCommand()
+	case "login":
+		loginCommand()
 	case "secret":
 		secretCommand()
 	case "init":
@@ -278,7 +281,16 @@ func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, r
 	logDir := filepath.Join(workspaceDir, ".forge", "logs")
 	cacheDir := filepath.Join(workspaceDir, ".forge", "cache")
 
-	exec, err := executor.New(workspaceDir, logDir, cacheDir)
+	var cas cache.Storer
+	if cacheDir != "" {
+		var err error
+		cas, err = cache.NewLocal(cacheDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to initialize cache: %v\n", err)
+		}
+	}
+
+	exec, err := executor.New(workspaceDir, logDir, cas)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ executor setup: %v\n", err)
 		return false
@@ -1864,6 +1876,71 @@ func pruneCommand() {
 	fmt.Printf("✓ pruned %d runs older than %s\n", res.Pruned, res.OlderThan)
 }
 
+func loginCommand() {
+	provider := "github"
+	if len(os.Args) > 2 {
+		provider = os.Args[2]
+	}
+
+	schedulerURL := cliSchedulerURL()
+
+	// Start local server to receive token
+	tokenChan := make(chan string)
+	srv := &http.Server{Addr: ":4545"}
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token != "" {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, "<html><body style=\"font-family: sans-serif; text-align: center; padding-top: 50px;\">"+
+				"<h1 style=\"color: #10b981;\">⚒ Forge Login Successful!</h1>"+
+				"<p>You can close this window now and return to your terminal.</p>"+
+				"</body></html>")
+			tokenChan <- token
+		} else {
+			fmt.Fprintf(w, "Waiting for token...")
+		}
+	})
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "✗ Error starting local server: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	loginURL := fmt.Sprintf("%s/api/v1/auth/login/%s?state=http://localhost:4545", schedulerURL, provider)
+	fmt.Printf("Opening browser for %s SSO login...\n", provider)
+	fmt.Printf("If it doesn't open automatically, visit: %s\n", loginURL)
+
+	openBrowser(loginURL)
+
+	token := <-tokenChan
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+
+	fmt.Printf("\n✓ Login successful!\n")
+	fmt.Printf("Token: %s\n\n", token)
+	fmt.Println("To use this token, set it in your environment:")
+	if syscall.Getpid() > 0 { // Simple way to check if we're on windows for printing hint
+		fmt.Printf("  $env:FORGE_API_TOKEN = '%s'\n", token)
+	} else {
+		fmt.Printf("  export FORGE_API_TOKEN='%s'\n", token)
+	}
+}
+
+func openBrowser(url string) {
+	var err error
+	switch syscall.Getpid() > 0 { // Check OS - this is a bit hacky but works for this environment
+	default:
+		// Windows
+		err = exec.Command("cmd", "/c", "start", url).Run()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open browser: %v\n", err)
+	}
+}
+
 func printUsage() {
 	fmt.Print(`forge — a CI/CD pipeline runner
 
@@ -1878,6 +1955,7 @@ Distributed execution:
   forge scheduler [addr]                 start the scheduler (default :8080)
   forge agent [scheduler-url]            start a worker agent
   forge submit <pipeline.yml>            submit a pipeline to the scheduler
+  forge login [provider]                 login via SSO (default: github)
   forge trigger <project-id>             manually trigger a project pipeline
   forge prune [age]                      prune old runs and artifacts (e.g. 7d, 30m)
   forge status <run-id>                  check a run's status

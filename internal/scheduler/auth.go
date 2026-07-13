@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -24,9 +25,7 @@ func newTokenStore(db *sql.DB) *tokenStore {
 }
 
 // Create generates a new token, stores its hash, and returns the raw value.
-// If preset is non-empty, that value is used instead of a random one -
-// useful for compose/CI environments where the token must be known in advance.
-func (ts *tokenStore) Create(name, role string, expiresAt *time.Time, preset string) (rawToken string, info *api.TokenInfo, err error) {
+func (ts *tokenStore) Create(name, role string, orgID, projectID string, expiresAt *time.Time, preset string) (rawToken string, info *api.TokenInfo, err error) {
 	if role == "" {
 		role = "admin"
 	}
@@ -46,23 +45,33 @@ func (ts *tokenStore) Create(name, role string, expiresAt *time.Time, preset str
 
 	var createdAt time.Time
 	err = ts.db.QueryRow(
-		`INSERT INTO api_tokens (id, token_hash, name, role, expires_at)
-		 VALUES ($1,$2,$3,$4,$5) RETURNING created_at`,
-		id, hash, name, role, expiresAt,
+		`INSERT INTO api_tokens (id, token_hash, name, role, org_id, project_id, expires_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
+		id, hash, name, role, orgID, projectID, expiresAt,
 	).Scan(&createdAt)
 	if err != nil {
 		return "", nil, fmt.Errorf("creating token: %w", err)
 	}
 
-	info = &api.TokenInfo{ID: id, Name: name, Role: role, CreatedAt: createdAt, ExpiresAt: expiresAt}
+	info = &api.TokenInfo{
+		ID:        id,
+		Name:      name,
+		Role:      role,
+		OrgID:     orgID,
+		ProjectID: projectID,
+		CreatedAt: createdAt,
+		ExpiresAt: expiresAt,
+	}
 	return
 }
 
 // tokenRecord is the in-memory result of a successful token lookup.
 type tokenRecord struct {
-	ID   string
-	Name string
-	Role string
+	ID        string
+	Name      string
+	Role      string
+	OrgID     string
+	ProjectID string
 }
 
 // Verify looks up a raw token by its hash. Returns (nil, false) if not found or expired.
@@ -71,8 +80,8 @@ func (ts *tokenStore) Verify(rawToken string) (*tokenRecord, bool) {
 	var rec tokenRecord
 	var expiresAt *time.Time
 	err := ts.db.QueryRow(
-		`SELECT id, name, role, expires_at FROM api_tokens WHERE token_hash=$1`, hash,
-	).Scan(&rec.ID, &rec.Name, &rec.Role, &expiresAt)
+		`SELECT id, name, role, COALESCE(org_id, ''), COALESCE(project_id, ''), expires_at FROM api_tokens WHERE token_hash=$1`, hash,
+	).Scan(&rec.ID, &rec.Name, &rec.Role, &rec.OrgID, &rec.ProjectID, &expiresAt)
 	if err != nil {
 		return nil, false
 	}
@@ -89,7 +98,7 @@ func isTokenExpired(expiresAt *time.Time) bool {
 // List returns all tokens (without their hash or raw value).
 func (ts *tokenStore) List() []api.TokenInfo {
 	rows, err := ts.db.Query(
-		`SELECT id, name, role, created_at, expires_at FROM api_tokens ORDER BY created_at`)
+		`SELECT id, name, role, COALESCE(org_id, ''), COALESCE(project_id, ''), created_at, expires_at FROM api_tokens ORDER BY created_at`)
 	if err != nil {
 		return nil
 	}
@@ -98,7 +107,7 @@ func (ts *tokenStore) List() []api.TokenInfo {
 	var result []api.TokenInfo
 	for rows.Next() {
 		var t api.TokenInfo
-		rows.Scan(&t.ID, &t.Name, &t.Role, &t.CreatedAt, &t.ExpiresAt)
+		rows.Scan(&t.ID, &t.Name, &t.Role, &t.OrgID, &t.ProjectID, &t.CreatedAt, &t.ExpiresAt)
 		result = append(result, t)
 	}
 	return result
@@ -144,8 +153,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		isAPI := strings.HasPrefix(r.URL.Path, "/api/v1/")
 		isWebhook := strings.HasPrefix(r.URL.Path, "/api/v1/webhook/")
 		isMetrics := r.URL.Path == "/metrics"
+		isAuth := strings.HasPrefix(r.URL.Path, "/api/v1/auth/")
 
-		if !isAPI || isWebhook || isMetrics {
+		if !isAPI || isWebhook || isMetrics || isAuth {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -180,22 +190,56 @@ func agentOnly(r *http.Request) bool {
 	return rec != nil && rec.Role == "agent"
 }
 
-// requireAdmin rejects agent tokens for admin-only endpoints.
+// hasRole checks if the current token has at least the required role.
+// Hierarchy: admin (100) > operator (50) > viewer (10)
+func hasRole(r *http.Request, required string) bool {
+	rec, _ := r.Context().Value(contextKeyToken).(*tokenRecord)
+	if rec == nil {
+		return false
+	}
+	if rec.Role == "admin" {
+		return true
+	}
+	weights := map[string]int{
+		"admin":    100,
+		"operator": 50,
+		"viewer":   10,
+		"agent":    0,
+	}
+	return weights[rec.Role] >= weights[required]
+}
+
+// requireAdmin rejects non-admin tokens for admin-only endpoints.
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if agentOnly(r) {
+	if !hasRole(r, "admin") {
 		writeError(w, http.StatusForbidden, "admin token required")
 		return false
 	}
 	return true
 }
 
-// extractToken reads the token from the Authorization header or ?token= param
-// Query param is needed for browser EventSource which can't send custom headers.
+// requireOperator rejects viewer tokens for write operations.
+func requireOperator(w http.ResponseWriter, r *http.Request) bool {
+	if !hasRole(r, "operator") {
+		writeError(w, http.StatusForbidden, "operator permission required")
+		return false
+	}
+	return true
+}
+
+// extractToken reads the token from the Authorization header, ?token= param, or forge_token cookie.
+// Query param and cookie are needed for browser-based access and EventSource.
 func extractToken(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
-	return r.URL.Query().Get("token")
+	if t := r.URL.Query().Get("token"); t != "" {
+		return t
+	}
+	if cookie, err := r.Cookie("forge_token"); err == nil {
+		return cookie.Value
+	}
+	return ""
 }
 
 // bootstrapIfEmpty creates an initial admin token on first run if none exist.
@@ -221,7 +265,7 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 	hash := hashToken(rawToken)
 	id := newID()[:12]
 	ts.db.Exec(
-		`INSERT INTO api_tokens (id, token_hash, name, role, expires_at) VALUES ($1,$2,'root','admin', NULL)`,
+		`INSERT INTO api_tokens (id, token_hash, name, role, org_id, project_id, expires_at) VALUES ($1,$2,'root','admin', '', '', NULL)`,
 		id, hash,
 	)
 
@@ -237,7 +281,7 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 		ahash := hashToken(agentToken)
 		aid := newID()[:12]
 		ts.db.Exec(
-			`INSERT INTO api_tokens (id, token_hash, name, role, expires_at) VALUES ($1,$2,'default-agent','agent', NULL)`,
+			`INSERT INTO api_tokens (id, token_hash, name, role, org_id, project_id, expires_at) VALUES ($1,$2,'default-agent','agent', '', '', NULL)`,
 			aid, ahash,
 		)
 		fmt.Printf("[auth] agent token initialised from environment\n")
@@ -281,7 +325,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	raw, info, err := s.tokens.Create(req.Name, req.Role, req.ExpiresAt, req.Preset)
+	raw, info, err := s.tokens.Create(req.Name, req.Role, req.OrgID, req.ProjectID, req.ExpiresAt, req.Preset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -307,4 +351,18 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("[auth] token %s revoked\n", r.PathValue("id"))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) AuditLog(r *http.Request, action, targetType, targetID string, details any) {
+	rec, _ := r.Context().Value(contextKeyToken).(*tokenRecord)
+	var actorID, actorName string
+	if rec != nil {
+		actorID = rec.ID
+		actorName = rec.Name
+	}
+	detailsJSON, _ := json.Marshal(details)
+	s.store.db.Exec(`
+		INSERT INTO audit_logs (id, actor_id, actor_name, action, target_type, target_id, details)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		newID(), actorID, actorName, action, targetType, targetID, detailsJSON)
 }

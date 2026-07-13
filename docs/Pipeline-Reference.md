@@ -74,6 +74,7 @@ Paths are relative to the workspace root. The script runs inside the container w
 | Field        | Type     | Description                                                                                      |
 |--------------|----------|--------------------------------------------------------------------------------------------------|
 | `depends_on` | string[] | Step IDs this step must wait for. Forge computes the DAG and runs independent steps in parallel. |
+| `inputs`     | string[] | Glob patterns that affect this step's cache key. If undefined, caching is disabled.               |
 | `timeout`    | string   | Maximum duration. Parsed as Go duration: `5m`, `1h30m`, `45s`. Default: 30 minutes.              |
 | `type`       | string   | Step type: `task` (default), `generator`, `pipeline`, or `approval`.                             |
 | `condition`  | string   | CEL expression that must be true for the step to run (e.g., `success()`, `failure()`).            |
@@ -110,6 +111,52 @@ artifacts:
 ```
 
 Artifacts are stored in the configured backend (local filesystem or S3-compatible) and shared across agents. A step on agent-1 can upload an artifact; a step on agent-2 can download it. Both `upload` and `download` support wildcard matching for managing groups of files.
+
+### Caching
+
+Forge supports Content Addressable Storage (CAS) for pipeline steps. If a step's inputs haven't changed, Forge can skip execution and reuse the result from a previous run.
+
+To enable caching, you must explicitly declare the files that affect the step using the `inputs` field:
+
+```yaml
+- id: build-ui
+  image: node:22-alpine
+  inputs:
+    - ui/**
+    - package.json
+    - package-lock.json
+  run: |
+    cd ui
+    npm install
+    npm run build
+```
+
+The "task hash" for a step is computed from:
+- The container image name
+- The command and environment variables (see below)
+- The SHA-256 hash of all files matched by the `inputs` globs
+
+#### Determinism and Environment Variables
+
+To ensure cache hits across different trigger events (e.g., a webhook push vs. a manual trigger), Forge excludes several non-deterministic environment variables from the task hash computation.
+
+**Excluded variables:**
+- `FORGE_EVENT`: The event type (e.g., `push`, `pull_request`, or empty for manual).
+- `FORGE_PR_NUMBER`: The pull request number.
+- `FORGE_API_TOKEN`: The authentication token used by the agent.
+- `FORGE_SCHEDULER_URL`: The URL of the scheduler.
+- `FORGE_RUN_ID` / `FORGE_JOB_ID` / `FORGE_RUN_NAME`: Unique identifiers for the current execution.
+- `FORGE_REPO_URL` / `FORGE_REPO_NAME`: Repository metadata (which may differ in format between triggers).
+
+All other environment variables, including `FORGE_COMMIT_SHA`, `FORGE_BRANCH`, and `FORGE_COMMIT_TAG`, are included in the hash. If your step depends on one of these variables changing, the cache will correctly miss.
+
+If `inputs` is not defined, caching is disabled for that step, and it will always re-run.
+
+#### Artifact Caching
+Forge automatically caches and restores artifacts produced by a cached step. When a cache hit occurs, Forge identifies all artifacts that were uploaded in the original run and "bridges" them to the current run. This ensures that downstream steps that depend on those artifacts continue to work seamlessly even when the producer step is skipped.
+
+!!! note "Artifact Persistence"
+    Artifact restoration depends on the original artifacts still being present in the storage backend. If the artifacts from the source run have been deleted (e.g., via a cleanup policy), Forge will discard the cache hit and re-run the step to regenerate them.
 
 ---
 

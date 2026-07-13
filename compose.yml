@@ -77,6 +77,7 @@ services:
       FORGE_ROOT_TOKEN: ${FORGE_ROOT_TOKEN:-forge-dev-admin-token}
       FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
       FORGE_GIT_CACHE: /var/lib/forge/git-cache
+      FORGE_CACHE_DIR: ${FORGE_CACHE_DIR:-/var/lib/forge/cache}
       FORGE_INTERNAL_URL: http://scheduler:8080
       FORGE_UI_DEV_URL: ${FORGE_UI_DEV_URL:-http://ui:5173}
       FORGE_VAULT_ADDR: http://vault:8200
@@ -88,15 +89,21 @@ services:
       FORGE_S3_REGION: us-east-1
       FORGE_S3_ACCESS_KEY: forgeadmin
       FORGE_S3_SECRET_KEY: forgepassword
-      FORGE_S3_PUBLIC_URL: ${FORGE_S3_PUBLIC_URL:-http://localhost:9000}
+      #FORGE_S3_PUBLIC_URL: ${FORGE_S3_PUBLIC_URL:-http://localhost:9000}
       FORGE_RUN_RETENTION: ${FORGE_RUN_RETENTION:-30d}
       FORGE_RUN_RETENTION_INTERVAL: ${FORGE_RUN_RETENTION_INTERVAL:-24h}
+      FORGE_LOG_RETENTION_DAYS: ${FORGE_LOG_RETENTION_DAYS:-30}
+      FORGE_GITHUB_CLIENT_ID: ${FORGE_GITHUB_CLIENT_ID}
+      FORGE_GITHUB_CLIENT_SECRET: ${FORGE_GITHUB_CLIENT_SECRET}
+      FORGE_PUBLIC_URL: ${FORGE_PUBLIC_URL:-http://localhost:8080}
+      FORGE_UI_URL: ${FORGE_UI_URL:-http://localhost:8080}
     ports:
       - "8080:8080"
       - "50051:50051"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - git_cache:/var/lib/forge/git-cache
+      - cache_data:/var/lib/forge/cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,6 +143,8 @@ services:
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
       FORGE_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
+      FORGE_WORKSPACE: /var/lib/forge/workspace
+      FORGE_CACHE_DIR: /var/lib/forge/cache
       # ── Docker image cleanup ───────────────────────────────────────────────
       # Agents prune the host Docker daemon on a schedule to prevent disk fill.
       # FORGE_PRUNE_SCHEDULE  — how often to run 'docker system prune -f'.
@@ -149,6 +158,7 @@ services:
       FORGE_DOCKER_MAX_PERCENT: ${FORGE_DOCKER_MAX_PERCENT:-80}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - cache_data:/var/lib/forge/cache
     working_dir: /tmp
     depends_on:
       scheduler:
@@ -180,6 +190,7 @@ services:
 volumes:
   postgres_data:
   git_cache:
+  cache_data:
   minio_data:
 
 networks:

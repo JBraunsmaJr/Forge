@@ -155,6 +155,12 @@ func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) er
 	return nil
 }
 
+// DeleteProject removes a project.
+func (p *ProjectStore) DeleteProject(id string) error {
+	_, err := p.db.Exec(`DELETE FROM projects WHERE id=$1 OR name=$1`, id)
+	return err
+}
+
 // ListProjects returns all projects for an org.
 func (p *ProjectStore) ListProjects(orgID string) []api.ProjectInfo {
 	q := `SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path FROM projects`

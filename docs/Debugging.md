@@ -54,7 +54,7 @@ ls -lh dist/
 dlv debug ./cmd/myapp
 ```
 
-![terminal](./../assets/screenshots/live-terminal.png)
+![terminal](./assets/screenshots/live-terminal.png)
 
 ### TTL and Timeout
 

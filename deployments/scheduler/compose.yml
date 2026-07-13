@@ -94,6 +94,12 @@ services:
       FORGE_S3_REGION: us-east-1
       FORGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-forgeadmin}
       FORGE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      FORGE_CACHE_DIR: ${FORGE_CACHE_DIR:-/var/lib/forge/cache}
+      FORGE_LOG_RETENTION_DAYS: ${FORGE_LOG_RETENTION_DAYS:-30}
+      FORGE_GITHUB_CLIENT_ID: ${FORGE_GITHUB_CLIENT_ID:-}
+      FORGE_GITHUB_CLIENT_SECRET: ${FORGE_GITHUB_CLIENT_SECRET:-}
+      FORGE_PUBLIC_URL: ${FORGE_PUBLIC_URL}
+      FORGE_UI_URL: ${FORGE_UI_URL}
       FORGE_S3_PUBLIC_URL: ${FORGE_S3_PUBLIC_URL:-http://localhost:9000}
     ports:
       - "8080:8080"
@@ -110,6 +116,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - cache_data:/var/lib/forge/cache
     restart: unless-stopped
     networks:
       - forge
@@ -118,6 +126,7 @@ volumes:
   postgres_data:
   minio_data:
   vault_data:
+  cache_data:
 
 networks:
   forge:

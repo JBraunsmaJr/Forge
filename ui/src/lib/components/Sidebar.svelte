@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { api, type Run } from '../api';
     import { runs, activeRun, connStatus, currentView, sidebarOpen } from '../stores';
-    import { Play, Briefcase, Building2, ShieldCheck, Key, Server } from '@lucide/svelte';
+    import { Play, Briefcase, Building2, ShieldCheck, Key, Server, Layout, Search } from '@lucide/svelte';
 
     let search = '';
     let statusFilter = '';
@@ -67,6 +67,14 @@
             <Play size={20} />
             <span>Runs</span>
         </button>
+        <button class:active={$currentView === 'editor'} on:click={() => currentView.set('editor')} title="Pipeline Editor">
+            <Layout size={20} />
+            <span>Editor</span>
+        </button>
+        <button class:active={$currentView === 'search'} on:click={() => currentView.set('search')} title="Log Search">
+            <Search size={20} />
+            <span>Search</span>
+        </button>
         <button class:active={$currentView === 'projects'} on:click={() => currentView.set('projects')} title="Projects">
             <Briefcase size={20} />
             <span>Projects</span>
@@ -113,10 +121,11 @@
                 <div id="empty-state">No runs yet.<br>Submit a pipeline to start.</div>
             {:else}
                 {#each $runs as run}
-                    <div 
+                    <button 
                         class="run-item" 
                         class:active={$activeRun?.run_id === run.run_id}
                         on:click={() => { onSelectRun(run.run_id); sidebarOpen.set(false); }}
+                        type="button"
                     >
                         <div class="run-item-name">{run.name}</div>
                         <div class="run-item-meta">
@@ -124,7 +133,7 @@
                             <span>{run.job_count} job{run.job_count !== 1 ? 's' : ''}</span>
                             <span>{timeAgo(run.created_at)}</span>
                         </div>
-                    </div>
+                    </button>
                 {/each}
             {/if}
             {#if hasMore}
@@ -248,9 +257,16 @@
     }
     .run-item {
         padding: 12px 16px;
+        border: none;
         border-bottom: 1px solid var(--border);
         cursor: pointer;
         transition: background .15s;
+        background: transparent;
+        color: inherit;
+        text-align: left;
+        width: 100%;
+        display: block;
+        font-family: inherit;
     }
     .run-item:hover {
         background: var(--surface2);
