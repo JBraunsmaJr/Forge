@@ -155,6 +155,8 @@ func TestComputeTaskHash_IgnoredEnvVars(t *testing.T) {
 		Env: map[string]string{
 			"FORGE_EVENT":     "push",
 			"FORGE_API_TOKEN": "token-1",
+			"FORGE_REPO_NAME": "org/repo",
+			"FORGE_REPO_URL":  "https://github.com/org/repo.git",
 			"CUSTOM_VAR":      "val",
 		},
 	}
@@ -167,6 +169,8 @@ func TestComputeTaskHash_IgnoredEnvVars(t *testing.T) {
 		Env: map[string]string{
 			"FORGE_EVENT":     "manual",
 			"FORGE_API_TOKEN": "token-2",
+			"FORGE_REPO_NAME": "My-Project",
+			"FORGE_REPO_URL":  "https://github.com/org/repo",
 			"CUSTOM_VAR":      "val",
 		},
 	}

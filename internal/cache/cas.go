@@ -243,7 +243,9 @@ func isIgnoredEnvVar(key string) bool {
 		"FORGE_SCHEDULER_URL",
 		"FORGE_RUN_ID",
 		"FORGE_JOB_ID",
-		"FORGE_RUN_NAME":
+		"FORGE_RUN_NAME",
+		"FORGE_REPO_URL",
+		"FORGE_REPO_NAME":
 		return true
 	}
 	return false
