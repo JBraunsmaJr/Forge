@@ -146,6 +146,7 @@ To ensure cache hits across different trigger events (e.g., a webhook push vs. a
 - `FORGE_API_TOKEN`: The authentication token used by the agent.
 - `FORGE_SCHEDULER_URL`: The URL of the scheduler.
 - `FORGE_RUN_ID` / `FORGE_JOB_ID` / `FORGE_RUN_NAME`: Unique identifiers for the current execution.
+- `FORGE_REPO_URL` / `FORGE_REPO_NAME`: Repository metadata (which may differ in format between triggers).
 
 All other environment variables, including `FORGE_COMMIT_SHA`, `FORGE_BRANCH`, and `FORGE_COMMIT_TAG`, are included in the hash. If your step depends on one of these variables changing, the cache will correctly miss.
 
