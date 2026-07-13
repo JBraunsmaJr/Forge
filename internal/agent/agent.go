@@ -632,6 +632,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		return err
 	}
 	exec.UseCopy = true
+	exec.DisableCacheStore = true
 
 	// Convert API Spec -> pipeline.Step
 	step := &pipeline.Step{
@@ -737,9 +738,24 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		if err == nil {
 			step.CacheKey = hash
 			if entry, hit := a.cas.Lookup(hash); hit {
-				fmt.Printf("[agent %s] cache hit for step %s\n",
-					a.id[:8], step.ID)
-				return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "", false)
+				fmt.Printf("[agent %s] cache hit for step %s\n", a.id[:8], step.ID)
+
+				// Restore artifacts from the cached run to the current run.
+				// If any artifact fails to restore, we treat it as a cache miss and proceed to run.
+				allRestored := true
+				for _, name := range entry.ArtifactNames {
+					fmt.Printf("[agent %s] restoring cached artifact %q from run %s\n", a.id[:8], name, entry.RunID[:8])
+					if err := a.bridgeArtifact(ctx, entry.RunID, spec.RunID, spec.JobID, name); err != nil {
+						fmt.Printf("[agent %s] failed to restore artifact %q: %v\n", a.id[:8], name, err)
+						allRestored = false
+						break
+					}
+				}
+
+				if allRestored {
+					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "", false)
+				}
+				fmt.Printf("[agent %s] cache hit for %s discarded: artifacts missing from source run\n", a.id[:8], step.ID)
 			}
 		}
 	}
@@ -836,8 +852,26 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 
 	// Upload artifacts declared by this step (only on success)
+	var uploadedNames []string
 	if exitCode == 0 && len(spec.ArtifactUploads) > 0 {
-		a.uploadArtifacts(spec, jobWorkspace)
+		uploadedNames = a.uploadArtifacts(spec, jobWorkspace)
+	}
+
+	// Store result in cache (only on success).
+	// We do this AFTER artifact upload so the cache entry includes the artifact names.
+	// This will overwrite the entry stored by the executor if it also has access to the CAS.
+	if exitCode == 0 && a.cas != nil && step.CacheKey != "" {
+		a.cas.Store(&cache.Entry{
+			TaskHash:      step.CacheKey,
+			StepID:        step.ID,
+			RunID:         spec.RunID,
+			ExitCode:      exitCode,
+			Duration:      elapsed,
+			CreatedAt:     time.Now(),
+			Image:         step.Image,
+			Command:       step.Command,
+			ArtifactNames: uploadedNames,
+		})
 	}
 
 	return a.reportComplete(spec, exitCode, elapsed.Milliseconds(), logEvents, emittedStepsJSON, timedOut)
@@ -1814,7 +1848,8 @@ func (a *Agent) downloadArtifacts(spec *api.JobSpec, workspaceDir string) error 
 }
 
 // uploadArtifacts stores declared artifacts after a step succeeds.
-func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) {
+func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) []string {
+	var uploaded []string
 	for _, ul := range spec.ArtifactUploads {
 		pattern := ul.Path
 		if !strings.HasPrefix(pattern, "/") {
@@ -1837,9 +1872,11 @@ func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) {
 				fmt.Printf("[agent %s] artifact upload %q failed: %v\n", a.id[:8], name, err)
 			} else {
 				fmt.Printf("[agent %s] uploaded artifact %q → %s\n", a.id[:8], name, filePath)
+				uploaded = append(uploaded, name)
 			}
 		}
 	}
+	return uploaded
 }
 
 func (a *Agent) getArtifact(runId, name string) (*api.ArtifactMeta, error) {

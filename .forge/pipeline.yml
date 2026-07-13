@@ -5,6 +5,10 @@ steps:
     name: Build UI
     image: node:22-alpine
     timeout: 5m
+    inputs:
+      - ui/**
+      - package.json
+      - package-lock.json
     run: |
       cd ui
       npm install

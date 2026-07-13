@@ -25,6 +25,11 @@ type Executor struct {
 	IsLocal      bool // skip checkout steps if true
 	UseCopy      bool // use docker cp instead of bind mounts
 
+	// DisableCacheStore prevents the executor from automatically storing results
+	// in the CAS. The caller (e.g. the agent) may want to handle storage itself
+	// to include extra metadata like artifacts.
+	DisableCacheStore bool
+
 	// StreamCallback is set by the agent to receive log events in real time.
 	// Each event is forwarded to the scheduler as it's produced — not buffered
 	// until the step finishes. nil = no streaming (local runs).
@@ -230,7 +235,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	}
 
 	// Store result in cache (only on pass).
-	if passed && e.Cache != nil && step.CacheKey != "" {
+	if passed && e.Cache != nil && step.CacheKey != "" && !e.DisableCacheStore {
 		entry := &cache.Entry{
 			TaskHash:  step.CacheKey,
 			StepID:    step.ID,
