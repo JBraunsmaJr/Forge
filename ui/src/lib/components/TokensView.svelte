@@ -84,6 +84,8 @@
                     <label for="tk-role">Role</label>
                     <select id="tk-role" bind:value={newToken.role}>
                         <option value="admin">Admin</option>
+                        <option value="operator">Operator</option>
+                        <option value="viewer">Viewer</option>
                         <option value="agent">Agent</option>
                     </select>
                 </div>
@@ -231,6 +233,8 @@
         font-weight: 700;
     }
     .badge-admin { background: #211a30; color: #a390e4; }
+    .badge-operator { background: #2e1d14; color: #e4a390; }
+    .badge-viewer { background: #142e1d; color: #90e4a3; }
     .badge-agent { background: #1a2f4a; color: var(--blue); }
 
     .token-success {

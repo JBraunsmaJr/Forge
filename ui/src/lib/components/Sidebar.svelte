@@ -67,6 +67,14 @@
             <Play size={20} />
             <span>Runs</span>
         </button>
+        <button class:active={$currentView === 'editor'} on:click={() => currentView.set('editor')} title="Pipeline Editor">
+            <Layout size={20} />
+            <span>Editor</span>
+        </button>
+        <button class:active={$currentView === 'search'} on:click={() => currentView.set('search')} title="Log Search">
+            <Search size={20} />
+            <span>Search</span>
+        </button>
         <button class:active={$currentView === 'projects'} on:click={() => currentView.set('projects')} title="Projects">
             <Briefcase size={20} />
             <span>Projects</span>
@@ -86,14 +94,6 @@
         <button class:active={$currentView === 'agents'} on:click={() => currentView.set('agents')} title="Runners Health">
             <Server size={20} />
             <span>Runners</span>
-        </button>
-        <button class:active={$currentView === 'editor'} on:click={() => currentView.set('editor')} title="Pipeline Editor">
-            <Layout size={20} />
-            <span>Editor</span>
-        </button>
-        <button class:active={$currentView === 'search'} on:click={() => currentView.set('search')} title="Log Search">
-            <Search size={20} />
-            <span>Search</span>
         </button>
     </div>
 
