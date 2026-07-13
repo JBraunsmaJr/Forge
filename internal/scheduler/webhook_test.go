@@ -51,11 +51,14 @@ func TestParseGitHubPush(t *testing.T) {
 		}
 	}`)
 
-	branch, sha, _, name, msg, author, err := parseGitHubPush(body)
+	branch, ref, sha, _, name, msg, author, err := parseGitHubPush(body)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
 
+	if ref != "refs/heads/main" {
+		t.Errorf("ref = %q", ref)
+	}
 	if branch != "main" {
 		t.Errorf("branch = %q", branch)
 	}
@@ -91,11 +94,14 @@ func TestParseGitHubPR(t *testing.T) {
 		}
 	}`)
 
-	branch, sha, _, _, _, author, pr, err := parseGitHubPR(body)
+	branch, ref, sha, _, _, _, author, pr, err := parseGitHubPR(body)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
 
+	if ref != "refs/pull/101/head" {
+		t.Errorf("ref = %q", ref)
+	}
 	if branch != "feature-branch" {
 		t.Errorf("branch = %q", branch)
 	}
@@ -123,11 +129,14 @@ func TestParseGitLabPush(t *testing.T) {
 		}
 	}`)
 
-	branch, sha, _, name, msg, author, err := parseGitLabPush(body)
+	branch, ref, sha, _, name, msg, author, err := parseGitLabPush(body)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
 
+	if ref != "refs/heads/main" {
+		t.Errorf("ref = %q", ref)
+	}
 	if branch != "main" {
 		t.Errorf("branch = %q", branch)
 	}
@@ -166,11 +175,14 @@ func TestParseGitLabMR(t *testing.T) {
 		"user": { "name": "bob" }
 	}`)
 
-	branch, sha, _, _, _, author, pr, err := parseGitLabMR(body)
+	branch, ref, sha, _, _, _, author, pr, err := parseGitLabMR(body)
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
 
+	if ref != "refs/merge-requests/202/head" {
+		t.Errorf("ref = %q", ref)
+	}
 	if branch != "feature-branch" {
 		t.Errorf("branch = %q", branch)
 	}

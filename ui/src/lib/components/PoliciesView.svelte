@@ -252,13 +252,7 @@
     }
     .form-group input, .form-group textarea {
         width: 100%;
-        padding: 8px 12px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--text);
         box-sizing: border-box;
-        font-family: inherit;
     }
     textarea {
         font-family: monospace;
@@ -278,46 +272,6 @@
         display: flex;
         justify-content: flex-end;
         gap: 8px;
-    }
-    .btn-primary {
-        background: var(--accent);
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    .btn-primary:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-    .btn-secondary {
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--border);
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-    }
-    .btn-icon {
-        background: transparent;
-        border: none;
-        color: var(--muted);
-        cursor: pointer;
-        padding: 8px;
-        border-radius: 4px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    .btn-danger:hover {
-        background: var(--red-muted);
-        color: var(--red);
     }
     .item-actions {
         display: flex;

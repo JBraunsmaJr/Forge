@@ -31,7 +31,8 @@ steps:
 | Field   | Type   | Description                                                                      |
 |---------|--------|----------------------------------------------------------------------------------|
 | `id`    | string | Unique step identifier. Used in `depends_on` references and shown in the Web UI. |
-| `image` | string | Docker image to run this step in. Not required for `type: pipeline` steps.       |
+| `image` | string | Docker image to run this step in. Not required for `type: pipeline` or `type: approval` steps. |
+| `uses`  | string | Path to a step template file. Reuses definition from another file.               |
 
 At least one of `run`, `command`, or `script` is required for non-pipeline steps.
 
@@ -74,7 +75,10 @@ Paths are relative to the workspace root. The script runs inside the container w
 |--------------|----------|--------------------------------------------------------------------------------------------------|
 | `depends_on` | string[] | Step IDs this step must wait for. Forge computes the DAG and runs independent steps in parallel. |
 | `timeout`    | string   | Maximum duration. Parsed as Go duration: `5m`, `1h30m`, `45s`. Default: 30 minutes.              |
-| `type`       | string   | Step type: `task` (default), `generator`, or `pipeline`.                                         |
+| `type`       | string   | Step type: `task` (default), `generator`, `pipeline`, or `approval`.                             |
+| `condition`  | string   | CEL expression that must be true for the step to run (e.g., `success()`, `failure()`).            |
+| `always_run` | bool     | Shorthand for `condition: always()`. Step runs even if dependencies fail.                        |
+| `matrix`     | map      | Parallel execution with multiple values. Expands into multiple steps.                            |
 
 ### Environment and Secrets
 
@@ -101,9 +105,93 @@ artifacts:
   download:
     - name: app-binary          # logical name from a prior step's upload
       dest: dist/myapp          # destination path in workspace
+    - name: forge-*             # wildcard: downloads all artifacts matching the pattern
+      dest: bin/                # destination directory
 ```
 
-Artifacts are stored in the configured backend (local filesystem or S3-compatible) and shared across agents. A step on agent-1 can upload an artifact; a step on agent-2 can download it.
+Artifacts are stored in the configured backend (local filesystem or S3-compatible) and shared across agents. A step on agent-1 can upload an artifact; a step on agent-2 can download it. Both `upload` and `download` support wildcard matching for managing groups of files.
+
+---
+
+## Advanced Features
+
+### Matrix Builds
+
+Matrix builds allow you to run the same step multiple times with different variables. Forge expands the matrix at compile time into multiple distinct steps.
+
+```yaml
+- id: test
+  image: node:${{ matrix.version }}
+  matrix:
+    version: [18, 20, 22]
+    os: [linux, macos]
+  run: |
+    echo "Running on ${{ matrix.os }} with Node ${{ matrix.version }}"
+    npm test
+```
+
+Variables are accessed via `${{ matrix.key }}`. Forge generates step IDs like `test-18-linux`, `test-20-linux`, etc. 
+
+Any step that depends on a matrix step will automatically wait for **all** expanded instances of that matrix step to complete. Artifacts, environment variables, and release configurations within a matrix step also support `${{ matrix.key }}` interpolation.
+
+### Step Templates (`uses:`)
+
+Reusable step definitions can be stored in separate files and imported using the `uses:` field.
+
+**templates/docker-build.yml:**
+```yaml
+image: docker:27-cli
+docker_socket: true
+run: docker build -t ${{ env.IMAGE_NAME }} .
+```
+
+**pipeline.yml:**
+```yaml
+steps:
+  - id: build-app
+    uses: templates/docker-build.yml
+    env:
+      IMAGE_NAME: my-app:latest
+```
+
+Fields in the local step override fields in the template.
+
+### Manual Approvals
+
+A step with `type: approval` will pause the pipeline and wait for a user to click "Approve" in the Web UI before downstream dependencies are unlocked.
+
+```yaml
+- id: wait-for-approval
+  type: approval
+  depends_on: [test]
+
+- id: deploy
+  image: alpine:latest
+  depends_on: [wait-for-approval]
+  run: ./deploy.sh
+```
+
+### Conditional Execution
+
+The `condition` field (aliased as `if` in some contexts, but `condition` in the internal IR) uses CEL expressions to determine if a step should run.
+
+Supported functions:
+- `success()`: All dependencies passed (default).
+- `failure()`: At least one dependency failed.
+- `always()`: Run regardless of dependency status.
+- `tag()`: Only run if the pipeline was triggered by a Git tag.
+
+```yaml
+- id: notify-failure
+  image: alpine:latest
+  condition: failure()
+  run: ./notify.sh "Build failed!"
+
+- id: cleanup
+  image: alpine:latest
+  always_run: true  # shorthand for condition: always()
+  run: rm -rf /tmp/build
+```
 
 ---
 
@@ -133,6 +221,7 @@ A generator step runs code that **emits new step definitions** as a JSON array t
 The script's stdout must be a valid JSON array of step definition objects. Stderr is captured as log output. Any subsequent step with `depends_on: [matrix-generator]` will wait for the generator AND all of its emitted children.
 
 **Generator script output format:**
+
 ```json
 [
   {
@@ -176,6 +265,40 @@ A pipeline step compiles and submits another pipeline as a child run. The agent 
 | `variables`         | map      | Env vars injected into every step of the child pipeline, overriding the step's own env.      |
 | `artifacts_send`    | string[] | Artifact names from the parent run copied to the child run's context before it starts.       |
 | `artifacts_receive` | string[] | Artifact names from the child run copied back into the parent run after the child completes. |
+
+### `type: release`
+
+A release step pushes artifacts to an SCM provider (GitHub/GitLab). Unlike standard tasks, release steps run on the scheduler and do not require an agent. It automatically retrieves artifacts from the run's storage and uploads them as release assets.
+
+```yaml
+- id: github-release
+  type: release
+  depends_on: [build-binaries]
+  condition: tag()
+  release:
+    name: "Release ${{ env.FORGE_COMMIT_TAG }}"  # interpolated at runtime
+    tag: "${{ env.FORGE_COMMIT_TAG }}"
+    body: "Forge Release ${{ env.FORGE_COMMIT_TAG }}"
+    artifacts:
+      - forge-*    # supports wildcards to upload multiple binaries
+      - checksums.txt
+```
+
+**Release step fields:**
+
+| Field       | Type     | Description                                                                 |
+|-------------|----------|-----------------------------------------------------------------------------|
+| `name`      | string   | The title of the release. Supports `${{ env.VAR }}`.                        |
+| `tag`       | string   | The Git tag to associate the release with. Supports `${{ env.VAR }}`.       |
+| `body`      | string   | The description/notes for the release. Supports `${{ env.VAR }}`.           |
+| `artifacts` | string[] | A list of artifact names or glob patterns to attach to the release.         |
+
+The `release` block supports interpolation for:
+- `${{ env.FORGE_COMMIT_TAG }}`: The Git tag that triggered the run.
+- `${{ env.FORGE_BRANCH }}`: The Git branch.
+- `${{ env.FORGE_COMMIT_SHA }}`: The full commit SHA.
+
+Ensure your SCM token has sufficient permissions to create releases and upload assets.
 
 ---
 

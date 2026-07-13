@@ -4,13 +4,14 @@
     import { onMount, onDestroy } from 'svelte';
     import LogViewer from './LogViewer.svelte';
     import ArtifactViewer from './ArtifactViewer.svelte';
+    import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
-    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, X } from '@lucide/svelte';
+    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
     export let onCloseDebug: () => void;
 
-    let activeTab: 'logs' | 'artifacts' | 'terminal' = 'logs';
+    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' = 'logs';
     let expanded = false;
 
     $: if (debugSession.sessionID && activeTab !== 'terminal') {
@@ -74,6 +75,21 @@
         closed: 'closed'
     };
 
+    async function handleApprove() {
+        if (!$selectedJob) return;
+        const ok = await api.approveJob($selectedJob.job_id);
+        if (ok) {
+            // refresh run detail
+            const detail = await api.runDetail($activeRun!.run_id);
+            activeRun.set(detail);
+            // Re-select the job to update its status in the panel
+            const updatedJob = detail?.jobs.find(j => j.job_id === $selectedJob!.job_id);
+            if (updatedJob) selectedJob.set(updatedJob);
+        } else {
+            alert('Failed to approve step');
+        }
+    }
+
     onDestroy(() => {
         clearInterval(ttlInterval);
     });
@@ -98,8 +114,18 @@
                     Terminal
                 </button>
             {/if}
+            <button class:active={activeTab === 'timing'} on:click={() => activeTab = 'timing'}>
+                <Clock size={12} />
+                Timing
+            </button>
         </div>
         <div class="actions">
+            {#if $selectedJob?.status === 'approval'}
+                <button class="approve-btn" on:click={handleApprove}>
+                    <Check size={14} />
+                    Approve Step
+                </button>
+            {/if}
             {#if activeTab === 'terminal' && debugSession.sessionID}
                 <div class="terminal-controls">
                     <span class="status {debugSession.status}">
@@ -132,18 +158,26 @@
                 sessionID={debugSession.sessionID} 
                 status={debugSession.status} 
             />
+        {:else if activeTab === 'timing'}
+            <div class="timing-tab-content">
+                <GanttChart jobs={$activeRun?.jobs || []} />
+            </div>
         {/if}
     </div>
 </div>
 
 <style>
+    .timing-tab-content {
+        flex: 1;
+        overflow-y: auto;
+    }
     #details-panel {
         display: flex;
         flex-direction: column;
         background: var(--surface);
         border-top: 1px solid var(--border);
-        height: 280px;
-        transition: height 0.15s ease-out;
+        height: 320px;
+        transition: all 0.15s ease-out;
         flex-shrink: 0;
     }
     #details-panel.expanded {
@@ -188,6 +222,24 @@
     .actions {
         display: flex;
         align-items: center;
+    }
+    .approve-btn {
+        background: var(--green);
+        color: white;
+        border: none;
+        padding: 4px 12px;
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-right: 12px;
+        transition: opacity 0.2s;
+    }
+    .approve-btn:hover {
+        opacity: 0.9;
     }
     .expand-btn {
         background: none;

@@ -67,8 +67,8 @@ func TestEvalRuntimeCondition_FalsyBang(t *testing.T) {
 // ── isSchedulerCondition ──────────────────────────────────────────────────────
 
 func TestIsSchedulerCondition(t *testing.T) {
-	scheduler := []string{"", "success()", "failure()", "always()",
-		"SUCCESS()", "FAILURE()", "ALWAYS()"}
+	scheduler := []string{"", "success()", "failure()", "always()", "tag()",
+		"SUCCESS()", "FAILURE()", "ALWAYS()", "TAG()"}
 	for _, c := range scheduler {
 		if !isSchedulerCondition(c) {
 			t.Errorf("isSchedulerCondition(%q) should be true", c)

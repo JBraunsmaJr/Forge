@@ -6,14 +6,18 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -33,7 +37,9 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -76,6 +82,7 @@ type Agent struct {
 	maxDockerGB      float64
 	maxDockerPercent float64
 	pruneSchedule    string
+	activeJobs       sync.Map // map[string]context.CancelFunc
 	cleanupMu        sync.Mutex
 }
 
@@ -108,25 +115,62 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 
 // Run starts the agent's gRPC session and handles jobs. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
-	fmt.Printf("[agent %s] starting (gRPC), scheduler: %s\n", a.id[:8], a.schedulerURL)
-
 	// Determine gRPC address from schedulerURL or environment variable
-	grpcAddr := os.Getenv("FORGE_GRPC_ADDR")
+	grpcAddrRaw := os.Getenv("FORGE_GRPC_ADDR")
+	isSecure := strings.HasPrefix(a.schedulerURL, "https://")
+	if strings.HasPrefix(grpcAddrRaw, "https://") {
+		isSecure = true
+	} else if strings.HasPrefix(grpcAddrRaw, "http://") {
+		isSecure = false
+	}
+
+	grpcAddr := grpcAddrRaw
 	if grpcAddr != "" {
 		grpcAddr = strings.TrimPrefix(grpcAddr, "http://")
 		grpcAddr = strings.TrimPrefix(grpcAddr, "https://")
 		grpcAddr = strings.TrimSuffix(grpcAddr, "/")
+
+		// If no port is specified, add default based on security
+		if !strings.Contains(grpcAddr, ":") {
+			if isSecure {
+				grpcAddr += ":443"
+			} else {
+				grpcAddr += ":50051"
+			}
+		}
 	} else {
 		grpcAddr = "localhost:50051"
 		if u, err := url.Parse(a.schedulerURL); err == nil {
 			host := u.Hostname()
 			if host != "" {
-				grpcAddr = host + ":50051"
+				if isSecure {
+					port := u.Port()
+					if port == "" {
+						port = "443"
+					}
+					grpcAddr = host + ":" + port
+				} else {
+					grpcAddr = host + ":50051"
+				}
 			}
 		}
 	}
 
-	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	var opts []grpc.DialOption
+	if isSecure {
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                10 * time.Second,
+		Timeout:             5 * time.Second,
+		PermitWithoutStream: true,
+	}))
+
+	fmt.Printf("[agent %s] dialing gRPC: %s (secure: %v)\n", a.id[:8], grpcAddr, isSecure)
+	conn, err := grpc.NewClient(grpcAddr, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to dial gRPC: %w", err)
 	}
@@ -159,6 +203,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	go a.debugLoop(ctx)
 	go a.pruneLoop(ctx)
+	go a.statusLoop(ctx)
 
 	// Goroutine to send outgoing messages (heartbeats, completions, logs)
 	go func() {
@@ -176,18 +221,42 @@ func (a *Agent) Run(ctx context.Context) error {
 	}()
 
 	fmt.Printf("[agent %s] concurrency limit: %d\n", a.id[:8], a.maxConcurrency)
+	fmt.Printf("[agent %s] connected and waiting for jobs\n", a.id[:8])
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	// Receive loop: receive jobs from scheduler
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
+			fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
 			return nil
 		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
+			fmt.Printf("[agent %s] gRPC receive error: %v\n", a.id[:8], err)
 			return fmt.Errorf("gRPC receive error: %w", err)
+		}
+
+		if ack := msg.GetHeartbeatAck(); ack != nil {
+			if ack.Stop {
+				if cancel, ok := a.activeJobs.Load(ack.JobId); ok {
+					fmt.Printf("[agent %s] stopping job %s as requested by scheduler\n", a.id[:8], ack.JobId[:8])
+					cancel.(context.CancelFunc)()
+				}
+			}
 		}
 
 		if pbSpec := msg.GetJob(); pbSpec != nil {
@@ -237,16 +306,19 @@ func (a *Agent) Run(ctx context.Context) error {
 			fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
 				a.id[:8], spec.JobID[:8], spec.StepID)
 
-			// Wait for capacity
-			a.semaphore <- struct{}{}
-
 			go func(s *api.JobSpec) {
+				a.semaphore <- struct{}{}
 				defer func() {
 					<-a.semaphore
 					a.checkDiskUsageAndCleanup()
 				}()
 
-				if err := a.execute(ctx, s); err != nil {
+				jobCtx, cancel := context.WithCancel(ctx)
+				a.activeJobs.Store(s.JobID, cancel)
+				defer a.activeJobs.Delete(s.JobID)
+				defer cancel()
+
+				if err := a.execute(jobCtx, s); err != nil {
 					fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
 				}
 			}(spec)
@@ -504,17 +576,18 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Each job gets its own unique directory to prevent collisions
 		during parallel runs on the same agent.
 	*/
-	jobWorkspace := filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
+	jobBaseDir := filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
+	jobWorkspace := filepath.Join(jobBaseDir, "workspace")
 	if err := os.MkdirAll(jobWorkspace, 0755); err != nil {
 		err = fmt.Errorf("creating job workspace: %w", err)
 		a.reportComplete(spec, 1, 0, []api.LogEvent{{
 			Timestamp: time.Now(),
 			Level:     "ERROR",
 			Message:   err.Error(),
-		}}, "")
+		}}, "", false)
 		return err
 	}
-	defer os.RemoveAll(jobWorkspace)
+	defer os.RemoveAll(jobBaseDir)
 
 	/*
 		If the job belongs to a repository (ProjectID + CommitSHA are set),
@@ -534,7 +607,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 					Timestamp: time.Now(),
 					Level:     "ERROR",
 					Message:   err.Error(),
-				}}, "")
+				}}, "", false)
 				return err
 			}
 		}
@@ -553,7 +626,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			Timestamp: time.Now(),
 			Level:     "ERROR",
 			Message:   err.Error(),
-		}}, "")
+		}}, "", false)
 		return err
 	}
 	exec.UseCopy = true
@@ -572,6 +645,15 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Secrets:      spec.SecretNames,
 		DockerSocket: spec.DockerSocket,
 		Type:         spec.Type,
+	}
+
+	if step.Image == "" {
+		err := fmt.Errorf("job has no container image defined")
+		return a.reportComplete(spec, 1, 0, []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   err.Error(),
+		}}, "", false)
 	}
 
 	/*
@@ -610,7 +692,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				Timestamp: time.Now(),
 				Level:     "ERROR",
 				Message:   err.Error(),
-			}}, "")
+			}}, "", false)
 			return err
 		}
 		if step.Env == nil {
@@ -624,7 +706,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 					Timestamp: time.Now(),
 					Level:     "ERROR",
 					Message:   err.Error(),
-				}}, "")
+				}}, "", false)
 				return err
 			}
 
@@ -657,13 +739,12 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				if entry, hit := cas.Lookup(hash); hit {
 					fmt.Printf("[agent %s] cache hit for step %s\n",
 						a.id[:8], step.ID)
-					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "")
+					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "", false)
 				}
 			}
 		}
 	}
 
-	// Download artifacts declared by this step
 	if len(spec.ArtifactDownloads) > 0 {
 		if err := a.downloadArtifacts(spec, jobWorkspace); err != nil {
 			fmt.Printf("[agent %s] artifact download failed: %v\n", a.id[:8], err)
@@ -671,7 +752,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 				Timestamp: time.Now(),
 				Level:     "ERROR",
 				Message:   fmt.Sprintf("artifact download failed: %v", err),
-			}}, "")
+			}}, "", false)
 		}
 	}
 
@@ -704,6 +785,12 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	result, err := exec.RunStep(stepCtx, step)
 	elapsed := time.Since(start)
 
+	timedOut := false
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		timedOut = true
+		fmt.Printf("[agent %s] step %s timed out after %v\n", a.id[:8], spec.StepID, step.Timeout)
+	}
+
 	// Signal the streaming goroutine to flush and exit
 	close(logCh)
 	<-streamDone
@@ -717,7 +804,13 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	// Read log events to forward to the scheduler.
 	var logEvents []api.LogEvent
-	if err != nil {
+	if timedOut {
+		logEvents = []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   fmt.Sprintf("◯ step timed out after %v", step.Timeout),
+		}}
+	} else if err != nil {
 		/*
 				Hard error from the executor - e.g. Docker failed to start the container due to workdir being set to "".
 			    The result is nil, so there's no log file. We'll sythesize a log event so the user sees what went wrong
@@ -748,7 +841,47 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		a.uploadArtifacts(spec, jobWorkspace)
 	}
 
-	return a.reportComplete(spec, exitCode, elapsed.Milliseconds(), logEvents, emittedStepsJSON)
+	return a.reportComplete(spec, exitCode, elapsed.Milliseconds(), logEvents, emittedStepsJSON, timedOut)
+}
+
+func (a *Agent) statusLoop(ctx context.Context) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.out <- &pb.AgentMessage{
+				Payload: &pb.AgentMessage_Heartbeat{
+					Heartbeat: &pb.HeartbeatRequest{
+						Status: a.collectStatus(),
+					},
+				},
+			}
+		}
+	}
+}
+
+func (a *Agent) collectStatus() *pb.AgentStatus {
+	status := &pb.AgentStatus{
+		ActiveJobsCount: int32(len(a.semaphore)),
+		Version:         "v0.1.0",
+	}
+
+	// Docker images count
+	cmd := exec.Command("docker", "images", "-q")
+	if out, err := cmd.Output(); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		count := 0
+		for _, l := range lines {
+			if strings.TrimSpace(l) != "" {
+				count++
+			}
+		}
+		status.DockerImagesCount = int32(count)
+	}
+	return status
 }
 
 // heartbeatLoop sends heartbeats every heartbeatInterval until done is closed.
@@ -811,6 +944,7 @@ func (a *Agent) heartbeat(jobID, leaseID string) error {
 			Heartbeat: &pb.HeartbeatRequest{
 				JobId:   jobID,
 				LeaseId: leaseID,
+				Status:  a.collectStatus(),
 			},
 		},
 	}
@@ -818,7 +952,7 @@ func (a *Agent) heartbeat(jobID, leaseID string) error {
 }
 
 // reportComplete sends the job result to the scheduler via gRPC.
-func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64, logs []api.LogEvent, emittedStepsJSON string) error {
+func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64, logs []api.LogEvent, emittedStepsJSON string, timedOut bool) error {
 	pbLogs := make([]*pb.LogEvent, len(logs))
 	for i, l := range logs {
 		pbLogs[i] = &pb.LogEvent{
@@ -836,6 +970,8 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 				DurationMs:       durationMs,
 				Logs:             pbLogs,
 				EmittedStepsJson: emittedStepsJSON,
+				Skipped:          false,
+				TimedOut:         timedOut,
 			},
 		},
 	}
@@ -858,6 +994,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 				LeaseId:  spec.LeaseID,
 				ExitCode: 0,
 				Logs:     pbLogs,
+				Skipped:  true,
 			},
 		},
 	}
@@ -869,7 +1006,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 // by the agent since the scheduler has already acted on them.
 func isSchedulerCondition(cond string) bool {
 	c := strings.TrimSpace(strings.ToLower(cond))
-	return c == "" || c == "success()" || c == "failure()" || c == "always()"
+	return c == "" || c == "success()" || c == "failure()" || c == "always()" || c == "tag()"
 }
 
 // evalRuntimeCondition evaluates an environment-variable condition expression.
@@ -1017,7 +1154,12 @@ func (a *Agent) debugLoop(ctx context.Context) {
 			return
 		}
 		spec, ok, err := a.leaseDebug(ctx)
-		if err != nil || !ok {
+		if err != nil {
+			log.Printf("[agent %s] debug lease error: %v", a.id[:8], err)
+			a.sleep(ctx, 5*time.Second)
+			continue
+		}
+		if !ok {
 			a.sleep(ctx, 2*time.Second)
 			continue
 		}
@@ -1030,8 +1172,10 @@ func (a *Agent) debugLoop(ctx context.Context) {
 // handleDebugSession starts a debug container and relays commands until closed.
 func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) {
 	// Always use an isolated workspace for each debug session to avoid Bug 2.
-	workspaceDir := filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+	baseDir := filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+	workspaceDir := filepath.Join(baseDir, "workspace")
 	os.MkdirAll(workspaceDir, 0755)
+	defer os.RemoveAll(baseDir)
 
 	// Bug 1: If the workspace is empty and we have repo info, perform a checkout.
 	if spec.ProjectID != "" && spec.CommitSHA != "" {
@@ -1085,7 +1229,9 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	// Copy workspace into debug container
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", workspaceDir+"/.", containerID+":/workspace")
+	// We copy the host's "workspace" directory into the container's root.
+	src := filepath.Clean(workspaceDir)
+	cpCmd := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
 	if err := cpCmd.Run(); err != nil {
 		fmt.Printf("[agent %s] failed to copy workspace into debug container: %v\n", a.id[:8], err)
 		exec.Command("docker", "rm", "-f", containerID).Run()
@@ -1103,7 +1249,6 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		exec.Command("docker", "stop", containerID).Run()
 		exec.Command("docker", "rm", "-f", containerID).Run()
 		a.debugConts.Delete(spec.SessionID)
-		os.RemoveAll(workspaceDir)
 		fmt.Printf("[agent %s] debug container %s stopped\n", a.id[:8], containerID[:12])
 	}()
 
@@ -1440,12 +1585,13 @@ func (a *Agent) rebaseURL(rawURL string) string {
 	}
 
 	// Only rebase URLs whose path starts with /api/v1/ - those are
-	// scheduler endpoints. Pre-signed S3/Minio URLs never have an /api/v1/ prefix
+	// scheduler endpoints.
 	if strings.HasPrefix(u.Path, "/api/v1/") {
 		u.Scheme = base.Scheme
 		u.Host = base.Host
 		return u.String()
 	}
+
 	return rawURL
 }
 
@@ -1608,32 +1754,62 @@ func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID s
 // downloadArtifacts fetches declared artifacts from the scheduler before the step runs.
 func (a *Agent) downloadArtifacts(spec *api.JobSpec, workspaceDir string) error {
 	for _, dl := range spec.ArtifactDownloads {
-		meta, err := a.getArtifact(spec.RunID, dl.Name)
-		if err != nil {
-			return fmt.Errorf("artifact %q: %w", dl.Name, err)
+		var toDownload []*api.ArtifactMeta
+
+		if strings.ContainsAny(dl.Name, "*?[]") {
+			all, err := a.listArtifacts(spec.RunID)
+			if err != nil {
+				return fmt.Errorf("listing artifacts for wildcard %q: %w", dl.Name, err)
+			}
+			matched := false
+			for i := range all {
+				if ok, _ := path.Match(dl.Name, all[i].Name); ok {
+					toDownload = append(toDownload, &all[i])
+					matched = true
+				}
+			}
+			if !matched {
+				fmt.Printf("[agent %s] wildcard artifact %q matched no files\n", a.id[:8], dl.Name)
+			}
+		} else {
+			meta, err := a.getArtifact(spec.RunID, dl.Name)
+			if err != nil {
+				return fmt.Errorf("artifact %q: %w", dl.Name, err)
+			}
+			toDownload = append(toDownload, meta)
 		}
 
-		/*
-				Scheduler may return a download URL that uses FORGE_BASE_URL (e.g. http://localhost:8080).
-			    Inside a Docker container, localhost refers to the agent itself, not the scheduler. Replace the
-			    URL's host with the known scheduler address so the download always works from inside Docker.
-		*/
-		downloadURL := a.rebaseURL(meta.DownloadURL)
+		for _, meta := range toDownload {
+			/*
+					Scheduler may return a download URL that uses FORGE_BASE_URL (e.g. http://localhost:8080).
+				    Inside a Docker container, localhost refers to the agent itself, not the scheduler. Replace the
+				    URL's host with the known scheduler address so the download always works from inside Docker.
+			*/
+			downloadURL := a.rebaseURL(meta.DownloadURL)
 
-		dest := dl.Dest
-		if dest == "" {
-			dest = dl.Name
+			dest := dl.Dest
+			if dest == "" || strings.ContainsAny(dl.Name, "*?[]") {
+				// If wildcard or no dest specified, use the logical name as filename
+				// If dl.Dest was specified but it's a wildcard match, we should probably
+				// treat dl.Dest as a directory.
+				if dl.Dest != "" {
+					dest = filepath.Join(dl.Dest, meta.Name)
+				} else {
+					dest = meta.Name
+				}
+			}
+
+			if !strings.HasPrefix(dest, "/") {
+				dest = filepath.Join(workspaceDir, dest)
+			}
+			if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+				return fmt.Errorf("creating download dir for %q: %w", meta.Name, err)
+			}
+			if err := a.downloadFile(downloadURL, dest); err != nil {
+				return fmt.Errorf("downloading artifact %q: %w", meta.Name, err)
+			}
+			fmt.Printf("[agent %s] downloaded artifact %q → %s\n", a.id[:8], meta.Name, dest)
 		}
-		if !strings.HasPrefix(dest, "/") {
-			dest = filepath.Join(workspaceDir, dest)
-		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			return fmt.Errorf("creating download dir for %q: %w", dl.Name, err)
-		}
-		if err := a.downloadFile(downloadURL, dest); err != nil {
-			return fmt.Errorf("downloading artifact %q: %w", dl.Name, err)
-		}
-		fmt.Printf("[agent %s] downloaded artifact %q → %s\n", a.id[:8], dl.Name, dest)
 	}
 	return nil
 }
@@ -1649,7 +1825,7 @@ func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) {
 		matches, err := filepath.Glob(pattern)
 
 		if err != nil || len(matches) == 0 {
-			fmt.Printf("[agent %s] artifact pattern %q matched no files\n", a.id[:8], ul.Path)
+			fmt.Printf("[agent %s] artifact pattern %q matched no files in %s\n", a.id[:8], ul.Path, workspaceDir)
 			continue
 		}
 
@@ -1682,6 +1858,25 @@ func (a *Agent) getArtifact(runId, name string) (*api.ArtifactMeta, error) {
 	var meta api.ArtifactMeta
 	json.NewDecoder(resp.Body).Decode(&meta)
 	return &meta, nil
+}
+
+func (a *Agent) listArtifacts(runId string) ([]api.ArtifactMeta, error) {
+	url := fmt.Sprintf("%s/api/v1/runs/%s/artifacts", a.schedulerURL, runId)
+	resp, err := a.authGet(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var list []api.ArtifactMeta
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+	return list, nil
 }
 
 func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
@@ -1773,11 +1968,16 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 	)
 
 	if err != nil {
+		fmt.Printf("[agent %s] artifact %q confirm failed: %v\n", a.id[:8], name, err)
 		return fmt.Errorf("confirm: %w", err)
+	}
+	if confirmResp.StatusCode != http.StatusNoContent && confirmResp.StatusCode != http.StatusOK {
+		fmt.Printf("[agent %s] artifact %q confirm returned HTTP %d\n", a.id[:8], name, confirmResp.StatusCode)
 	}
 
 	io.Copy(io.Discard, confirmResp.Body)
 	confirmResp.Body.Close()
+	fmt.Printf("[agent %s] artifact %q uploaded successfully (%d bytes)\n", a.id[:8], name, size)
 	return nil
 }
 
@@ -1869,7 +2069,7 @@ func (a *Agent) downloadFile(downloadURL, dest string) error {
 func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace string) error {
 	ref := spec.PipelineRef
 	if ref == nil || ref.Path == "" {
-		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), "")
+		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), "", false)
 	}
 
 	start := time.Now()
@@ -1894,7 +2094,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	childPipeline, err := compiler.Compile(pipelinePath)
 	if err != nil {
 		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("compile %s: %v", ref.Path, err))...)
-		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "")
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "", false)
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("compiled child pipeline %q (%d steps)", childPipeline.Name, len(childPipeline.Steps)))...)
 
@@ -1909,17 +2109,61 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		for k, v := range ref.Variables {
 			env[k] = v
 		}
+		var uploads []api.ArtifactUploadSpec
+		for _, u := range s.ArtifactUploads {
+			uploads = append(uploads, api.ArtifactUploadSpec{
+				Path: u.Path,
+				Name: u.Name,
+			})
+		}
+		var downloads []api.ArtifactDownloadSpec
+		for _, d := range s.ArtifactDownloads {
+			downloads = append(downloads, api.ArtifactDownloadSpec{
+				Name: d.Name,
+				Dest: d.Dest,
+			})
+		}
+
+		var pipelineRef *api.PipelineRef
+		if s.PipelineRef != nil {
+			pipelineRef = &api.PipelineRef{
+				Path:             s.PipelineRef.Path,
+				Wait:             s.PipelineRef.Wait,
+				Variables:        s.PipelineRef.Variables,
+				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
+				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
+			}
+		}
+
+		var release *api.ReleaseConfig
+		if s.Release != nil {
+			release = &api.ReleaseConfig{
+				Name:      s.Release.Name,
+				Tag:       s.Release.Tag,
+				Body:      s.Release.Body,
+				Artifacts: s.Release.Artifacts,
+			}
+		}
+
 		steps = append(steps, api.StepDef{
-			ID:          s.ID,
-			Image:       s.Image,
-			Command:     s.Command,
-			WorkDir:     s.WorkDir,
-			Env:         env,
-			DependsOn:   s.DependsOn,
-			Inputs:      s.Inputs,
-			Timeout:     s.Timeout,
-			SecretNames: s.Secrets,
-			Type:        s.Type,
+			ID:                s.ID,
+			Image:             s.Image,
+			Entrypoint:        s.Entrypoint,
+			Command:           s.Command,
+			WorkDir:           s.WorkDir,
+			Env:               env,
+			DependsOn:         s.DependsOn,
+			Inputs:            s.Inputs,
+			Timeout:           s.Timeout,
+			SecretNames:       s.Secrets,
+			DockerSocket:      s.DockerSocket,
+			Condition:         s.Condition,
+			AlwaysRun:         s.AlwaysRun,
+			Type:              s.Type,
+			ArtifactUploads:   uploads,
+			ArtifactDownloads: downloads,
+			PipelineRef:       pipelineRef,
+			Release:           release,
 		})
 	}
 
@@ -1931,11 +2175,12 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		WorkspaceDir: a.workspaceDir,
 		OrgID:        spec.OrgID,
 		ProjectID:    spec.ProjectID,
+		Ref:          spec.Ref,
 	})
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {
 		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("submit child run: %v", err))...)
-		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "")
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "", false)
 	}
 	defer submitResp.Body.Close()
 
@@ -1943,13 +2188,13 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	json.NewDecoder(submitResp.Body).Decode(&runResp)
 	if runResp.RunID == "" {
 		logs = append(logs, pipelineLog("ERROR", "scheduler returned empty run ID")...)
-		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "")
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "", false)
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("child run submitted: %s", runResp.RunID[:8]))...)
 
 	if !ref.Wait {
 		logs = append(logs, pipelineLog("INFO", "fire-and-forget — not waiting for child run")...)
-		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "")
+		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "", false)
 	}
 
 	// Poll until the child run finishes.
@@ -1973,7 +2218,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		}
 	}
 
-	return a.reportComplete(spec, exitCode, time.Since(start).Milliseconds(), logs, "")
+	return a.reportComplete(spec, exitCode, time.Since(start).Milliseconds(), logs, "", false)
 }
 
 // waitForChildRun polls the scheduler every 5 seconds until the run reaches a terminal state. Reruns the

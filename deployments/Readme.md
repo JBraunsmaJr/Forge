@@ -30,7 +30,7 @@ docker compose up -d
 | `FORGE_AGENT_TOKEN`    | Token used by agents to authenticate with the scheduler.    | `forge-dev-agent-token` |
 | `FORGE_ROOT_TOKEN`     | Admin token for CLI/UI access.                              | `forge-dev-admin-token` |
 | `FORGE_S3_PUBLIC_URL`  | Publicly reachable URL for MinIO (used for artifact links). | `http://localhost:9000` |
-| `VAULT_DEV_ROOT_TOKEN` | Root token for Vault.                                       | `forge-dev-token`       |
+| `FORGE_VAULT_TOKEN`    | Root token for Vault.                                       | -                       |
 
 #### 2. Agent Deployment (Distributed)
 
@@ -41,6 +41,7 @@ To deploy agents on a separate node, they must be able to reach the scheduler vi
 ```bash
 cd deployments/agent
 # Set the scheduler URL to the IP/DNS of your scheduler node
+# Checkout docs/https.md on how to configure HTTPs
 export FORGE_SCHEDULER_URL=http://scheduler-node-ip:8080
 export FORGE_AGENT_TOKEN=your-secret-agent-token
 docker compose up -d --scale agent=3

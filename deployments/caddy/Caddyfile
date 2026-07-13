@@ -1,0 +1,28 @@
+forge.WHATEVER-SUB-DOMAIN.YOUR-DOMAIN-HERE {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+        resolvers 1.1.1.1 8.8.8.8
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubdomains; preload"
+        X-Content-Type-Options  "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    @grpc {
+        header Content-Type application/grpc*
+    }
+
+    reverse_proxy @grpc h2c://THE_IP_ADDRESS_OR_HOSTNAME_OF_FORGE_WITHIN_YOUR_NETWORK:50051
+
+    reverse_proxy THE_IP_ADDRESS_OR_HOSTNAME_OF_FORGE_WITHIN_YOUR_NETWORK:9080 {
+        header_up Host                  {upstream_hostport}
+        header_up X-Real-IP             {remote_host}
+        header_up X-Forwarded-For       {remote_host}
+        header_up X-Forwarded-Proto     {scheme}
+        flush_interval                  -1
+    }
+}

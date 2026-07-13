@@ -26,23 +26,25 @@ func TestHandleDebugSession_EmptyWorkspace(t *testing.T) {
 		Image:        "alpine",
 	}
 
-	expectedDir := filepath.Join(tempDir, "forge-debug-"+spec.SessionID)
+	expectedBaseDir := filepath.Join(tempDir, "forge-debug-"+spec.SessionID)
+	expectedWorkspaceDir := filepath.Join(expectedBaseDir, "workspace")
 
 	workspaceDir := spec.WorkspaceDir
 	if workspaceDir == "" {
-		workspaceDir = filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+		baseDir := filepath.Join(a.workspaceDir, "forge-debug-"+spec.SessionID)
+		workspaceDir = filepath.Join(baseDir, "workspace")
 		err := os.MkdirAll(workspaceDir, 0755)
 		if err != nil {
 			t.Fatalf("failed to create directory: %v", err)
 		}
 	}
 
-	if workspaceDir != expectedDir {
-		t.Errorf("expected workspace dir %q, got %q", expectedDir, workspaceDir)
+	if workspaceDir != expectedWorkspaceDir {
+		t.Errorf("expected workspace dir %q, got %q", expectedWorkspaceDir, workspaceDir)
 	}
 
-	if _, err := os.Stat(expectedDir); os.IsNotExist(err) {
-		t.Errorf("expected directory %q to be created, but it doesn't exist", expectedDir)
+	if _, err := os.Stat(expectedWorkspaceDir); os.IsNotExist(err) {
+		t.Errorf("expected directory %q to be created, but it doesn't exist", expectedWorkspaceDir)
 	}
 }
 

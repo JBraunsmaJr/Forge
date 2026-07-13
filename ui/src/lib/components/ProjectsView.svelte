@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { api, type Project, type Org } from '../api';
     import { currentView } from '../stores';
-    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp } from '@lucide/svelte';
+    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings } from '@lucide/svelte';
     import SecretsManager from './SecretsManager.svelte';
 
     let projects: Project[] = [];
@@ -26,6 +26,62 @@
         pipeline_path: '',
         scm_token: ''
     };
+
+    let editingProject: Project | null = null;
+    let editForm = {
+        name: '',
+        repo_url: '',
+        pipeline_path: '',
+        cron: '',
+        scheduled_pipeline_path: '',
+        scm_token: '',
+        branch_filter: [] as string[]
+    };
+    let branchFilterStr = '';
+
+    function startEdit(project: Project) {
+        editingProject = project;
+        editForm = {
+            name: project.name,
+            repo_url: project.repo_url,
+            pipeline_path: project.pipeline_path,
+            cron: project.cron || '',
+            scheduled_pipeline_path: project.scheduled_pipeline_path || '',
+            scm_token: '', // Never show existing token
+            branch_filter: [...(project.branch_filter || [])]
+        };
+        branchFilterStr = (project.branch_filter || []).join(', ');
+        error = '';
+    }
+
+    async function updateProject() {
+        if (!editingProject) return;
+        error = '';
+        try {
+            const req: any = {
+                name: editForm.name,
+                repo_url: editForm.repo_url,
+                pipeline_path: editForm.pipeline_path,
+                cron: editForm.cron,
+                scheduled_pipeline_path: editForm.scheduled_pipeline_path,
+                branch_filter: branchFilterStr.split(',').map(s => s.trim()).filter(s => s)
+            };
+            if (editForm.scm_token) {
+                req.scm_token = editForm.scm_token;
+            }
+
+            const success = await api.updateProject(editingProject.id, req);
+            if (success) {
+                editingProject = null;
+                await refreshProjects();
+            } else {
+                error = 'Failed to update project. Please check your inputs.';
+            }
+        } catch (e) {
+            console.error("Failed to update project:", e);
+            error = 'An error occurred while updating the project.';
+        }
+    }
 
     async function loadData() {
         loading = true;
@@ -80,15 +136,11 @@
         error = '';
         try {
             const res = await api.triggerProject(id, triggerBranch);
-            if (res) {
-                triggeringId = null;
-                currentView.set('runs');
-            } else {
-                error = 'Failed to trigger pipeline. Make sure the branch exists and contains a valid pipeline file.';
-            }
-        } catch (e) {
+            triggeringId = null;
+            currentView.set('runs');
+        } catch (e: any) {
             console.error("Trigger failed:", e);
-            error = 'An error occurred while triggering the pipeline.';
+            error = e.message || 'Failed to trigger pipeline. Make sure the branch exists and contains a valid pipeline file.';
         } finally {
             triggering = false;
         }
@@ -185,6 +237,46 @@
         </div>
     {/if}
 
+    {#if editingProject}
+        <div class="create-card card">
+            <h3>Edit Project: {editingProject.name}</h3>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="e-name">Project Name</label>
+                    <input id="e-name" type="text" bind:value={editForm.name} />
+                </div>
+                <div class="form-group">
+                    <label for="e-repo">Repository URL</label>
+                    <input id="e-repo" type="text" bind:value={editForm.repo_url} />
+                </div>
+                <div class="form-group">
+                    <label for="e-path">Pipeline Path</label>
+                    <input id="e-path" type="text" bind:value={editForm.pipeline_path} />
+                </div>
+                <div class="form-group">
+                    <label for="e-token">SCM Token (Leave empty to keep current)</label>
+                    <input id="e-token" type="password" bind:value={editForm.scm_token} placeholder="••••••••" />
+                </div>
+                <div class="form-group full-width">
+                    <label for="e-branches">Branch Filter (Optional — comma separated)</label>
+                    <input id="e-branches" type="text" bind:value={branchFilterStr} placeholder="main, dev" />
+                </div>
+                <div class="form-group">
+                    <label for="e-cron">Cron Schedule (Optional, e.g. "0 2 * * *")</label>
+                    <input id="e-cron" type="text" bind:value={editForm.cron} placeholder="0 2 * * *" />
+                </div>
+                <div class="form-group">
+                    <label for="e-scheduled-path">Scheduled Pipeline Path (Optional)</label>
+                    <input id="e-scheduled-path" type="text" bind:value={editForm.scheduled_pipeline_path} placeholder=".forge/nightly.yml" />
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn-secondary" on:click={() => editingProject = null}>Cancel</button>
+                <button class="btn-primary" on:click={updateProject} disabled={!editForm.name || !editForm.repo_url}>Save Changes</button>
+            </div>
+        </div>
+    {/if}
+
     {#if loading}
         <div class="loading">Loading projects...</div>
     {:else if !projects || projects.length === 0}
@@ -225,6 +317,11 @@
                             {/if}
                         </button>
 
+                        <button class="btn-text" on:click={() => startEdit(project)}>
+                            <Settings size={14} />
+                            Settings
+                        </button>
+
                         {#if openSecretsId === project.id}
                             <SecretsManager scope="project" id={project.id} />
                         {/if}
@@ -261,25 +358,9 @@
 </div>
 
 <style>
-    .view-container {
-        padding: 24px;
-        max-width: 1000px;
-        margin: 0 auto;
-    }
-    .view-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 24px;
-    }
     .header-actions {
         display: flex;
         gap: 12px;
-    }
-    h1 {
-        margin: 0;
-        font-size: 24px;
-        font-weight: 600;
     }
     .error-banner {
         background: var(--red-muted);
@@ -319,6 +400,14 @@
         gap: 16px;
         margin-bottom: 20px;
     }
+    @media (max-width: 600px) {
+        .form-grid {
+            grid-template-columns: 1fr;
+        }
+        .full-width {
+            grid-column: auto;
+        }
+    }
     .full-width {
         grid-column: span 2;
     }
@@ -330,42 +419,12 @@
     }
     .form-group input, .form-group select {
         width: 100%;
-        padding: 8px 12px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--text);
         box-sizing: border-box;
     }
     .form-actions {
         display: flex;
         justify-content: flex-end;
         gap: 8px;
-    }
-    .btn-primary {
-        background: var(--accent);
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    .btn-primary:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-    .btn-secondary {
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--border);
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
     }
     .btn-text {
         background: transparent;

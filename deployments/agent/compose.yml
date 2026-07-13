@@ -3,7 +3,7 @@ services:
     image: ghcr.io/jbraunsmajr/forge/forge:latest
     command: ["agent", "${FORGE_SCHEDULER_URL:-http://localhost:8080}"]
     environment:
-      FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
+      FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN}
       FORGE_VAULT_ADDR: ${FORGE_VAULT_ADDR}
       FORGE_VAULT_TOKEN: ${FORGE_VAULT_TOKEN}
       FORGE_GRPC_ADDR: ${FORGE_GRPC_ADDR}

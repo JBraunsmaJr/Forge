@@ -1,8 +1,8 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { api, type Run } from '../api';
-    import { runs, activeRun, connStatus, currentView } from '../stores';
-    import { Play, Briefcase, Building2, ShieldCheck, Key } from '@lucide/svelte';
+    import { runs, activeRun, connStatus, currentView, sidebarOpen } from '../stores';
+    import { Play, Briefcase, Building2, ShieldCheck, Key, Server } from '@lucide/svelte';
 
     let search = '';
     let statusFilter = '';
@@ -41,6 +41,16 @@
         return `${Math.floor(s/3600)}h ago`;
     }
 
+    function statusBadge(status: string) {
+        const labels: Record<string, string> = {
+            passed: 'passed', failed: 'failed', running: 'running',
+            queued: 'queued', pending: 'pending', canceled: 'canceled',
+            timed_out: 'timed out', approval: 'waiting for approval',
+            release: 'releasing'
+        };
+        return labels[status] || status;
+    }
+
     onMount(() => {
         refreshRunList();
         const interval = setInterval(refreshRunList, 5000);
@@ -52,101 +62,127 @@
 
 <aside>
     <div id="nav">
+        <div class="nav-logo">⚒</div>
         <button class:active={$currentView === 'runs'} on:click={() => currentView.set('runs')} title="Runs">
-            <Play size={18} />
+            <Play size={20} />
             <span>Runs</span>
         </button>
         <button class:active={$currentView === 'projects'} on:click={() => currentView.set('projects')} title="Projects">
-            <Briefcase size={18} />
+            <Briefcase size={20} />
             <span>Projects</span>
         </button>
         <button class:active={$currentView === 'orgs'} on:click={() => currentView.set('orgs')} title="Organizations">
-            <Building2 size={18} />
+            <Building2 size={20} />
             <span>Orgs</span>
         </button>
         <button class:active={$currentView === 'policies'} on:click={() => currentView.set('policies')} title="Policies">
-            <ShieldCheck size={18} />
+            <ShieldCheck size={20} />
             <span>Policies</span>
         </button>
         <button class:active={$currentView === 'tokens'} on:click={() => currentView.set('tokens')} title="API Tokens">
-            <Key size={18} />
+            <Key size={20} />
             <span>Tokens</span>
+        </button>
+        <button class:active={$currentView === 'agents'} on:click={() => currentView.set('agents')} title="Runners Health">
+            <Server size={20} />
+            <span>Runners</span>
         </button>
     </div>
 
     {#if $currentView === 'runs'}
+    <div id="pane" class:open={$sidebarOpen}>
         <h2>Runs</h2>
         <div id="run-filters">
-        <input 
-            type="text" 
-            placeholder="Search pipelines…" 
-            bind:value={search} 
-            on:input={onFilterChange}
-        >
-        <select bind:value={statusFilter} on:change={onFilterChange}>
-            <option value="">All statuses</option>
-            <option value="running">Running</option>
-            <option value="passed">Passed</option>
-            <option value="failed">Failed</option>
-            <option value="canceled">Canceled</option>
-        </select>
-    </div>
-    <div id="run-list">
-        {#if $runs.length === 0}
-            <div id="empty-state">No runs yet.<br>Submit a pipeline to start.</div>
-        {:else}
-            {#each $runs as run}
-                
-                
-                <div 
-                    class="run-item" 
-                    class:active={$activeRun?.run_id === run.run_id}
-                    on:click={() => onSelectRun(run.run_id)}
-                >
-                    <div class="run-item-name">{run.name}</div>
-                    <div class="run-item-meta">
-                        <span class="badge badge-{run.status}">{run.status}</span>
-                        <span>{run.job_count} job{run.job_count !== 1 ? 's' : ''}</span>
-                        <span>{timeAgo(run.created_at)}</span>
+            <input 
+                type="text" 
+                placeholder="Search pipelines…" 
+                bind:value={search} 
+                on:input={onFilterChange}
+            >
+            <select bind:value={statusFilter} on:change={onFilterChange}>
+                <option value="">All statuses</option>
+                <option value="running">Running</option>
+                <option value="passed">Passed</option>
+                <option value="failed">Failed</option>
+                <option value="canceled">Canceled</option>
+                <option value="approval">Waiting for Approval</option>
+            </select>
+        </div>
+        <div id="run-list">
+            {#if $runs.length === 0}
+                <div id="empty-state">No runs yet.<br>Submit a pipeline to start.</div>
+            {:else}
+                {#each $runs as run}
+                    <div 
+                        class="run-item" 
+                        class:active={$activeRun?.run_id === run.run_id}
+                        on:click={() => { onSelectRun(run.run_id); sidebarOpen.set(false); }}
+                    >
+                        <div class="run-item-name">{run.name}</div>
+                        <div class="run-item-meta">
+                            <span class="badge badge-{run.status}">{statusBadge(run.status)}</span>
+                            <span>{run.job_count} job{run.job_count !== 1 ? 's' : ''}</span>
+                            <span>{timeAgo(run.created_at)}</span>
+                        </div>
                     </div>
-                </div>
-            {/each}
-        {/if}
-        {#if hasMore}
-            <button id="load-more-btn" on:click={loadMore}>Load more</button>
-        {/if}
+                {/each}
+            {/if}
+            {#if hasMore}
+                <button id="load-more-btn" on:click={loadMore}>Load more</button>
+            {/if}
+        </div>
     </div>
     {/if}
 </aside>
 
 <style>
-    #nav {
+    aside {
         display: flex;
-        background: var(--bg);
-        border-bottom: 1px solid var(--border);
-        padding: 4px;
-        gap: 4px;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        flex-shrink: 0;
+        z-index: 10;
     }
-    #nav button {
-        flex: 1;
+    #nav {
+        width: 72px;
+        background: var(--bg);
+        border-right: 1px solid var(--border);
         display: flex;
         flex-direction: column;
         align-items: center;
+        padding: 12px 0;
+        gap: 8px;
+        flex-shrink: 0;
+    }
+    .nav-logo {
+        font-size: 24px;
+        margin-bottom: 16px;
+        color: var(--accent);
+        height: 48px;
+        display: flex;
+        align-items: center;
         justify-content: center;
-        gap: 4px;
-        padding: 8px 0;
+    }
+    #nav button {
+        width: 48px;
+        height: 48px;
         background: transparent;
         border: none;
         color: var(--muted);
         cursor: pointer;
-        border-radius: 4px;
-        transition: all .15s;
+        border-radius: 12px;
+        transition: all .2s;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
     }
     #nav button span {
-        font-size: 9px;
+        font-size: 8px;
+        font-weight: 700;
         text-transform: uppercase;
-        font-weight: 600;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.2px;
     }
     #nav button:hover {
         background: var(--surface);
@@ -156,15 +192,12 @@
         background: var(--surface2);
         color: var(--accent);
     }
-    aside {
+    #pane {
         width: 280px;
-        background: var(--surface);
-        border-right: 1px solid var(--border);
         display: flex;
         flex-direction: column;
-        flex-shrink: 0;
     }
-    aside h2 {
+    #pane h2 {
         font-size: 11px;
         font-weight: 600;
         letter-spacing: 1px;
@@ -249,9 +282,53 @@
         text-transform: uppercase;
         letter-spacing: .5px;
     }
-    .badge-running { background: #1a2f4a; color: var(--blue); }
+    .badge-running, .badge-release { background: #1a2f4a; color: var(--blue); }
     .badge-passed  { background: #0d2e20; color: var(--green); }
     .badge-failed  { background: #2e1414; color: var(--red); }
+    .badge-approval { background: #3b2b10; color: var(--amber); }
     .badge-pending, .badge-queued { background: var(--surface2); color: var(--muted); }
     #empty-state { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+
+    @media (max-width: 768px) {
+        aside {
+            flex-direction: column-reverse;
+            width: 100%;
+            height: auto;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            border-right: none;
+            border-top: 1px solid var(--border);
+        }
+        #nav {
+            width: 100%;
+            height: 64px;
+            flex-direction: row;
+            justify-content: space-around;
+            padding: 0;
+            border-right: none;
+        }
+        .nav-logo { display: none; }
+        #nav button {
+            width: auto;
+            flex: 1;
+            height: 100%;
+            border-radius: 0;
+        }
+        #pane {
+            display: none; /* Hide run list by default on mobile */
+        }
+        #pane.open {
+            display: flex;
+            position: fixed;
+            top: 52px;
+            bottom: 64px;
+            left: 0;
+            right: 0;
+            width: 100%;
+            background: var(--bg);
+            z-index: 20;
+        }
+    }
 </style>

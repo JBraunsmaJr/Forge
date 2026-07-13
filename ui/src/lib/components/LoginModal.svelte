@@ -56,35 +56,35 @@
         font-family: system-ui, sans-serif;
     }
     .modal {
-        background: #16162a;
-        border: 1px solid #7c6af7;
+        background: var(--surface);
+        border: 1px solid var(--accent);
         border-radius: 10px;
         padding: 32px 36px;
         width: 440px;
         max-width: 92vw;
     }
-    h2 { margin: 0 0 6px; color: #e0e0e0; font-size: 16px; font-weight: 600; }
-    p { margin: 0 0 20px; color: #777; font-size: 13px; line-height: 1.6; }
-    code { color: #a78bfa; background: #0d0d1a; padding: 2px 6px; border-radius: 3px; }
+    h2 { margin: 0 0 6px; color: var(--text); font-size: 16px; font-weight: 600; }
+    p { margin: 0 0 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    code { color: var(--accent); background: var(--bg); padding: 2px 6px; border-radius: 3px; }
     input {
         width: 100%;
         box-sizing: border-box;
-        background: #0d0d1a;
-        border: 1px solid #333;
-        border-radius: 5px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
         padding: 10px 12px;
-        color: #e0e0e0;
-        font-family: monospace;
+        color: var(--text);
+        font-family: var(--font-mono);
         font-size: 13px;
         outline: none;
         margin-bottom: 14px;
     }
     .actions { display: flex; justify-content: flex-end; gap: 8px; }
     button {
-        background: #7c6af7;
+        background: var(--accent);
         color: #fff;
         border: none;
-        border-radius: 5px;
+        border-radius: 6px;
         padding: 8px 22px;
         cursor: pointer;
         font-size: 13px;

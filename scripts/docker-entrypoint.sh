@@ -37,8 +37,15 @@ case "$1" in
     # Parse host and port from the scheduler URL arg
     SCHEDULER_URL="${2:-http://scheduler:8080}"
     SCHED_HOST=$(echo "$SCHEDULER_URL" | sed -E 's|https?://([^:/]+).*|\1|')
-    SCHED_PORT=$(echo "$SCHEDULER_URL" | sed -E 's|.*:([0-9]+).*|\1|')
-    SCHED_PORT="${SCHED_PORT:-8080}"
+    SCHED_PORT=$(echo "$SCHEDULER_URL" | sed -E 's|https?://[^:/]+:([0-9]+).*|\1|')
+
+    if [ "$SCHED_PORT" = "$SCHEDULER_URL" ]; then
+        if echo "$SCHEDULER_URL" | grep -q "^https://"; then
+            SCHED_PORT=443
+        else
+            SCHED_PORT=80
+        fi
+    fi
     wait_for "$SCHED_HOST" "$SCHED_PORT" "scheduler"
     ;;
 esac

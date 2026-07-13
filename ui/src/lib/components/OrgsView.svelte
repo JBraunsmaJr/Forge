@@ -97,22 +97,6 @@
 </div>
 
 <style>
-    .view-container {
-        padding: 24px;
-        max-width: 1000px;
-        margin: 0 auto;
-    }
-    .view-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 24px;
-    }
-    h1 {
-        margin: 0;
-        font-size: 24px;
-        font-weight: 600;
-    }
     .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
