@@ -54,6 +54,7 @@ nav:
   - Getting Started: Getting-Started.md
   - Architecture: Architecture.md
   - Configuration: Configuration.md
+  - Roles & Permissions: Roles.md
   - CLI Reference: Cli-Reference.md
   - Pipeline Reference: Pipeline-Reference.md
   - Examples: Examples.md

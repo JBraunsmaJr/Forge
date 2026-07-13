@@ -11,9 +11,9 @@ import (
 
 // TestStoreAndLookup verifies the basic write-then-read round trip.
 func TestStoreAndLookup(t *testing.T) {
-	store, err := New(t.TempDir())
+	store, err := NewLocal(t.TempDir())
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewLocal: %v", err)
 	}
 
 	entry := &Entry{
@@ -44,9 +44,9 @@ func TestStoreAndLookup(t *testing.T) {
 
 // TestLookup_Miss verifies that an unknown hash returns (nil, false).
 func TestLookup_Miss(t *testing.T) {
-	store, err := New(t.TempDir())
+	store, err := NewLocal(t.TempDir())
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewLocal: %v", err)
 	}
 
 	entry, hit := store.Lookup("doesnotexist")
@@ -169,7 +169,7 @@ func TestComputeTaskHash_NoInputs(t *testing.T) {
 // based on the first 2 chars of their hash (like Git's object store).
 func TestSharding(t *testing.T) {
 	cacheDir := t.TempDir()
-	store, _ := New(cacheDir)
+	store, _ := NewLocal(cacheDir)
 
 	entry := &Entry{
 		TaskHash:  "ab3f9c2d1e",

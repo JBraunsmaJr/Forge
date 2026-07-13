@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin';
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS org_id TEXT;
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS project_id TEXT;
+
+-- ── Audit Logs ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id          TEXT        PRIMARY KEY,
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    actor_id    TEXT,
+    actor_name  TEXT,
+    action      TEXT        NOT NULL,
+    target_type TEXT,
+    target_id   TEXT,
+    details     JSONB
+);
 
 -- ── Runs ──────────────────────────────────────────────────────────────────────
 -- References orgs — must come after orgs.
@@ -208,6 +222,26 @@ ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS upload_token TEXT;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS confirmed BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS artifacts_run_id_idx   ON artifacts(run_id);
 CREATE INDEX IF NOT EXISTS artifacts_run_name_idx ON artifacts(run_id, name);
+
+-- ── Users & SSO ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+    id         TEXT        PRIMARY KEY,
+    email      TEXT        NOT NULL UNIQUE,
+    name       TEXT        NOT NULL,
+    role       TEXT        NOT NULL DEFAULT 'viewer',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sso_identities (
+    id           TEXT        PRIMARY KEY,
+    user_id      TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider     TEXT        NOT NULL,
+    external_id  TEXT        NOT NULL,
+    last_login   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(provider, external_id)
+);
+
+ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
 `)
 	return err
 }

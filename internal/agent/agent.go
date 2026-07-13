@@ -65,6 +65,7 @@ type Agent struct {
 	workspaceDir string
 	cacheDir     string
 	logDir       string
+	cas          cache.Storer
 	vault        *secrets.Client
 	client       *http.Client
 	apiToken     string // FORGE_API_TOKEN — sent with every scheduler request
@@ -108,6 +109,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		maxDockerPercent: maxPercent,
 		pruneSchedule:    schedule,
 		maxConcurrency:   concurrency,
+		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
 		out:              make(chan *pb.AgentMessage, 64),
 	}
@@ -619,7 +621,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	jobLogDir := filepath.Join(a.logDir, spec.JobID)
 	defer os.RemoveAll(jobLogDir)
-	exec, err := executor.New(jobWorkspace, jobLogDir, a.cacheDir)
+	exec, err := executor.New(jobWorkspace, jobLogDir, a.cas)
 	if err != nil {
 		err = fmt.Errorf("creating executor: %w", err)
 		a.reportComplete(spec, 1, 0, []api.LogEvent{{
@@ -730,17 +732,14 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 
 	// Check CAS before running
-	if a.cacheDir != "" && len(step.Inputs) > 0 {
-		cas, err := cache.New(a.cacheDir)
+	if len(step.Inputs) > 0 {
+		hash, err := cache.ComputeTaskHash(step, jobWorkspace)
 		if err == nil {
-			hash, err := cache.ComputeTaskHash(step, jobWorkspace)
-			if err == nil {
-				step.CacheKey = hash
-				if entry, hit := cas.Lookup(hash); hit {
-					fmt.Printf("[agent %s] cache hit for step %s\n",
-						a.id[:8], step.ID)
-					return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "", false)
-				}
+			step.CacheKey = hash
+			if entry, hit := a.cas.Lookup(hash); hit {
+				fmt.Printf("[agent %s] cache hit for step %s\n",
+					a.id[:8], step.ID)
+				return a.reportComplete(spec, entry.ExitCode, 0, cacheHitLog(hash), "", false)
 			}
 		}
 	}

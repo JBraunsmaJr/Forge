@@ -146,6 +146,18 @@ type LogEvent struct {
 	Message   string    `json:"message"`
 }
 
+type LogSearchResult struct {
+	Timestamp time.Time `json:"timestamp"`
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
+	JobID     string    `json:"job_id"`
+	JobName   string    `json:"job_name"`
+	RunID     string    `json:"run_id"`
+	RunName   string    `json:"run_name"`
+	OrgID     string    `json:"org_id"`
+	ProjectID string    `json:"project_id"`
+}
+
 // RunStatus is returned when the CLI polls for a run's progress.
 type RunStatus struct {
 	RunID  string      `json:"run_id"`
@@ -426,7 +438,9 @@ type TerminalResizeMsg struct {
 type TokenInfo struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
-	Role      string     `json:"role"` // "admin" | "agent"
+	Role      string     `json:"role"` // "admin" | "agent" | "operator" | "viewer"
+	OrgID     string     `json:"org_id,omitempty"`
+	ProjectID string     `json:"project_id,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 }
@@ -435,6 +449,8 @@ type TokenInfo struct {
 type CreateTokenRequest struct {
 	Name      string     `json:"name"`
 	Role      string     `json:"role,omitempty"`       // defaults to "admin"
+	OrgID     string     `json:"org_id,omitempty"`     // optional scoping
+	ProjectID string     `json:"project_id,omitempty"` // optional scoping
 	ExpiresAt *time.Time `json:"expires_at,omitempty"` // optional expiry date
 	Preset    string     `json:"preset,omitempty"`     // use a specific token value (for reproducible dev environments)
 }
@@ -554,4 +570,19 @@ type RunComparison struct {
 	DiffMs             int64   `json:"diff_ms"`
 	PercentChange      float64 `json:"percent_change"`
 	RegressionDetected bool    `json:"regression_detected"`
+}
+
+// UserInfo represents a Forge user (human).
+type UserInfo struct {
+	ID        string    `json:"id"`
+	Email     string    `json:"email"`
+	Name      string    `json:"name"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AuthStatusResponse describes the current authentication state.
+type AuthStatusResponse struct {
+	Authenticated bool      `json:"authenticated"`
+	User          *UserInfo `json:"user,omitempty"`
 }

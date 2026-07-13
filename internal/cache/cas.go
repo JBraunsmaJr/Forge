@@ -18,11 +18,13 @@
 package cache
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,32 +49,34 @@ type Entry struct {
 	Command []string `json:"command"`
 }
 
-// Store is the content-addressed cache store.
-type Store struct {
+// Storer is the interface for content-addressed cache stores.
+type Storer interface {
+	Lookup(taskHash string) (*Entry, bool)
+	Store(entry *Entry) error
+}
+
+// LocalStore is an on-disk implementation of Storer.
+type LocalStore struct {
 	dir string // root directory, typically .forge/cache
 }
 
-// New creates (or opens) a Store rooted at dir.
-func New(dir string) (*Store, error) {
+// NewLocal creates (or opens) a LocalStore rooted at dir.
+func NewLocal(dir string) (*LocalStore, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating cache dir %s: %w", dir, err)
 	}
-	return &Store{dir: dir}, nil
+	return &LocalStore{dir: dir}, nil
 }
 
 // Lookup checks whether a cached result exists for taskHash.
-//
-// Returns (entry, true) on a hit, (nil, false) on a miss
-func (s *Store) Lookup(taskHash string) (*Entry, bool) {
+func (s *LocalStore) Lookup(taskHash string) (*Entry, bool) {
 	path := s.entryPath(taskHash)
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-
 		if os.IsNotExist(err) {
 			return nil, false
 		}
-
 		return nil, false
 	}
 
@@ -83,7 +87,7 @@ func (s *Store) Lookup(taskHash string) (*Entry, bool) {
 	return &entry, true
 }
 
-func (s *Store) Store(entry *Entry) error {
+func (s *LocalStore) Store(entry *Entry) error {
 	path := s.entryPath(entry.TaskHash)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -105,13 +109,75 @@ func (s *Store) Store(entry *Entry) error {
 	return nil
 }
 
-// entryPath returns the on-disk path for a given task hash.
-// Uses the first 2 hex chars as a shard directory - the same technique as Git.
-func (s *Store) entryPath(taskHash string) string {
+func (s *LocalStore) entryPath(taskHash string) string {
 	if len(taskHash) < 2 {
 		return filepath.Join(s.dir, "misc", taskHash+".json")
 	}
 	return filepath.Join(s.dir, taskHash[:2], taskHash+".json")
+}
+
+// RemoteStore is a distributed implementation of Storer that communicates
+// with the Forge scheduler.
+type RemoteStore struct {
+	baseURL string
+	token   string
+	client  *http.Client
+}
+
+// NewRemote creates a RemoteStore.
+func NewRemote(baseURL, token string) *RemoteStore {
+	return &RemoteStore{
+		baseURL: strings.TrimSuffix(baseURL, "/"),
+		token:   token,
+		client:  &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+func (s *RemoteStore) Lookup(taskHash string) (*Entry, bool) {
+	req, _ := http.NewRequest("GET", s.baseURL+"/api/v1/cache/"+taskHash, nil)
+	if s.token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+
+	var entry Entry
+	if err := json.NewDecoder(resp.Body).Decode(&entry); err != nil {
+		return nil, false
+	}
+	return &entry, true
+}
+
+func (s *RemoteStore) Store(entry *Entry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+
+	req, _ := http.NewRequest("POST", s.baseURL+"/api/v1/cache", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	if s.token != "" {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // ComputeTaskHash calculates the content hash for a step.
