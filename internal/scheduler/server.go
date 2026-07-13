@@ -23,6 +23,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
+	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	"github.com/JBraunsmaJr/forge/internal/pb"
@@ -48,6 +49,7 @@ type Server struct {
 	projects    *ProjectStore
 	debug       *DebugStore
 	tokens      *tokenStore
+	cas         cache.Storer
 	artifacts   artifacts.ArtifactStorer
 	broker      *SSEBroker
 	gitCache    *gitcache.Cache
@@ -114,12 +116,16 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 		baseURL = "http://localhost:8080"
 	}
 
+	casDir := getenv("FORGE_CACHE_DIR", "/data/cache")
+	cas, _ := cache.NewLocal(casDir)
+
 	return &Server{
 		store:       NewStore(db),
 		orgs:        newOrgStore(db),
 		projects:    newProjectStore(db),
 		debug:       newDebugStore(),
 		tokens:      newTokenStore(db),
+		cas:         cas,
 		broker:      newSSEBroker(),
 		artifacts:   artStore,
 		gitCache:    gc,
@@ -137,6 +143,38 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func (s *Server) handleCacheLookup(w http.ResponseWriter, r *http.Request) {
+	hash := r.PathValue("hash")
+	if hash == "" {
+		http.Error(w, "missing hash", http.StatusBadRequest)
+		return
+	}
+
+	entry, hit := s.cas.Lookup(hash)
+	if !hit {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entry)
+}
+
+func (s *Server) handleCacheStore(w http.ResponseWriter, r *http.Request) {
+	var entry cache.Entry
+	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+		http.Error(w, "invalid entry", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.cas.Store(&entry); err != nil {
+		http.Error(w, fmt.Sprintf("storage error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
 }
 
 type AgentRegistry struct {
@@ -225,7 +263,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// Project management
 	mux.HandleFunc("POST /api/v1/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/v1/projects", s.handleListProjects)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.handleUpdateProject)
 	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
 
@@ -236,6 +276,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Source serving - used by agents.
 	mux.HandleFunc("GET /api/v1/source/{id}", s.handleServeSource)
+
+	// Distributed Cache
+	mux.HandleFunc("GET /api/v1/cache/{hash}", s.handleCacheLookup)
+	mux.HandleFunc("POST /api/v1/cache", s.handleCacheStore)
 
 	// Org and policy management.
 	mux.HandleFunc("POST /api/v1/orgs", s.handleCreateOrg)
@@ -270,6 +314,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/runs/{id}/comparison", s.handleRunComparison)
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEventsWS)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.handleJobLogs)
+	mux.HandleFunc("GET /api/v1/logs/search", s.handleSearchLogs)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
 	mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
@@ -332,6 +377,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Flaky test detection.
 	mux.HandleFunc("GET /api/v1/flaky", s.handleFlakySteps)
+
+	// Auth & SSO
+	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/v1/auth/login/{provider}", s.handleSSOLogin)
+	mux.HandleFunc("GET /api/v1/auth/callback/{provider}", s.handleSSOCallback)
 
 	// Artifact management.
 	mux.HandleFunc("POST /api/v1/artifacts/presign", s.handlePresignUpload)
@@ -410,11 +461,15 @@ func (s *Server) startMetricsWorker(ctx context.Context) {
 }
 
 func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	jobID := r.PathValue("id")
 	if err := s.store.ApproveJob(jobID); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.AuditLog(r, "approve_job", "job", jobID, nil)
 	// Publish update to UI
 	runID := s.store.GetJobRunID(jobID)
 	if runID != "" {
@@ -526,9 +581,27 @@ func (s *Server) cronMonitor(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			now := time.Now()
+			// Log pruning - run once per hour
+			if now.Minute() == 0 {
+				retentionDaysStr := os.Getenv("FORGE_LOG_RETENTION_DAYS")
+				if retentionDaysStr == "" {
+					retentionDaysStr = "30"
+				}
+				days, _ := strconv.Atoi(retentionDaysStr)
+				if days > 0 {
+					before := now.AddDate(0, 0, -days)
+					affected, err := s.store.PruneLogs(before)
+					if err != nil {
+						fmt.Printf("[cron] log pruning error: %v\n", err)
+					} else if affected > 0 {
+						fmt.Printf("[cron] pruned %d old log lines\n", affected)
+					}
+				}
+			}
+
 			// List all projects with crons
 			projects := s.projects.ListProjects("")
-			now := time.Now()
 
 			for _, proj := range projects {
 				if proj.Cron == "" {
@@ -836,6 +909,9 @@ func (s *Server) handleListOrgSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetOrgSecret(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	if s.secrets == nil {
 		writeError(w, http.StatusServiceUnavailable, "Vault is not configured")
 		return
@@ -862,6 +938,9 @@ func (s *Server) handleSetOrgSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteOrgSecret(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	if s.secrets == nil {
 		writeError(w, http.StatusServiceUnavailable, "Vault is not configured")
 		return
@@ -895,6 +974,9 @@ func (s *Server) handleListProjectSecrets(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleSetProjectSecret(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	if s.secrets == nil {
 		writeError(w, http.StatusServiceUnavailable, "Vault is not configured")
 		return
@@ -921,6 +1003,9 @@ func (s *Server) handleSetProjectSecret(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteProjectSecret(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	if s.secrets == nil {
 		writeError(w, http.StatusServiceUnavailable, "Vault is not configured")
 		return
@@ -994,7 +1079,32 @@ func (s *Server) handleJobLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, logs)
 }
 
+func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "query 'q' is required")
+		return
+	}
+
+	orgID := r.URL.Query().Get("org_id")
+	projectID := r.URL.Query().Get("project_id")
+	runID := r.URL.Query().Get("run_id")
+	jobID := r.URL.Query().Get("job_id")
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	results, err := s.store.SearchLogs(query, orgID, projectID, runID, jobID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, results)
+}
+
 func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	_, span := tracing.Tracer().Start(r.Context(), "handleSubmitRun")
 	defer span.End()
 
@@ -1064,11 +1174,15 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	steps = PruneSteps(steps, req.Ref)
+
 	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", steps, appliedPolicies, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	s.AuditLog(r, "submit_run", "run", runID, map[string]any{"pipeline": req.PipelineName, "org_id": req.OrgID, "project_id": req.ProjectID})
 
 	runsTotal.WithLabelValues(req.OrgID, req.ProjectID, "cli").Inc()
 	jobsSubmittedTotal.WithLabelValues(req.OrgID, req.ProjectID).Add(float64(len(steps)))
@@ -1271,6 +1385,9 @@ func (s *Server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	var req api.CreatePolicyRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1290,6 +1407,9 @@ func (s *Server) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	var req api.UpdatePolicyRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1318,6 +1438,9 @@ func (s *Server) handleListPolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	if err := s.orgs.DeletePolicy(r.PathValue("id"), r.PathValue("polID")); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1326,6 +1449,9 @@ func (s *Server) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	var req api.CreateProjectRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1342,6 +1468,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	s.AuditLog(r, "project.create", "project", proj.ID, req)
 	fmt.Printf("[scheduler] project created: %s (%s)\n", proj.ID, proj.RepoURL)
 	writeJSON(w, http.StatusCreated, proj)
 }
@@ -1352,6 +1479,9 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	projectID := r.PathValue("id")
 	var req api.UpdateProjectRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1367,6 +1497,20 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.AuditLog(r, "update_project", "project", projectID, req)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	projectID := r.PathValue("id")
+	if err := s.projects.DeleteProject(projectID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.AuditLog(r, "delete_project", "project", projectID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1439,6 +1583,9 @@ func (s *Server) triggerProject(projectID, branch, commit string) (string, error
 }
 
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	projectID := r.PathValue("id")
 	var req api.ManualTriggerRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -1452,6 +1599,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.AuditLog(r, "run.trigger", "project", projectID, req)
 	writeJSON(w, http.StatusCreated, map[string]string{"run_id": runID})
 }
 
@@ -1537,6 +1685,9 @@ func (s *Server) handleJobLogStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
 	runID := r.PathValue("id")
 	n, err := s.store.CancelRun(runID)
 	if err != nil {
@@ -1548,6 +1699,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publishRunDetail(runID)
+	s.AuditLog(r, "run.cancel", "run", runID, nil)
 	fmt.Printf("[scheduler] run %s canceled (%d jobs)\n", runID[:8], n)
 	writeJSON(w, http.StatusOK, map[string]int64{"canceled_jobs": n})
 }

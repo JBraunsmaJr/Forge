@@ -95,6 +95,18 @@ export interface LogEvent {
     message: string;
 }
 
+export interface LogSearchResult {
+    timestamp: string;
+    level: string;
+    message: string;
+    job_id: string;
+    job_name: string;
+    run_id: string;
+    run_name: string;
+    org_id: string;
+    project_id: string;
+}
+
 export interface Artifact {
     id: string;
     run_id: string;
@@ -118,6 +130,8 @@ export interface Project {
     name: string;
     repo_url: string;
     pipeline_path: string;
+    cron?: string;
+    scheduled_pipeline_path?: string;
     branch_filter?: string[];
     webhook_secret?: string;
     created_at: string;
@@ -151,6 +165,19 @@ export interface AgentInfo {
     version: string;
     labels: Record<string, string>;
     connected: boolean;
+}
+
+export interface User {
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+    created_at: string;
+}
+
+export interface AuthStatus {
+    authenticated: boolean;
+    user?: User;
 }
 
 export const api = {
@@ -216,10 +243,12 @@ export const api = {
     },
     updateProject: (id: string, req: { name?: string, repo_url?: string, pipeline_path?: string, scm_token?: string, branch_filter?: string[] }): Promise<boolean> =>
         fetchAuth(`/api/v1/projects/${id}`, {
-            method: 'PUT',
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(req),
         }).then(r => r?.status === 204),
+    deleteProject: (id: string): Promise<void> =>
+        fetchAuth(`/api/v1/projects/${id}`, { method: 'DELETE' }).then(() => {}),
     triggerProject: async (id: string, branch: string, commit?: string): Promise<{ run_id: string }> => {
         const r = await fetchAuth(`/api/v1/projects/${id}/trigger`, {
             method: 'POST',
@@ -284,7 +313,25 @@ export const api = {
     deleteToken: (id: string): Promise<void> =>
         fetchAuth(`/api/v1/tokens/${id}`, { method: 'DELETE' }).then(() => {}),
 
+    // Logs & Search
+    searchLogs: (query: string, limit = 50, orgID = '', projectID = '', runID = '', jobID = ''): Promise<LogSearchResult[]> => {
+        let url = `/api/v1/logs/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+        if (orgID) url += `&org_id=${orgID}`;
+        if (projectID) url += `&project_id=${projectID}`;
+        if (runID) url += `&run_id=${runID}`;
+        if (jobID) url += `&job_id=${jobID}`;
+        return fetchAuth(url).then(r => r?.json()).then(data => data || []);
+    },
+
     // Agent management
     listAgents: (): Promise<AgentInfo[]> =>
         fetchAuth('/api/v1/agents').then(r => r?.json()).then(data => data || []),
+
+    // Auth & SSO
+    authStatus: (): Promise<AuthStatus> =>
+        fetchAuth('/api/v1/auth/status').then(r => r?.json()),
+    logout: (): Promise<void> =>
+        fetchAuth('/api/v1/auth/logout', { method: 'POST' }).then(() => {
+            localStorage.removeItem(TOKEN_KEY);
+        }),
 };

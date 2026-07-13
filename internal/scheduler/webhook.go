@@ -470,6 +470,8 @@ func (s *Server) triggerWebhookRun(
 		return "", fmt.Errorf("invalid pipeline after policy injection: %w", err)
 	}
 
+	steps = PruneSteps(steps, meta.Ref)
+
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 
 	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, steps, appliedPolicies, "")

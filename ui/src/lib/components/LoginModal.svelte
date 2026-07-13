@@ -21,9 +21,22 @@
         <div class="modal">
             <h2>🔐 Forge — Authentication Required</h2>
             <p>
-                Enter your API token. Create one with:<br>
-                <code>forge token create dev</code>
+                Sign in with your identity provider or use a personal API token.
             </p>
+
+            <div class="sso-options">
+                <a href="/api/v1/auth/login/github" class="sso-btn github">
+                    Continue with GitHub
+                </a>
+                <a href="/api/v1/auth/login/gitlab" class="sso-btn gitlab">
+                    Continue with GitLab
+                </a>
+            </div>
+
+            <div class="divider">
+                <span>or use token</span>
+            </div>
+
             <input 
                 type="password" 
                 placeholder="fgt_…" 
@@ -64,8 +77,50 @@
         max-width: 92vw;
     }
     h2 { margin: 0 0 6px; color: var(--text); font-size: 16px; font-weight: 600; }
-    p { margin: 0 0 20px; color: var(--muted); font-size: 13px; line-height: 1.6; }
-    code { color: var(--accent); background: var(--bg); padding: 2px 6px; border-radius: 3px; }
+    p { margin: 0 0 24px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+    .sso-options {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-bottom: 24px;
+    }
+    .sso-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        color: white;
+        text-decoration: none;
+        padding: 10px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 600;
+        transition: opacity .2s;
+    }
+    .sso-btn:hover { opacity: 0.9; }
+    .github { background: #24292e; }
+    .gitlab { background: #e24329; }
+
+    .divider {
+        display: flex;
+        align-items: center;
+        text-align: center;
+        margin-bottom: 24px;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .divider::before, .divider::after {
+        content: '';
+        flex: 1;
+        border-bottom: 1px solid var(--border);
+    }
+    .divider span {
+        padding: 0 10px;
+    }
+
     input {
         width: 100%;
         box-sizing: border-box;

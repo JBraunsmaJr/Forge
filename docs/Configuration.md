@@ -23,6 +23,14 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_RUN_RETENTION`          | `30d`                    | How long to keep job runs and artifacts (e.g. `7d`, `24h`, `30m`). Set to `0` to disable.                                                                                                                |
 | `FORGE_RUN_RETENTION_INTERVAL` | `24h`                    | How often to run the background retention worker. Defaults to `1h` if retention < 24h.                                                                                                                   |
 | `FORGE_PRUNE_SCHEDULE`         | `@daily`                 | Cron-style schedule for `docker system prune` (e.g. `@hourly`, `@daily`, or duration like `12h`).                                                                                                        |
+| `FORGE_CACHE_DIR`              | `/data/cache`            | Path to persistent cache storage for distributed caching.                                                                                                                                                |
+| `FORGE_LOG_RETENTION_DAYS`     | `30`                     | Log retention in days. Logs older than this will be pruned hourly.                                                                                                                                       |
+| `FORGE_GITHUB_CLIENT_ID`      | —                        | GitHub OAuth2 Client ID for SSO.                                                                                                                                                                         |
+| `FORGE_GITHUB_CLIENT_SECRET`  | —                        | GitHub OAuth2 Client Secret for SSO.                                                                                                                                                                     |
+| `FORGE_GITLAB_CLIENT_ID`      | —                        | GitLab OAuth2 Client ID for SSO.                                                                                                                                                                         |
+| `FORGE_GITLAB_CLIENT_SECRET`  | —                        | GitLab OAuth2 Client Secret for SSO.                                                                                                                                                                     |
+| `FORGE_PUBLIC_URL`            | `http://localhost:8080`  | The public URL of the scheduler, used for OAuth callback redirects.                                                                                                                                      |
+| `FORGE_UI_URL`                | `http://localhost:8080`  | The URL to redirect back to after successful SSO login.                                                                                                                                                  |
 
 ---
 
@@ -30,7 +38,7 @@ All Forge components are configured via environment variables. There are no conf
 
 | Variable                   | Default                 | Description                                                                                                                 |
 |----------------------------|-------------------------|-----------------------------------------------------------------------------------------------------------------------------|
-| `FORGE_API_TOKEN`          | —                       | **Required.** API token for scheduler authentication. Use a token with the `agent` role.                                    |
+| `FORGE_API_TOKEN`          | —                       | **Required.** API token for scheduler authentication. Use a token with the `agent` role. See [Roles & Permissions](Roles.md) for details. |
 | `FORGE_SCHEDULER_URL`      | `http://localhost:8080` | The URL of the scheduler. Used for all agent-scheduler communication. Switch to `https://` for secure connections.          |
 | `FORGE_VAULT_ADDR`         | —                       | Vault server address. Required for steps that use `secrets:`. Example: `http://vault:8200`.                                 |
 | `FORGE_VAULT_TOKEN`        | —                       | Vault authentication token.                                                                                                 |
@@ -116,3 +124,30 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 | 8200 | Vault      | Secrets storage          |
 | 9000 | MinIO      | S3 API                   |
 | 9001 | MinIO      | Web console              |
+
+---
+
+## SSO / OAuth2 Configuration
+
+To enable Single Sign-On, you must register Forge as an OAuth application with your provider and set the following environment variables in the scheduler.
+
+### GitHub Setup
+
+1.  Go to **Settings > Developer Settings > OAuth Apps > New OAuth App**.
+2.  **Homepage URL**: Your `FORGE_PUBLIC_URL` (e.g., `https://forge.example.com`).
+3.  **Authorization callback URL**: `{FORGE_PUBLIC_URL}/api/v1/auth/callback/github`.
+4.  Copy the **Client ID** and **Client Secret** to `FORGE_GITHUB_CLIENT_ID` and `FORGE_GITHUB_CLIENT_SECRET`.
+
+### GitLab Setup
+
+1.  Go to **User Settings > Applications**.
+2.  **Name**: Forge CI.
+3.  **Redirect URI**: `{FORGE_PUBLIC_URL}/api/v1/auth/callback/gitlab`.
+4.  **Scopes**: Select `read_user` and `openid`.
+5.  Copy the **Application ID** and **Secret** to `FORGE_GITLAB_CLIENT_ID` and `FORGE_GITLAB_CLIENT_SECRET`.
+
+### Important Notes
+
+*   `FORGE_PUBLIC_URL` must match the base URL used in the provider's configuration. It defaults to `http://localhost:8080`.
+*   If your Forge instance is behind a proxy/TLS, ensure `FORGE_PUBLIC_URL` uses `https://`.
+*   After logging in via SSO, Forge creates a session cookie. The `FORGE_UI_URL` determines where the browser is redirected after a successful handshake (usually your dashboard home).

@@ -21,7 +21,7 @@ import (
 type Executor struct {
 	WorkspaceDir string
 	LogDir       string
-	Cache        *cache.Store
+	Cache        cache.Storer
 	IsLocal      bool // skip checkout steps if true
 	UseCopy      bool // use docker cp instead of bind mounts
 
@@ -31,19 +31,10 @@ type Executor struct {
 	StreamCallback func(stepID string, ts time.Time, level, message string)
 }
 
-// New creates an Executor. cacheDir may be empty to disable caching.
-func New(workspaceDir, logDir, cacheDir string) (*Executor, error) {
+// New creates an Executor. cas may be nil to disable caching.
+func New(workspaceDir, logDir string, cas cache.Storer) (*Executor, error) {
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating log dir: %w", err)
-	}
-
-	var cas *cache.Store
-	if cacheDir != "" {
-		var err error
-		cas, err = cache.New(cacheDir)
-		if err != nil {
-			return nil, fmt.Errorf("creating cache store: %w", err)
-		}
 	}
 
 	return &Executor{

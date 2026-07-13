@@ -11,9 +11,11 @@
     import PoliciesView from './lib/components/PoliciesView.svelte';
     import TokensView from './lib/components/TokensView.svelte';
     import AgentsView from './lib/components/AgentsView.svelte';
+    import PipelineEditor from './lib/components/PipelineEditor.svelte';
+    import LogSearchView from './lib/components/LogSearchView.svelte';
 
-    import { api, authUrl, wsUrl, type Job, type RunDetail } from './lib/api';
-    import { activeRun, selectedJob, connStatus, authRequired, runs, currentView } from './lib/stores';
+    import { api, authUrl, wsUrl, getToken, type Job, type RunDetail } from './lib/api';
+    import { activeRun, selectedJob, connStatus, authRequired, runs, currentView, currentUser, navigateToRunID } from './lib/stores';
 
     let ws: WebSocket | null = null;
     let debugSession: { sessionID: string | null, expiresInS: number, status: 'starting' | 'ready' | 'closed' } = {
@@ -106,8 +108,32 @@
         debugSession = { sessionID: null, status: 'starting', expiresInS: 0 };
     }
 
+    // Handle navigation requests from other components
+    navigateToRunID.subscribe(id => {
+        if (id) {
+            selectRun(id);
+            currentView.set('runs');
+            navigateToRunID.set(null);
+        }
+    });
+
     let initialRunSelected = false;
     onMount(() => {
+        // Initial auth check
+        (async () => {
+            try {
+                const status = await api.authStatus();
+                if (status.authenticated) {
+                    currentUser.set(status.user || null);
+                } else if (!getToken()) {
+                    authRequired.set(true);
+                }
+            } catch (e) {
+                console.error('Auth check failed:', e);
+                if (!getToken()) authRequired.set(true);
+            }
+        })();
+
         // Handle URL-based run selection
         const path = window.location.pathname;
         const runMatch = path.match(/^\/runs\/([a-f0-9-]+)\/?$/);
@@ -161,6 +187,10 @@
                     <TokensView />
                 {:else if $currentView === 'agents'}
                     <AgentsView />
+                {:else if $currentView === 'editor'}
+                    <PipelineEditor />
+                {:else if $currentView === 'search'}
+                    <LogSearchView />
                 {/if}
             </div>
         {/if}
