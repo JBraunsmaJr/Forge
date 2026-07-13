@@ -133,8 +133,21 @@ To enable caching, you must explicitly declare the files that affect the step us
 
 The "task hash" for a step is computed from:
 - The container image name
-- The command and environment variables
+- The command and environment variables (see below)
 - The SHA-256 hash of all files matched by the `inputs` globs
+
+#### Determinism and Environment Variables
+
+To ensure cache hits across different trigger events (e.g., a webhook push vs. a manual trigger), Forge excludes several non-deterministic environment variables from the task hash computation.
+
+**Excluded variables:**
+- `FORGE_EVENT`: The event type (e.g., `push`, `pull_request`, or empty for manual).
+- `FORGE_PR_NUMBER`: The pull request number.
+- `FORGE_API_TOKEN`: The authentication token used by the agent.
+- `FORGE_SCHEDULER_URL`: The URL of the scheduler.
+- `FORGE_RUN_ID` / `FORGE_JOB_ID` / `FORGE_RUN_NAME`: Unique identifiers for the current execution.
+
+All other environment variables, including `FORGE_COMMIT_SHA`, `FORGE_BRANCH`, and `FORGE_COMMIT_TAG`, are included in the hash. If your step depends on one of these variables changing, the cache will correctly miss.
 
 If `inputs` is not defined, caching is disabled for that step, and it will always re-run.
 

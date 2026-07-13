@@ -217,6 +217,9 @@ func ComputeTaskHash(step *pipeline.Step, workspaceDir string) (string, error) {
 	}
 	sort.Strings(envKeys)
 	for _, k := range envKeys {
+		if isIgnoredEnvVar(k) {
+			continue
+		}
 		fmt.Fprintf(h, "env:%s=%s\n", k, step.Env[k])
 	}
 
@@ -226,6 +229,24 @@ func ComputeTaskHash(step *pipeline.Step, workspaceDir string) (string, error) {
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// isIgnoredEnvVar returns true if the environment variable should be excluded
+// from the task hash computation. These are typically non-deterministic
+// variables that describe the execution context (e.g. run ID, event type)
+// rather than the build content.
+func isIgnoredEnvVar(key string) bool {
+	switch key {
+	case "FORGE_EVENT",
+		"FORGE_PR_NUMBER",
+		"FORGE_API_TOKEN",
+		"FORGE_SCHEDULER_URL",
+		"FORGE_RUN_ID",
+		"FORGE_JOB_ID",
+		"FORGE_RUN_NAME":
+		return true
+	}
+	return false
 }
 
 // hashInputFiles resolves glob patterns relative to workspaceDir,
