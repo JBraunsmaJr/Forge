@@ -39,6 +39,7 @@ import (
 type Entry struct {
 	TaskHash  string        `json:"task_hash"`
 	StepID    string        `json:"step_id"`
+	RunID     string        `json:"run_id"`
 	ExitCode  int           `json:"exit_code"`
 	Duration  time.Duration `json:"duration_ns"`
 	CreatedAt time.Time     `json:"created_at"`
@@ -47,6 +48,9 @@ type Entry struct {
 	// so you can open the JSON file and understand what was cached.
 	Image   string   `json:"image"`
 	Command []string `json:"command"`
+
+	// ArtifactNames is the list of logical artifact names uploaded by this step.
+	ArtifactNames []string `json:"artifact_names,omitempty"`
 }
 
 // Storer is the interface for content-addressed cache stores.
