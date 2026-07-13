@@ -154,9 +154,15 @@ For Forge to talk to GitHub or GitLab, you must provide it with a Personal Acces
 
 ### 2. Add Token to Project
 
-You can add a token when creating a project or update an existing one using the Forge CLI:
+You can add or update the SCM token for a project via the Web UI or CLI:
 
-**Adding a new project with a token:**
+**Web UI:**
+1. Navigate to the **Projects** page.
+2. Click the **Settings** (gear icon) on your project card.
+3. Enter your PAT in the **SCM Token** field and click **Save Changes**.
+
+**CLI:**
+Adding a new project with a token:
 ```bash
 forge project add my-project https://github.com/user/repo.git --token YOUR_SCM_TOKEN
 ```

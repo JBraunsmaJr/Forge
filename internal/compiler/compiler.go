@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -339,6 +340,7 @@ func expandMatrixStep(js jsonStep, baseIndex int) ([]*pipeline.Step, error) {
 	for k := range js.Matrix {
 		keys = append(keys, k)
 	}
+	slices.Sort(keys)
 
 	combinations := []map[string]string{{}}
 	for _, key := range keys {

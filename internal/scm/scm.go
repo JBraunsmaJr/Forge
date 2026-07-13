@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -189,28 +191,42 @@ func createGitLabRelease(repoURL, token, tag, name, body string) (string, string
 }
 
 // UploadAsset uploads a file to an existing release.
-func UploadAsset(provider, repoURL, token, uploadURL, releaseID, filename string, size int64, content io.Reader) error {
+func UploadAsset(provider, repoURL, token, uploadURL, releaseID, filename, contentType string, size int64, content io.Reader) error {
 	switch provider {
 	case "github":
-		return uploadGitHubAsset(token, uploadURL, filename, size, content)
+		return uploadGitHubAsset(token, uploadURL, filename, contentType, size, content)
 	case "gitlab":
-		return uploadGitLabAsset(repoURL, token, releaseID, filename, size, content)
+		return uploadGitLabAsset(repoURL, token, releaseID, filename, contentType, size, content)
 	default:
 		return fmt.Errorf("unsupported provider: %s", provider)
 	}
 }
 
-func uploadGitHubAsset(token, uploadURL, filename string, size int64, content io.Reader) error {
-	apiURL := fmt.Sprintf("%s?name=%s", uploadURL, filename)
-	req, err := http.NewRequest("POST", apiURL, content)
+func uploadGitHubAsset(token, uploadURL, filename, contentType string, size int64, content io.Reader) error {
+	apiURL := fmt.Sprintf("%s?name=%s", uploadURL, url.QueryEscape(filename))
+
+	var body io.Reader = content
+	if size == 0 {
+		body = http.NoBody
+	}
+
+	req, err := http.NewRequest("POST", apiURL, body)
 	if err != nil {
 		return err
 	}
 
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
 	req.ContentLength = size
-	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Content-Length", strconv.FormatInt(size, 10))
 	req.Header.Set("User-Agent", "Forge-CI")
 	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Ensure we don't use chunked encoding
+	req.TransferEncoding = []string{"identity"}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
@@ -227,7 +243,7 @@ func uploadGitHubAsset(token, uploadURL, filename string, size int64, content io
 	return nil
 }
 
-func uploadGitLabAsset(repoURL, token, tag, filename string, size int64, content io.Reader) error {
+func uploadGitLabAsset(repoURL, token, tag, filename, contentType string, size int64, content io.Reader) error {
 	repoPath := getRepoPath(repoURL)
 	projectID := strings.ReplaceAll(repoPath, "/", "%2F")
 	baseURL := "https://gitlab.com"
@@ -242,11 +258,7 @@ func uploadGitLabAsset(repoURL, token, tag, filename string, size int64, content
 	_ = fmt.Sprintf("%s/api/v4/projects/%s/uploads", baseURL, projectID)
 
 	// GitLab expects multipart/form-data for uploads
-	// But let's see if we can simplify.
-	// Actually, GitLab uploads are complex. We need a multipart writer.
-
-	// For now, let's just implement GitHub correctly as it's the priority.
-	// I will mark GitLab as TODO or try to implement it properly.
+	// TODO: Gitlab implementation
 
 	return fmt.Errorf("GitLab asset upload not yet implemented")
 }

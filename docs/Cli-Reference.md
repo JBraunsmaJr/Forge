@@ -46,6 +46,12 @@ forge submit <pipeline-file> [--org <org-id>]
 |--------------|-----------------------------------------------------|
 | `--org <id>` | Org ID for policy injection. Overrides `FORGE_ORG`. |
 
+**Git Metadata Detection:**
+When running `forge submit` from a Git repository, Forge automatically detects the current branch, tag (if any), and commit SHA. This metadata is sent to the scheduler and used for:
+- Evaluating `tag()` conditions in pipelines.
+- Injecting `FORGE_REF`, `FORGE_COMMIT_SHA`, and `FORGE_COMMIT_TAG` environment variables into jobs.
+- Displaying commit information in the Web UI.
+
 Outputs a run ID. Use `forge status <run-id>` to poll completion.
 
 ### `forge validate`

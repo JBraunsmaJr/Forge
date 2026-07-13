@@ -359,7 +359,8 @@ func (s *Store) ActiveJobsCount(agentID string) (int, error) {
 func (s *Store) ReclaimStaleJobs() int {
 	res, err := s.db.Exec(`
 		UPDATE jobs
-		SET    status = 'queued', lease_id = '', agent_id = ''
+		SET    status = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
+		       lease_id = '', agent_id = ''
 		WHERE  status       = 'running'
 		AND    heartbeat_at < NOW() - INTERVAL '30 seconds'`)
 	if err != nil {
@@ -557,11 +558,12 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 		for _, depID := range job.deps {
 			dep, ok := allJobs[depID]
 			if !ok {
+				fmt.Printf("[store] warning: dependency %q not found for job %q\n", depID, job.stepID)
 				allFinished = false
 				break
 			}
 
-			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "approval" {
+			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "approval" || dep.status == "release" {
 				allFinished = false
 				break
 			}
@@ -775,7 +777,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 			SELECT r.id, r.name, r.created_at,
 			       COUNT(j.id) AS job_count,
 			       CASE 
-			           WHEN bool_or(j.status IN ('running', 'queued')) THEN 'running'
+			           WHEN bool_or(j.status IN ('running', 'queued', 'release')) THEN 'running'
 			           WHEN bool_or(j.status = 'approval') THEN 'approval'
 			           WHEN bool_or(j.status = 'pending') THEN 'running'
 			           WHEN bool_or(j.status IN ('failed', 'timed_out')) THEN 'failed'
@@ -951,6 +953,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 	hasRunning := false
 	hasQueued := false
 	hasApproval := false
+	hasRelease := false
 	hasPending := false
 	hasFailed := false
 	hasCanceled := false
@@ -963,6 +966,8 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 			hasQueued = true
 		case api.JobStatusApproval:
 			hasApproval = true
+		case api.JobStatusRelease:
+			hasRelease = true
 		case api.JobStatusPending:
 			hasPending = true
 		case api.JobStatusFailed, api.JobStatusTimedOut:
@@ -972,7 +977,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 		}
 	}
 
-	if hasRunning || hasQueued {
+	if hasRunning || hasQueued || hasRelease {
 		return api.JobStatusRunning
 	}
 	if hasApproval {

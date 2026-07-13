@@ -81,6 +81,29 @@ One pipeline can trigger another, pass artifacts into it, and wait for results. 
 
 When a job fails, open a live terminal session directly into the container in the exact failing environment. No guessing from logs — just `cd` into the workspace and investigate.
 
+### Manual Approvals & Gates
+
+A step with `type: approval` will pause the pipeline and wait for a user to click "Approve" in the Web UI before downstream dependencies are unlocked. Perfect for production deployment gates.
+
+### Release Artifacts to GitHub/GitLab
+
+Push binaries and assets directly to your SCM provider's release pages. Forge handles the authentication, asset upload, and release creation automatically.
+
+```yaml
+- id: github-release
+  type: release
+  depends_on: [build-binaries]
+  condition: tag()
+  release:
+    name: "Release ${{ env.FORGE_COMMIT_TAG }}"
+    tag: "${{ env.FORGE_COMMIT_TAG }}"
+    artifacts: [forge-*]
+```
+
+### Runner Health Dashboard
+
+Monitor your self-hosted infrastructure in real time. See agent status, job concurrency, and Docker metrics from a centralized view.
+
 ### Policy injection for security at scale
 
 Define security policies (Trivy scans, govulncheck, etc.) at the org level. They inject automatically into every pipeline without pipeline authors knowing. Change a policy in one place, it applies everywhere.
@@ -277,39 +300,40 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 
 ## Documentation
 
-| Guide                                            | Description                                                         |
-|--------------------------------------------------|---------------------------------------------------------------------|
-| [Getting Started](docs/getting-started.md)       | Full setup for local, single-machine, and team deployments          |
-| [Pipeline Reference](docs/pipeline-reference.md) | Every pipeline field documented with examples                       |
-| [Examples Guide](docs/examples.md)               | Dynamic matrices, monorepos, pipeline chaining, progressive deploys |
-| [Secrets Management](docs/secrets.md)            | Vault integration with project/org/global scoping                   |
-| [Artifact Storage](docs/configuration.md#artifact-storage)    | Local filesystem and S3-compatible backends                         |
-| [Policy Engine](docs/policies.md)                | Org-wide security injection                                         |
-| [Debug Sessions](docs/debugging.md)              | Live terminal in failing job containers                             |
-| [CLI Reference](docs/cli-reference.md)           | All commands and flags                                              |
-| [Configuration](docs/configuration.md)           | Environment variables reference                                     |
-| [HTTPS / Proxy](docs/HTTPS.md)                  | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
-| [Architecture](docs/architecture.md)             | How Forge works under the hood                                      |
+| Guide                                                      | Description                                                         |
+|------------------------------------------------------------|---------------------------------------------------------------------|
+| [Getting Started](docs/getting-started.md)                 | Full setup for local, single-machine, and team deployments          |
+| [Pipeline Reference](docs/pipeline-reference.md)           | Every pipeline field documented with examples                       |
+| [Examples Guide](docs/examples.md)                         | Dynamic matrices, monorepos, pipeline chaining, progressive deploys |
+| [Secrets Management](docs/secrets.md)                      | Vault integration with project/org/global scoping                   |
+| [Artifact Storage](docs/configuration.md#artifact-storage) | Local filesystem and S3-compatible backends                         |
+| [Policy Engine](docs/policies.md)                          | Org-wide security injection                                         |
+| [Debug Sessions](docs/debugging.md)                        | Live terminal in failing job containers                             |
+| [CLI Reference](docs/cli-reference.md)                     | All commands and flags                                              |
+| [Configuration](docs/configuration.md)                     | Environment variables reference                                     |
+| [HTTPS / Proxy](docs/HTTPS.md)                             | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
+| [Architecture](docs/architecture.md)                       | How Forge works under the hood                                      |
 
 ---
 
 ## Comparison
 
-| Feature                             | GitHub Actions                  | GitLab CI               | Forge                          |
-|-------------------------------------|---------------------------------|-------------------------|--------------------------------|
-| Pipeline logic in source files      | ❌ YAML strings                  | ❌ YAML strings          | ✅ `script:` field              |
-| Runtime job generation              | ❌ Static matrix only            | ❌ Static matrix only    | ✅ Generator steps              |
-| Matrix builds (built-in)            | ✅                               | ✅                       | ✅                              |
-| Pipeline templates (`uses:`)        | ⚠️ Reusable workflows (limited) | ✅ `extends:` / `include:` | ✅ Reusable steps              |
-| Pipeline chaining                   | ⚠️ Reusable workflows (limited) | ⚠️ `trigger:` (limited) | ✅ First-class `type: pipeline` |
-| Artifact handoff between pipelines  | ❌                               | ❌                       | ✅                              |
-| Manual Approvals                    | ✅ Environments                  | ✅                       | ✅ `type: approval`             |
-| Scheduled Pipelines                 | ✅ `on: schedule`                | ✅                       | ✅ Project-level Cron           |
-| Debug failing jobs                  | ❌ Re-run and add echo           | ❌                       | ✅ Live terminal                |
-| Policy injection                    | ❌                               | ❌                       | ✅ Org-level policies           |
-| Scoped secrets (project/org/global) | ❌                               | ⚠️ Group variables      | ✅                              |
-| Self-hosted                         | ✅ Runners                       | ✅ Runners               | ✅ Full stack                   |
-| Open source                         | ❌                               | ✅                       | ✅ AGPL-3.0                     |
+| Feature                             | GitHub Actions                  | GitLab CI                 | Forge                          |
+|-------------------------------------|---------------------------------|---------------------------|--------------------------------|
+| Pipeline logic in source files      | ❌ YAML strings                  | ❌ YAML strings            | ✅ `script:` field              |
+| Runtime job generation              | ❌ Static matrix only            | ❌ Static matrix only      | ✅ Generator steps              |
+| Matrix builds (built-in)            | ✅                               | ✅                         | ✅                              |
+| Pipeline templates (`uses:`)        | ⚠️ Reusable workflows (limited) | ✅ `extends:` / `include:` | ✅ Reusable steps               |
+| Pipeline chaining                   | ⚠️ Reusable workflows (limited) | ⚠️ `trigger:` (limited)   | ✅ First-class `type: pipeline` |
+| Artifact handoff between pipelines  | ❌                               | ❌                         | ✅                              |
+| Manual Approvals                    | ✅ Environments                  | ✅                         | ✅ `type: approval`             |
+| Scheduled Pipelines                 | ✅ `on: schedule`                | ✅                         | ✅ Project-level Cron           |
+| Release Artifacts to SCM            | ❌ Action required               | ❌ Action required         | ✅ `type: release`              |
+| Debug failing jobs                  | ❌ Re-run and add echo           | ❌                         | ✅ Live terminal                |
+| Policy injection                    | ❌                               | ❌                         | ✅ Org-level policies           |
+| Scoped secrets (project/org/global) | ❌                               | ⚠️ Group variables        | ✅                              |
+| Self-hosted                         | ✅ Runners                       | ✅ Runners                 | ✅ Full stack                   |
+| Open source                         | ❌                               | ✅                         | ✅ AGPL-3.0                     |
 
 ---
 

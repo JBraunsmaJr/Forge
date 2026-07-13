@@ -88,7 +88,10 @@ steps:
     release:
       name: "Release ${{ env.FORGE_COMMIT_TAG }}"
       tag: "${{ env.FORGE_COMMIT_TAG }}"
-      body: "Forge Release ${{ env.FORGE_COMMIT_TAG }}\n\nAutomated release of Forge binaries."
+      body: |
+        Forge Release ${{ env.FORGE_COMMIT_TAG }}
+        
+        Automated release of Forge binaries.
       artifacts:
         - forge-*
       

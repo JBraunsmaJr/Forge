@@ -45,7 +45,8 @@
         const labels: Record<string, string> = {
             passed: 'passed', failed: 'failed', running: 'running',
             queued: 'queued', pending: 'pending', canceled: 'canceled',
-            timed_out: 'timed out', approval: 'waiting for approval'
+            timed_out: 'timed out', approval: 'waiting for approval',
+            release: 'releasing'
         };
         return labels[status] || status;
     }
@@ -281,7 +282,7 @@
         text-transform: uppercase;
         letter-spacing: .5px;
     }
-    .badge-running { background: #1a2f4a; color: var(--blue); }
+    .badge-running, .badge-release { background: #1a2f4a; color: var(--blue); }
     .badge-passed  { background: #0d2e20; color: var(--green); }
     .badge-failed  { background: #2e1414; color: var(--red); }
     .badge-approval { background: #3b2b10; color: var(--amber); }

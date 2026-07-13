@@ -113,6 +113,65 @@ func TestDependencyUnblocking(t *testing.T) {
 	}
 }
 
+func TestMatrixDependency(t *testing.T) {
+	s := openTestDB(t)
+
+	// Step 'matrix-1' and 'matrix-2' are instances of the same matrix step
+	// Step 'downstream' depends on both.
+	_, err := s.SubmitRun("pipe", "/ws", "", "", "", "", "", []api.StepDef{
+		makeStep("matrix-1"),
+		makeStep("matrix-2"),
+		{
+			ID:        "downstream",
+			DependsOn: []string{"matrix-1", "matrix-2"},
+			Image:     "alpine",
+			Type:      "release", // to match user's case
+		},
+	}, nil, "")
+	if err != nil {
+		t.Fatalf("SubmitRun: %v", err)
+	}
+
+	spec1, ok := s.LeaseNext("agent-1")
+	if !ok || spec1.StepID != "matrix-1" {
+		t.Fatalf("expected 'matrix-1', got %v", spec1)
+	}
+	spec2, ok := s.LeaseNext("agent-2")
+	if !ok || spec2.StepID != "matrix-2" {
+		t.Fatalf("expected 'matrix-2', got %v", spec2)
+	}
+
+	// Downstream should NOT be ready yet.
+	spec3, ok := s.LeaseNext("agent-3")
+	if ok {
+		t.Fatalf("expected nothing ready, but got %v", spec3.StepID)
+	}
+
+	// Complete first matrix job.
+	if _, err := s.Complete(spec1.JobID, spec1.LeaseID, 0, 100, nil, nil, false, false); err != nil {
+		t.Fatalf("Complete 1: %v", err)
+	}
+
+	// Downstream should STILL NOT be ready.
+	spec3, ok = s.LeaseNext("agent-3")
+	if ok {
+		t.Fatalf("expected nothing ready after first matrix job, but got %v", spec3.StepID)
+	}
+
+	// Complete second matrix job.
+	if _, err := s.Complete(spec2.JobID, spec2.LeaseID, 0, 100, nil, nil, false, false); err != nil {
+		t.Fatalf("Complete 2: %v", err)
+	}
+
+	// NOW downstream should be ready in 'release' status.
+	// But LeaseNext only leases 'queued' jobs.
+	// We need to check the DB or use LeaseReleaseJob.
+	spec4, ok := s.LeaseReleaseJob()
+	if !ok || spec4.StepID != "downstream" {
+		t.Fatalf("expected 'downstream' to be ready for release, got %v", spec4)
+	}
+}
+
 func TestTransitiveSkipping(t *testing.T) {
 	s := openTestDB(t)
 

@@ -726,7 +726,7 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 			continue
 		}
 
-		err = scm.UploadAsset(provider, proj.RepoURL, scmToken, uploadURL, releaseID, meta.Filename, meta.SizeBytes, content)
+		err = scm.UploadAsset(provider, proj.RepoURL, scmToken, uploadURL, releaseID, meta.Filename, meta.ContentType, meta.SizeBytes, content)
 		if closer, ok := content.(io.Closer); ok {
 			closer.Close()
 		}

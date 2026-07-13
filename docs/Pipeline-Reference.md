@@ -105,9 +105,11 @@ artifacts:
   download:
     - name: app-binary          # logical name from a prior step's upload
       dest: dist/myapp          # destination path in workspace
+    - name: forge-*             # wildcard: downloads all artifacts matching the pattern
+      dest: bin/                # destination directory
 ```
 
-Artifacts are stored in the configured backend (local filesystem or S3-compatible) and shared across agents. A step on agent-1 can upload an artifact; a step on agent-2 can download it.
+Artifacts are stored in the configured backend (local filesystem or S3-compatible) and shared across agents. A step on agent-1 can upload an artifact; a step on agent-2 can download it. Both `upload` and `download` support wildcard matching for managing groups of files.
 
 ---
 
@@ -266,7 +268,7 @@ A pipeline step compiles and submits another pipeline as a child run. The agent 
 
 ### `type: release`
 
-A release step pushes artifacts to an SCM provider (GitHub/GitLab). Unlike standard tasks, release steps run on the scheduler and do not require an agent.
+A release step pushes artifacts to an SCM provider (GitHub/GitLab). Unlike standard tasks, release steps run on the scheduler and do not require an agent. It automatically retrieves artifacts from the run's storage and uploads them as release assets.
 
 ```yaml
 - id: github-release
@@ -278,8 +280,8 @@ A release step pushes artifacts to an SCM provider (GitHub/GitLab). Unlike stand
     tag: "${{ env.FORGE_COMMIT_TAG }}"
     body: "Forge Release ${{ env.FORGE_COMMIT_TAG }}"
     artifacts:
-      - app-linux-amd64
-      - app-windows-amd64
+      - forge-*    # supports wildcards to upload multiple binaries
+      - checksums.txt
 ```
 
 **Release step fields:**
@@ -289,7 +291,7 @@ A release step pushes artifacts to an SCM provider (GitHub/GitLab). Unlike stand
 | `name`      | string   | The title of the release. Supports `${{ env.VAR }}`.                        |
 | `tag`       | string   | The Git tag to associate the release with. Supports `${{ env.VAR }}`.       |
 | `body`      | string   | The description/notes for the release. Supports `${{ env.VAR }}`.           |
-| `artifacts` | string[] | A list of logical artifact names (from previous steps) to attach to the release. |
+| `artifacts` | string[] | A list of artifact names or glob patterns to attach to the release.         |
 
 The `release` block supports interpolation for:
 - `${{ env.FORGE_COMMIT_TAG }}`: The Git tag that triggered the run.
