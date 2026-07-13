@@ -903,6 +903,73 @@ func (s *Store) GetJobLogs(jobID string) ([]api.LogEvent, bool) {
 	return logs, true
 }
 
+func (s *Store) SearchLogs(query string, orgID, projectID, runID, jobID string, limit int) ([]api.LogSearchResult, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	sqlStr := `
+		SELECT l.ts, l.level, l.message, l.job_id, j.step_id, j.run_id, r.name, COALESCE(r.org_id, ''), COALESCE(r.project_id, '')
+		FROM job_logs l
+		JOIN jobs j ON l.job_id = j.id
+		JOIN runs r ON j.run_id = r.id
+		WHERE l.message ILIKE $1
+	`
+	args := []any{"%" + query + "%"}
+	argCount := 1
+
+	if orgID != "" {
+		argCount++
+		sqlStr += fmt.Sprintf(" AND r.org_id = $%d", argCount)
+		args = append(args, orgID)
+	}
+	if projectID != "" {
+		argCount++
+		sqlStr += fmt.Sprintf(" AND r.project_id = $%d", argCount)
+		args = append(args, projectID)
+	}
+	if runID != "" {
+		argCount++
+		sqlStr += fmt.Sprintf(" AND j.run_id = $%d", argCount)
+		args = append(args, runID)
+	}
+	if jobID != "" {
+		argCount++
+		sqlStr += fmt.Sprintf(" AND l.job_id = $%d", argCount)
+		args = append(args, jobID)
+	}
+
+	sqlStr += " ORDER BY l.ts DESC LIMIT " + fmt.Sprint(limit)
+
+	rows, err := s.db.Query(sqlStr, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []api.LogSearchResult
+	for rows.Next() {
+		var res api.LogSearchResult
+		err := rows.Scan(
+			&res.Timestamp, &res.Level, &res.Message,
+			&res.JobID, &res.JobName, &res.RunID, &res.RunName, &res.OrgID, &res.ProjectID,
+		)
+		if err != nil {
+			continue
+		}
+		results = append(results, res)
+	}
+	return results, nil
+}
+
+func (s *Store) PruneLogs(before time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM job_logs WHERE ts < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // RunDetailByJobID finds the run containing a job (used by debug sessions).
 func (s *Store) RunDetailByJobID(jobID string) (*api.RunDetail, bool) {
 	var runID string

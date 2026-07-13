@@ -11,9 +11,9 @@ import (
 
 // TestStoreAndLookup verifies the basic write-then-read round trip.
 func TestStoreAndLookup(t *testing.T) {
-	store, err := New(t.TempDir())
+	store, err := NewLocal(t.TempDir())
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewLocal: %v", err)
 	}
 
 	entry := &Entry{
@@ -44,9 +44,9 @@ func TestStoreAndLookup(t *testing.T) {
 
 // TestLookup_Miss verifies that an unknown hash returns (nil, false).
 func TestLookup_Miss(t *testing.T) {
-	store, err := New(t.TempDir())
+	store, err := NewLocal(t.TempDir())
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewLocal: %v", err)
 	}
 
 	entry, hit := store.Lookup("doesnotexist")
@@ -140,6 +140,56 @@ func TestComputeTaskHash_ChangedCommand(t *testing.T) {
 	}
 }
 
+// TestComputeTaskHash_IgnoredEnvVars verifies that non-deterministic FORGE_
+// variables are excluded from the hash, allowing cache hits across different
+// runs or trigger events.
+func TestComputeTaskHash_IgnoredEnvVars(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.go"), "package main")
+
+	step1 := &pipeline.Step{
+		ID:      "build",
+		Image:   "golang:1.26.5",
+		Command: []string{"go", "build"},
+		Inputs:  []string{"*.go"},
+		Env: map[string]string{
+			"FORGE_EVENT":     "push",
+			"FORGE_API_TOKEN": "token-1",
+			"FORGE_REPO_NAME": "org/repo",
+			"FORGE_REPO_URL":  "https://github.com/org/repo.git",
+			"CUSTOM_VAR":      "val",
+		},
+	}
+
+	step2 := &pipeline.Step{
+		ID:      "build",
+		Image:   "golang:1.26.5",
+		Command: []string{"go", "build"},
+		Inputs:  []string{"*.go"},
+		Env: map[string]string{
+			"FORGE_EVENT":     "manual",
+			"FORGE_API_TOKEN": "token-2",
+			"FORGE_REPO_NAME": "My-Project",
+			"FORGE_REPO_URL":  "https://github.com/org/repo",
+			"CUSTOM_VAR":      "val",
+		},
+	}
+
+	hash1, _ := ComputeTaskHash(step1, dir)
+	hash2, _ := ComputeTaskHash(step2, dir)
+
+	if hash1 != hash2 {
+		t.Errorf("hashes should be identical despite different FORGE_EVENT/FORGE_API_TOKEN\n  %s\n  %s", hash1, hash2)
+	}
+
+	// Verify that DIFFERENT custom vars still produce different hashes
+	step2.Env["CUSTOM_VAR"] = "val-changed"
+	hash3, _ := ComputeTaskHash(step2, dir)
+	if hash1 == hash3 {
+		t.Error("expected different hashes when custom env var changes")
+	}
+}
+
 // TestComputeTaskHash_NoInputs verifies that a step with no inputs
 // declared is never considered a cache hit (always re-runs).
 func TestComputeTaskHash_NoInputs(t *testing.T) {
@@ -169,7 +219,7 @@ func TestComputeTaskHash_NoInputs(t *testing.T) {
 // based on the first 2 chars of their hash (like Git's object store).
 func TestSharding(t *testing.T) {
 	cacheDir := t.TempDir()
-	store, _ := New(cacheDir)
+	store, _ := NewLocal(cacheDir)
 
 	entry := &Entry{
 		TaskHash:  "ab3f9c2d1e",

@@ -21,9 +21,14 @@ import (
 type Executor struct {
 	WorkspaceDir string
 	LogDir       string
-	Cache        *cache.Store
+	Cache        cache.Storer
 	IsLocal      bool // skip checkout steps if true
 	UseCopy      bool // use docker cp instead of bind mounts
+
+	// DisableCacheStore prevents the executor from automatically storing results
+	// in the CAS. The caller (e.g. the agent) may want to handle storage itself
+	// to include extra metadata like artifacts.
+	DisableCacheStore bool
 
 	// StreamCallback is set by the agent to receive log events in real time.
 	// Each event is forwarded to the scheduler as it's produced — not buffered
@@ -31,19 +36,10 @@ type Executor struct {
 	StreamCallback func(stepID string, ts time.Time, level, message string)
 }
 
-// New creates an Executor. cacheDir may be empty to disable caching.
-func New(workspaceDir, logDir, cacheDir string) (*Executor, error) {
+// New creates an Executor. cas may be nil to disable caching.
+func New(workspaceDir, logDir string, cas cache.Storer) (*Executor, error) {
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating log dir: %w", err)
-	}
-
-	var cas *cache.Store
-	if cacheDir != "" {
-		var err error
-		cas, err = cache.New(cacheDir)
-		if err != nil {
-			return nil, fmt.Errorf("creating cache store: %w", err)
-		}
 	}
 
 	return &Executor{
@@ -239,7 +235,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	}
 
 	// Store result in cache (only on pass).
-	if passed && e.Cache != nil && step.CacheKey != "" {
+	if passed && e.Cache != nil && step.CacheKey != "" && !e.DisableCacheStore {
 		entry := &cache.Entry{
 			TaskHash:  step.CacheKey,
 			StepID:    step.ID,
