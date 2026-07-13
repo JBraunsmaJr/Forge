@@ -150,7 +150,7 @@ cat <<EOF
   Service     URL
   ─────────   ───────────────────────────────
   Web UI      http://localhost:8080
-  Vault UI    http://localhost:8200  (token: ${VAULT_TOKEN:-forge-dev-token})
+  Vault UI    http://localhost:8200  (token: ${VAULT_TOKEN})
 
   CLI quick-start (Windows PowerShell):
     \$env:FORGE_API_TOKEN = '${TOKEN}'

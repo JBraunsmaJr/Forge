@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
 // writeTempPipeline writes a pipeline JSON to a temp file and returns its path.
@@ -92,6 +94,71 @@ func TestCompile_Conditions(t *testing.T) {
 	}
 	if p.Steps[1].Condition != "failure()" {
 		t.Errorf("expected Condition 'failure()' for step 1, got %q", p.Steps[1].Condition)
+	}
+}
+
+func TestCompile_MatrixExpansion(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "matrix-pipeline",
+		Steps: []jsonStep{
+			{
+				ID:    "build",
+				Image: "golang:alpine",
+				Matrix: map[string][]string{
+					"os": {"linux", "windows"},
+				},
+				Run: "echo ${{ matrix.os }}",
+			},
+			{
+				ID:        "release",
+				Type:      "release",
+				DependsOn: []string{"build"},
+				Release: jsonRelease{
+					Tag: "v1",
+				},
+			},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	// Should have 2 build jobs + 1 release job = 3 jobs
+	if len(p.Steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(p.Steps))
+	}
+
+	// Release job should depend on BOTH build jobs
+	var releaseStep *pipeline.Step
+	for _, s := range p.Steps {
+		if s.ID == "release" {
+			releaseStep = s
+			break
+		}
+	}
+
+	if releaseStep == nil {
+		t.Fatal("release step not found")
+	}
+
+	if len(releaseStep.DependsOn) != 2 {
+		t.Errorf("expected 2 dependencies, got %d: %v", len(releaseStep.DependsOn), releaseStep.DependsOn)
+	}
+
+	foundLinux := false
+	foundWindows := false
+	for _, d := range releaseStep.DependsOn {
+		if d == "build-linux" {
+			foundLinux = true
+		}
+		if d == "build-windows" {
+			foundWindows = true
+		}
+	}
+	if !foundLinux || !foundWindows {
+		t.Errorf("missing expected dependencies: %v", releaseStep.DependsOn)
 	}
 }
 

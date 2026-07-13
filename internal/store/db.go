@@ -61,12 +61,18 @@ CREATE TABLE IF NOT EXISTS runs (
     applied_policies JSONB       NOT NULL DEFAULT '[]',
     org_id           TEXT        REFERENCES orgs(id) ON DELETE SET NULL,
     project_id       TEXT,
+    ref              TEXT,
     commit_sha       TEXT,
+    scm_provider     TEXT,
+    parent_run_id    TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS ref TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS commit_sha TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS scm_provider TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT;
 
 -- ── Jobs ─────────────────────────────────────────────────────────────────────
 -- References runs — must come after runs.
@@ -89,6 +95,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     always_run       BOOLEAN     NOT NULL DEFAULT FALSE,
     entrypoint       JSONB       NOT NULL DEFAULT '[]',
     pipeline_ref       JSONB,
+    release_config     JSONB,
     artifact_uploads   JSONB   NOT NULL DEFAULT '[]',
     artifact_downloads JSONB   NOT NULL DEFAULT '[]',
     emitted_step_ids JSONB       NOT NULL DEFAULT '[]',
@@ -107,6 +114,7 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS artifact_uploads JSONB NOT NULL DEFAUL
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS artifact_downloads JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS emitted_step_ids JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS policy_source TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS release_config JSONB;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS condition TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS always_run BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS docker_socket BOOLEAN NOT NULL DEFAULT FALSE;
@@ -155,12 +163,18 @@ CREATE TABLE IF NOT EXISTS projects (
     scm_token      TEXT        NOT NULL DEFAULT '',
     -- branch_filter: JSON array of branch names/globs. Empty = all branches.
     branch_filter  JSONB       NOT NULL DEFAULT '[]',
+    cron           TEXT        NOT NULL DEFAULT '',
+    scheduled_pipeline_path TEXT NOT NULL DEFAULT '',
+    last_scheduled_at TIMESTAMPTZ,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS scm_token TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS branch_filter JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS pipeline_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS cron TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS scheduled_pipeline_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS last_scheduled_at TIMESTAMPTZ;
 
 -- ── Step results (flaky test detection) ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS step_results (

@@ -10,6 +10,7 @@ All commands use the `forge` binary. Build it with `go build -o forge ./cmd/forg
 |---------------------|------------------------------------------------------|
 | `FORGE_API_TOKEN`   | Authentication token for scheduler requests.         |
 | `FORGE_ORG`         | Default org ID for commands that accept `--org`.     |
+| `FORGE_SCHEDULER_URL`| Default scheduler URL (e.g. `https://forge.dev`).    |
 | `FORGE_VAULT_ADDR`  | Vault server address (e.g. `http://localhost:8200`). |
 | `FORGE_VAULT_TOKEN` | Vault authentication token.                          |
 
@@ -22,10 +23,16 @@ All commands use the `forge` binary. Build it with `go build -o forge ./cmd/forg
 Run a pipeline locally without a scheduler.
 
 ```bash
-forge run <pipeline-file>
+forge run <pipeline-file> [--watch] [--secret NAME=VAL] [--env-file .env]
 ```
 
 Uses the local Docker daemon. Artifacts stored at `.forge/artifacts/`. No authentication required.
+
+| Flag         | Description                                                      |
+|--------------|------------------------------------------------------------------|
+| `--watch`    | Re-run the pipeline automatically when files in the workspace change. |
+| `--secret`   | Inject a secret value (bypasses Vault).                          |
+| `--env-file` | Load environment variables from a file.                          |
 
 ### `forge submit`
 
@@ -39,14 +46,28 @@ forge submit <pipeline-file> [--org <org-id>]
 |--------------|-----------------------------------------------------|
 | `--org <id>` | Org ID for policy injection. Overrides `FORGE_ORG`. |
 
+**Git Metadata Detection:**
+When running `forge submit` from a Git repository, Forge automatically detects the current branch, tag (if any), and commit SHA. This metadata is sent to the scheduler and used for:
+- Evaluating `tag()` conditions in pipelines.
+- Injecting `FORGE_REF`, `FORGE_COMMIT_SHA`, and `FORGE_COMMIT_TAG` environment variables into jobs.
+- Displaying commit information in the Web UI.
+
 Outputs a run ID. Use `forge status <run-id>` to poll completion.
 
 ### `forge validate`
 
-Validate a pipeline file without running it.
+Validate a pipeline file without running it. Performs deep linting, cycle detection, and image name validation.
 
 ```bash
 forge validate <pipeline-file>
+```
+
+### `forge rerun`
+
+Rerun a previous run, inheriting its metadata and policies.
+
+```bash
+forge rerun <run-id>
 ```
 
 ### `forge status`
@@ -203,6 +224,26 @@ Prints the webhook URL and a one-time webhook secret. Configure these in your SC
 | `--token <token>`   | SCM token for fetching pipeline files from private repos.         |
 | `--pipeline <path>` | Pipeline file path in the repo (default: `.forge/pipeline.json`). |
 
+### `forge project update`
+
+Update an existing project's configuration.
+
+```bash
+forge project update <project-id-or-name> [--name <new-name>] [--repo <new-repo-url>] [--token <new-scm-token>] [--pipeline <new-path>]
+```
+
+### `forge project schedule`
+
+Configure or remove a cron schedule for a project.
+
+```bash
+forge project schedule <project-id-or-name> [--cron "<expression>"] [--pipeline <path>] [--delete]
+```
+
+- `--cron`: Standard 5-field cron syntax (e.g., `"0 2 * * *"`).
+- `--pipeline`: Path to the pipeline file to run on schedule.
+- `--delete`: Remove the schedule for this project.
+
 ### `forge project list`
 
 ```bash
@@ -230,7 +271,6 @@ Default scheduler URL: `http://localhost:8080`
 | `FORGE_API_TOKEN`     | —                | Required. Agent authentication token.                                                                           |
 | `FORGE_VAULT_ADDR`    | —                | Vault address for secret fetching.                                                                              |
 | `FORGE_VAULT_TOKEN`   | —                | Vault token.                                                                                                    |
-| `FORGE_AGENT_WS_ADDR` | `localhost:8082` | Public address for debug terminal WebSocket connections. Set to your machine's LAN IP for multi-machine setups. |
 
 ---
 

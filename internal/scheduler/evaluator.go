@@ -5,8 +5,8 @@ import (
 )
 
 // evaluateCondition handler simple Forge condition expressions.
-// Supported: "success()", "failure()", "always()", or empty (default to success).
-func evaluateCondition(condition string, runPassed bool) bool {
+// Supported: "success()", "failure()", "always()", "tag()" or empty (default to success).
+func evaluateCondition(condition string, runPassed bool, ref string) bool {
 	cond := strings.TrimSpace(strings.ToLower(condition))
 	if cond == "" || cond == "success()" {
 		return runPassed
@@ -16,6 +16,9 @@ func evaluateCondition(condition string, runPassed bool) bool {
 	}
 	if cond == "failure()" {
 		return !runPassed
+	}
+	if cond == "tag()" {
+		return strings.HasPrefix(ref, "refs/tags/")
 	}
 
 	return false

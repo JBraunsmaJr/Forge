@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { connStatus } from '../stores';
+    import { connStatus, currentView, sidebarOpen } from '../stores';
+    import { Menu, X } from '@lucide/svelte';
 
     const statusLabels = {
         idle: 'idle',
@@ -12,7 +13,16 @@
 </script>
 
 <header>
-    <h1>⚒ Forge</h1>
+    {#if $currentView === 'runs'}
+        <button class="menu-btn" on:click={() => sidebarOpen.update(v => !v)}>
+            {#if $sidebarOpen}
+                <X size={20} />
+            {:else}
+                <Menu size={20} />
+            {/if}
+        </button>
+    {/if}
+    <h1>Forge</h1>
     <span id="conn-status">
         <span id="conn-dot" class:off={$connStatus === 'idle' || $connStatus === 'connecting' || $connStatus === 'reconnecting' || $connStatus === 'error'}></span>
         <span id="conn-label">{statusLabels[$connStatus]}</span>
@@ -35,6 +45,30 @@
         font-weight: 700;
         letter-spacing: .5px;
         color: var(--accent);
+    }
+    .menu-btn {
+        display: none;
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 8px;
+        margin-left: -12px;
+        border-radius: 4px;
+    }
+    .menu-btn:hover {
+        background: var(--surface2);
+        color: var(--text);
+    }
+    @media (max-width: 768px) {
+        .menu-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        header {
+            padding: 0 16px;
+        }
     }
     #conn-status {
         margin-left: auto;

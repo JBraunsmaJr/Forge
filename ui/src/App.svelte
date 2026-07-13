@@ -10,6 +10,7 @@
     import ProjectsView from './lib/components/ProjectsView.svelte';
     import PoliciesView from './lib/components/PoliciesView.svelte';
     import TokensView from './lib/components/TokensView.svelte';
+    import AgentsView from './lib/components/AgentsView.svelte';
 
     import { api, authUrl, wsUrl, type Job, type RunDetail } from './lib/api';
     import { activeRun, selectedJob, connStatus, authRequired, runs, currentView } from './lib/stores';
@@ -105,12 +106,26 @@
         debugSession = { sessionID: null, status: 'starting', expiresInS: 0 };
     }
 
+    let initialRunSelected = false;
     onMount(() => {
-        // Initial auto-select
+        // Handle URL-based run selection
+        const path = window.location.pathname;
+        const runMatch = path.match(/^\/runs\/([a-f0-9-]+)\/?$/);
+        if (runMatch) {
+            const runID = runMatch[1];
+            initialRunSelected = true;
+            selectRun(runID);
+            currentView.set('runs');
+        }
+
+        // Initial auto-select (if no run selected via URL)
         const unsubscribe = runs.subscribe(val => {
-            if (val.length > 0 && !$activeRun) {
+            if (val.length > 0 && !$activeRun && !initialRunSelected) {
                 const newest = val.find(r => r.status !== 'passed' && r.status !== 'failed');
                 if (newest) selectRun(newest.run_id);
+            }
+            if (val.length > 0) {
+                initialRunSelected = false; // Allow auto-select for future new runs if activeRun is null
             }
         });
 
@@ -127,11 +142,13 @@
     <Sidebar onSelectRun={selectRun} />
     <main>
         {#if $currentView === 'runs'}
-            <DAG onOpenDebug={openDebug} />
-            <DetailsPanel 
-                debugSession={debugSession}
-                onCloseDebug={closeDebug}
-            />
+            <div id="runs-view">
+                <DAG onOpenDebug={openDebug} />
+                <DetailsPanel 
+                    debugSession={debugSession}
+                    onCloseDebug={closeDebug}
+                />
+            </div>
         {:else}
             <div class="view-content">
                 {#if $currentView === 'projects'}
@@ -142,6 +159,8 @@
                     <PoliciesView />
                 {:else if $currentView === 'tokens'}
                     <TokensView />
+                {:else if $currentView === 'agents'}
+                    <AgentsView />
                 {/if}
             </div>
         {/if}

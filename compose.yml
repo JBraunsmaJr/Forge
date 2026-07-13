@@ -130,13 +130,11 @@ services:
       context: .
       dockerfile: Dockerfile
     image: ghcr.io/jbraunsmajr/forge/forge:latest
-    command: [ "agent", "http://scheduler:8080" ]
+    command: [ "agent", "${FORGE_SCHEDULER_URL:-http://scheduler:8080}" ]
     environment:
       FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
-      FORGE_GRPC_ADDR: scheduler:50051
-      FORGE_AGENT_WS_PORT: "8082"   # internal listen port (not exposed publicly)
       FORGE_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
       # ── Docker image cleanup ───────────────────────────────────────────────
       # Agents prune the host Docker daemon on a schedule to prevent disk fill.

@@ -14,9 +14,11 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -24,12 +26,16 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	"github.com/JBraunsmaJr/forge/internal/pb"
+	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/scm"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/robfig/cron/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 //go:embed all:web/dist/*
@@ -47,9 +53,11 @@ type Server struct {
 	gitCache    *gitcache.Cache
 	secrets     *secrets.Client
 	internalURL string
+	baseURL     string
 	apiToken    string
 	addr        string
 	server      *http.Server
+	agents      *AgentRegistry
 }
 
 // NewServer creates a scheduler server backed by the given Postgres database.
@@ -102,6 +110,10 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 		}
 	}
 
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+
 	return &Server{
 		store:       NewStore(db),
 		orgs:        newOrgStore(db),
@@ -113,8 +125,10 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 		gitCache:    gc,
 		secrets:     sc,
 		internalURL: internalURL,
+		baseURL:     strings.TrimSuffix(baseURL, "/"),
 		apiToken:    os.Getenv("FORGE_API_TOKEN"),
 		addr:        addr,
+		agents:      newAgentRegistry(),
 	}
 }
 
@@ -123,6 +137,68 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+type AgentRegistry struct {
+	mu     sync.RWMutex
+	agents map[string]*api.AgentInfo
+}
+
+func newAgentRegistry() *AgentRegistry {
+	return &AgentRegistry{
+		agents: make(map[string]*api.AgentInfo),
+	}
+}
+
+func (r *AgentRegistry) Register(id string, concurrency int, labels map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.agents[id] = &api.AgentInfo{
+		ID:            id,
+		LastHeartbeat: time.Now(),
+		Concurrency:   concurrency,
+		Labels:        labels,
+		Connected:     true,
+	}
+}
+
+func (r *AgentRegistry) Heartbeat(id string, status *pb.AgentStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.agents[id]
+	if !ok {
+		return
+	}
+	a.LastHeartbeat = time.Now()
+	a.Connected = true
+	if status != nil {
+		a.ActiveJobsCount = int(status.ActiveJobsCount)
+		a.DockerImages = int(status.DockerImagesCount)
+		a.Version = status.Version
+	}
+}
+
+func (r *AgentRegistry) Disconnect(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.agents[id]; ok {
+		a.Connected = false
+	}
+}
+
+func (r *AgentRegistry) List() []api.AgentInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var list []api.AgentInfo
+	for _, a := range r.agents {
+		// Only show agents seen in the last 5 minutes as potentially connected
+		// (though Disconnect should handle clean exits).
+		if time.Since(a.LastHeartbeat) > 5*time.Minute {
+			a.Connected = false
+		}
+		list = append(list, *a)
+	}
+	return list
 }
 
 // Start registers all routes and begins serving.
@@ -134,6 +210,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.tokens.bootstrapIfEmpty()
 
 	mux := http.NewServeMux()
+
+	go s.cronMonitor(ctx)
 
 	// Web UI - public (must load before the user can authenticate).
 	mux.HandleFunc("GET /", s.handleIndex)
@@ -147,6 +225,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Project management
 	mux.HandleFunc("POST /api/v1/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/v1/projects", s.handleListProjects)
+	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
 
@@ -183,14 +262,19 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/runs/{id}/rerun-failed", s.handleRerunFailed)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/rerun", s.handleRerunJob)
 	mux.HandleFunc("POST /api/v1/runs/prune", s.handlePruneRuns)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
 
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
 	mux.HandleFunc("GET /api/v1/runs/{id}/detail", s.handleRunDetail)
+	mux.HandleFunc("GET /api/v1/runs/{id}/comparison", s.handleRunComparison)
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEventsWS)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.handleJobLogs)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
+	mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
+
+	go s.releaseMonitor(ctx)
 
 	// Start gRPC server for internal communication (agents)
 	grpcAddr := getenv("FORGE_GRPC_ADDR", ":50051")
@@ -198,7 +282,18 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		fmt.Printf("[scheduler] failed to listen for gRPC: %v\n", err)
 	} else {
-		gsrv := grpc.NewServer()
+		var kasp = keepalive.ServerParameters{
+			Time:    10 * time.Second, // Ping the client if it is idle for 10s
+			Timeout: 5 * time.Second,  // Wait 5s for the ping ack
+		}
+		var kapv = keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second, // Minimum time between client pings
+			PermitWithoutStream: true,            // Allow pings even when there are no active streams
+		}
+		gsrv := grpc.NewServer(
+			grpc.KeepaliveParams(kasp),
+			grpc.KeepaliveEnforcementPolicy(kapv),
+		)
 		pb.RegisterAgentServiceServer(gsrv, &grpcServer{scheduler: s})
 		go func() {
 			fmt.Printf("[scheduler] gRPC server listening at %v\n", lis.Addr())
@@ -262,7 +357,6 @@ func (s *Server) Start(ctx context.Context) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		fmt.Printf("[scheduler] listening on %s\n", s.addr)
 		fmt.Printf("[scheduler] web UI → http://localhost%s\n", s.addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
@@ -313,6 +407,20 @@ func (s *Server) startMetricsWorker(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	if err := s.store.ApproveJob(jobID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	// Publish update to UI
+	runID := s.store.GetJobRunID(jobID)
+	if runID != "" {
+		s.publishRunDetail(runID)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +515,275 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, target *
 	<-errc
 }
 
+func (s *Server) cronMonitor(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	p := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// List all projects with crons
+			projects := s.projects.ListProjects("")
+			now := time.Now()
+
+			for _, proj := range projects {
+				if proj.Cron == "" {
+					continue
+				}
+
+				sched, err := p.Parse(proj.Cron)
+				if err != nil {
+					fmt.Printf("[cron] invalid cron for project %s: %v\n", proj.Name, err)
+					continue
+				}
+
+				// Check if it's time to run
+				var lastRun time.Time
+				s.store.db.QueryRow(`SELECT last_scheduled_at FROM projects WHERE id=$1`, proj.ID).Scan(&lastRun)
+
+				next := sched.Next(lastRun)
+				if now.After(next) {
+					fmt.Printf("[cron] triggering scheduled run for %s\n", proj.Name)
+
+					// Update last_scheduled_at first to avoid double triggers if SubmitRun is slow
+					s.store.db.Exec(`UPDATE projects SET last_scheduled_at=$1 WHERE id=$2`, now, proj.ID)
+
+					go func(p api.ProjectInfo) {
+						pipelinePath := p.ScheduledPath
+						if pipelinePath == "" {
+							pipelinePath = p.PipelinePath
+						}
+						if pipelinePath == "" {
+							pipelinePath = ".forge/pipeline.yml"
+						}
+
+						// We need a dummy CommitSHA or similar if we want to trigger without a specific commit
+						// For cron, we usually want to trigger on the default branch
+						s.triggerProject(p.ID, "", "")
+					}(proj)
+				}
+			}
+		}
+	}
+}
+
+func (s *Server) releaseMonitor(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for {
+				job, ok := s.store.LeaseReleaseJob()
+				if !ok {
+					break
+				}
+				fmt.Printf("[scheduler] processing release job %s for run %s\n", job.JobID[:8], job.RunID[:8])
+				go s.executeRelease(ctx, job)
+			}
+		}
+	}
+}
+
+func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[scheduler] PANIC in executeRelease for job %s: %v\n", job.JobID, r)
+			s.logError(job, fmt.Sprintf("INTERNAL ERROR: %v", r))
+			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+			s.publishRunDetail(job.RunID)
+		}
+	}()
+
+	if job.Release == nil {
+		s.logError(job, "Release configuration is missing")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+
+	// 1. Get run details
+	run, ok := s.store.RunDetail(job.RunID)
+	if !ok {
+		s.logError(job, "Run details not found")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+
+	// 2. Get project for token
+	proj, _, scmToken, ok := s.projects.GetProject(run.ProjectID)
+	if !ok {
+		s.logError(job, "Project not found")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+
+	if scmToken == "" {
+		s.logError(job, "SCM token not configured for project")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+
+	provider := run.SCMProvider
+	if provider == "" || provider == "generic" {
+		if strings.Contains(proj.RepoURL, "github.com") {
+			provider = "github"
+		} else if strings.Contains(proj.RepoURL, "gitlab.com") {
+			provider = "gitlab"
+		} else {
+			s.logError(job, "Unknown SCM provider — cannot create release")
+			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+			s.publishRunDetail(job.RunID)
+			return
+		}
+	}
+
+	start := time.Now()
+
+	// 3. Create release
+	name := interpolate(job.Release.Name, job.Env)
+	tag := interpolate(job.Release.Tag, job.Env)
+	body := interpolate(job.Release.Body, job.Env)
+
+	s.logInfo(job, fmt.Sprintf("Creating %s release: %s (%s)...", provider, name, tag))
+	releaseID, uploadURL, err := scm.CreateRelease(provider, proj.RepoURL, scmToken, tag, name, body)
+	if err != nil {
+		s.logError(job, fmt.Sprintf("Release creation failed: %v", err))
+		s.store.Complete(job.JobID, job.LeaseID, 1, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+
+	// 4. Collect assets to upload
+	var assetsToUpload []*artifacts.ArtifactMeta
+	allArtifacts, err := s.artifacts.ListArtifacts(ctx, job.RunID)
+	if err != nil {
+		s.logError(job, fmt.Sprintf("Failed to list artifacts for run: %v", err))
+	}
+
+	// Diagnostic log of all available artifacts
+	var allNames []string
+	for _, a := range allArtifacts {
+		allNames = append(allNames, a.Name)
+	}
+	s.logInfo(job, fmt.Sprintf("Total artifacts found for run %s: %d (%v)", job.RunID[:8], len(allArtifacts), allNames))
+
+	seen := make(map[string]bool)
+	for _, rawArtName := range job.Release.Artifacts {
+		artPattern := interpolate(rawArtName, job.Env)
+
+		if strings.ContainsAny(artPattern, "*?[]") {
+			matched := false
+			for i := range allArtifacts {
+				art := &allArtifacts[i]
+				if ok, _ := path.Match(artPattern, art.Name); ok {
+					if !seen[art.ID] {
+						assetsToUpload = append(assetsToUpload, art)
+						seen[art.ID] = true
+						s.logInfo(job, fmt.Sprintf("Matched wildcard %q → %s", artPattern, art.Name))
+					}
+					matched = true
+				}
+			}
+			if !matched {
+				s.logError(job, fmt.Sprintf("No artifacts matched pattern %q", artPattern))
+			}
+		} else {
+			// Exact match
+			meta, err := s.artifacts.GetArtifact(ctx, job.RunID, artPattern)
+			if err != nil {
+				s.logError(job, fmt.Sprintf("Artifact %q not found in run %s", artPattern, job.RunID))
+				s.logInfo(job, fmt.Sprintf("Available artifacts in run %s: %v", job.RunID, allNames))
+				continue
+			}
+			if !seen[meta.ID] {
+				assetsToUpload = append(assetsToUpload, meta)
+				seen[meta.ID] = true
+				s.logInfo(job, fmt.Sprintf("Matched exact %q", meta.Name))
+			}
+		}
+	}
+
+	// 5. Upload assets
+	failed := false
+	for _, meta := range assetsToUpload {
+		s.logInfo(job, fmt.Sprintf("Uploading artifact %q (size: %d bytes)...", meta.Name, meta.SizeBytes))
+
+		content, _, err := s.artifacts.ServeDownload(ctx, meta.ID)
+		if err != nil {
+			s.logError(job, fmt.Sprintf("Failed to download artifact %q: %v", meta.Name, err))
+			failed = true
+			continue
+		}
+
+		err = scm.UploadAsset(provider, proj.RepoURL, scmToken, uploadURL, releaseID, meta.Filename, meta.ContentType, meta.SizeBytes, content)
+		if closer, ok := content.(io.Closer); ok {
+			closer.Close()
+		}
+
+		if err != nil {
+			s.logError(job, fmt.Sprintf("Failed to upload %s: %v", meta.Filename, err))
+			failed = true
+		} else {
+			s.logInfo(job, fmt.Sprintf("Uploaded %s", meta.Filename))
+		}
+	}
+
+	exitCode := 0
+	if failed {
+		exitCode = 1
+	}
+	s.store.Complete(job.JobID, job.LeaseID, exitCode, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+	s.publishRunDetail(job.RunID)
+}
+
+func (s *Server) logInfo(job *api.JobSpec, msg string) {
+	err := s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{
+		Timestamp: time.Now(),
+		Level:     "info",
+		Message:   msg,
+	}})
+	if err != nil {
+		fmt.Printf("[scheduler] log error for job %s: %v (msg: %s)\n", job.JobID[:8], err, msg)
+	}
+}
+
+func (s *Server) logError(job *api.JobSpec, msg string) {
+	err := s.store.AppendJobLogs(job.JobID, job.LeaseID, []api.LogEvent{{
+		Timestamp: time.Now(),
+		Level:     "error",
+		Message:   msg,
+	}})
+	if err != nil {
+		fmt.Printf("[scheduler] log error for job %s: %v (msg: %s)\n", job.JobID[:8], err, msg)
+	}
+}
+
+func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.agents.List())
+}
+
+func validateSteps(steps []api.StepDef) error {
+	pSteps := make([]*pipeline.Step, len(steps))
+	for i, s := range steps {
+		pSteps[i] = &pipeline.Step{
+			ID:        s.ID,
+			DependsOn: s.DependsOn,
+		}
+	}
+	return pipeline.ValidateSteps(pSteps)
+}
+
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	opts := ListRunsOptions{
 		Status: r.URL.Query().Get("status"),
@@ -419,6 +796,16 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(o, "%d", &opts.Offset)
 	}
 	writeJSON(w, http.StatusOK, s.store.ListRuns(opts))
+}
+
+func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	comparison, err := s.store.GetRunComparison(runID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, comparison)
 }
 
 func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
@@ -677,7 +1064,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.CommitSHA, steps, appliedPolicies)
+	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", steps, appliedPolicies, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -744,7 +1131,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	runID, err := s.store.Complete(r.PathValue("id"), req.LeaseID, req.ExitCode, req.Duration, req.LogEvents, req.EmittedSteps, req.Skipped)
+	runID, err := s.store.Complete(r.PathValue("id"), req.LeaseID, req.ExitCode, req.Duration, req.LogEvents, req.EmittedSteps, req.Skipped, req.TimedOut)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -774,6 +1161,48 @@ func (s *Server) publishRunDetail(runID string) {
 	if detail, ok := s.store.RunDetail(runID); ok {
 		data, _ := json.Marshal(detail)
 		s.broker.Publish(runID, string(data))
+
+		// If the run has reached a terminal state, report to SCM.
+		if detail.SCMProvider != "" && detail.SCMProvider != "generic" {
+			if detail.Status == "passed" || detail.Status == "failed" || detail.Status == "canceled" {
+				go s.reportSCMStatus(detail)
+			}
+		}
+	}
+}
+
+func (s *Server) reportSCMStatus(detail *api.RunDetail) {
+	proj, _, scmToken, ok := s.projects.GetProject(detail.ProjectID)
+	if !ok {
+		fmt.Printf("[scm] project %s not found for status report\n", detail.ProjectID)
+		return
+	}
+
+	if scmToken == "" {
+		fmt.Printf("[scm] no SCM token configured for project %s (%s)\n", proj.Name, proj.ID)
+		return
+	}
+
+	state := "pending"
+	description := "Forge CI — in progress"
+
+	switch detail.Status {
+	case "passed":
+		state = "success"
+		description = "Forge CI — all steps passed"
+	case "failed":
+		state = "failure"
+		description = "Forge CI — some steps failed"
+	case "canceled":
+		state = "error"
+		description = "Forge CI — run canceled"
+	default:
+		return
+	}
+
+	targetURL := fmt.Sprintf("%s/runs/%s", s.baseURL, detail.RunID)
+	if err := scm.PostStatus(detail.SCMProvider, proj.RepoURL, detail.CommitSHA, scmToken, state, targetURL, description, "forge/ci"); err != nil {
+		fmt.Printf("[scm] failed to report %s status for run %s: %v\n", state, detail.RunID[:8], err)
 	}
 }
 
@@ -922,6 +1351,25 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.projects.ListProjects(orgID))
 }
 
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	var req api.UpdateProjectRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.projects.UpdateProject(projectID, req); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleListBranches(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	proj, _, scmToken, ok := s.projects.GetProject(projectID)
@@ -947,6 +1395,49 @@ func (s *Server) handleListBranches(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) triggerProject(projectID, branch, commit string) (string, error) {
+	if branch == "" {
+		branch = "main"
+	}
+
+	proj, _, scmToken, ok := s.projects.GetProject(projectID)
+	if !ok {
+		return "", fmt.Errorf("project not found")
+	}
+
+	if err := s.gitCache.Sync(proj.RepoURL, scmToken); err != nil {
+		return "", fmt.Errorf("failed to sync repo: %w", err)
+	}
+
+	commitSHA := commit
+	if commitSHA == "" {
+		var err error
+		commitSHA, err = s.gitCache.ResolveCommit(proj.RepoURL, branch)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	ref, err := s.gitCache.ResolveRef(proj.RepoURL, branch)
+	if err != nil {
+		// Fallback to heads if not found (e.g. if we haven't synced yet, though we just did)
+		ref = "refs/heads/" + branch
+	}
+
+	meta := api.WebhookRunMeta{
+		Provider:  "manual",
+		RepoURL:   proj.RepoURL,
+		RepoName:  proj.Name,
+		Branch:    branch,
+		Ref:       ref,
+		CommitSHA: commitSHA,
+		CommitMsg: "Manual trigger",
+		Author:    "API User",
+	}
+
+	return s.triggerWebhookRun(proj, proj.RepoURL, branch, commitSHA, "", scmToken, meta, true)
+}
+
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	var req api.ManualTriggerRequest
@@ -955,49 +1446,7 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Branch == "" {
-		req.Branch = "main"
-	}
-
-	proj, _, scmToken, ok := s.projects.GetProject(projectID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
-	}
-
-	if err := s.gitCache.Sync(proj.RepoURL, scmToken); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync repo: %v", err))
-		return
-	}
-
-	commitSHA := req.Commit
-	if commitSHA == "" {
-
-		dir := s.gitCache.RepoDir(proj.RepoURL)
-		cmd := exec.Command("git", "-C", dir, "rev-parse", "origin/"+req.Branch)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			cmd = exec.Command("git", "-C", dir, "rev-parse", req.Branch)
-			output, err = cmd.CombinedOutput()
-			if err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to resolve commit for branch %s: %v, output: %s", req.Branch, err, string(output)))
-				return
-			}
-		}
-		commitSHA = strings.TrimSpace(string(output))
-	}
-
-	meta := api.WebhookRunMeta{
-		Provider:  "manual",
-		RepoURL:   proj.RepoURL,
-		RepoName:  proj.Name,
-		Branch:    req.Branch,
-		CommitSHA: commitSHA,
-		CommitMsg: "Manual trigger",
-		Author:    "API User",
-	}
-
-	runID, err := s.triggerWebhookRun(proj, proj.RepoURL, req.Branch, commitSHA, "", scmToken, meta)
+	runID, err := s.triggerProject(projectID, req.Branch, req.Commit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1108,7 +1557,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1129,12 +1578,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	fmt.Printf("[scheduler] rerun of %s → new run %s\n", runID[:8], newRunID[:8])
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1144,7 +1588,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1162,19 +1606,12 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 	newName = "rerun: " + newName
 
 	for i := range steps {
-		if steps[i].Status == api.JobStatusPassed {
-			// Keep as passed
-		} else {
+		if steps[i].Status != api.JobStatusPassed {
 			steps[i].Status = "" // Rerun
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	fmt.Printf("[scheduler] rerun-failed of %s → new run %s\n", runID[:8], newRunID[:8])
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1191,7 +1628,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	}
 	runID := detail.RunID
 
-	name, steps, workspaceDir, orgID, projectID, commitSHA, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1238,21 +1675,10 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	for i := range steps {
 		if toRerun[steps[i].ID] {
 			steps[i].Status = ""
-		} else if steps[i].Status == api.JobStatusPassed {
-			// Keep as passed
-		} else {
-			// Job didn't pass, but isn't part of the rerun set.
-			// It remains in its current status, which will block its own downstreams
-			// (unless they are also in toRerun).
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, commitSHA, steps, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	fmt.Printf("[scheduler] rerun-job %s of %s → new run %s\n", targetStepID, runID[:8], newRunID[:8])
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1420,56 +1846,9 @@ func (s *Server) handleFlakySteps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
-func validateSteps(steps []api.StepDef) error {
-	// 1. Check for duplicate IDs
-	ids := make(map[string]struct{})
-	for _, s := range steps {
-		if s.ID == "" {
-			continue // compiler fills these in, but policies might not.
-		}
-		if _, ok := ids[s.ID]; ok {
-			return fmt.Errorf("duplicate step ID: %s", s.ID)
-		}
-		ids[s.ID] = struct{}{}
+func interpolate(s string, env map[string]string) string {
+	for k, v := range env {
+		s = strings.ReplaceAll(s, "${{ env."+k+" }}", v)
 	}
-
-	// 2. Check for cycles and missing dependencies
-	visited := make(map[string]bool)
-	onStack := make(map[string]bool)
-
-	adj := make(map[string][]string)
-	for _, s := range steps {
-		adj[s.ID] = s.DependsOn
-	}
-
-	var check func(string) error
-	check = func(u string) error {
-		visited[u] = true
-		onStack[u] = true
-		for _, v := range adj[u] {
-			if _, ok := adj[v]; !ok {
-				return fmt.Errorf("step %s depends on non-existent step %s", u, v)
-			}
-			if onStack[v] {
-				return fmt.Errorf("cycle detected: step %s is part of a dependency loop", v)
-			}
-			if !visited[v] {
-				if err := check(v); err != nil {
-					return err
-				}
-			}
-		}
-		onStack[u] = false
-		return nil
-	}
-
-	for _, s := range steps {
-		if !visited[s.ID] {
-			if err := check(s.ID); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+	return s
 }

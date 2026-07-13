@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/store"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
+	"github.com/fsnotify/fsnotify"
 )
 
 var version = "dev"
@@ -86,6 +88,10 @@ func main() {
 }
 
 func runCommand() {
+	// Detect current Git info
+	ref := currentGitRef()
+	commitSHA := currentGitCommit()
+
 	// Clean up any dangling containers from previous runs.
 	executor.Cleanup()
 	defer executor.Cleanup()
@@ -93,10 +99,13 @@ func runCommand() {
 	pipelinePath := ""
 	var secretFlags []string
 	var envFile string
+	watch := false
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--watch":
+			watch = true
 		case args[i] == "--secret" && i+1 < len(args):
 			i++
 			secretFlags = append(secretFlags, args[i])
@@ -125,22 +134,90 @@ func runCommand() {
 		}
 	}
 
+	workspaceDir, _ := os.Getwd()
+
+	if !watch {
+		if !runOnce(pipelinePath, workspaceDir, envFile, secretFlags, ref, commitSHA) {
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Watch mode
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ watcher setup: %v\n", err)
+		os.Exit(1)
+	}
+	defer watcher.Close()
+
+	// Watch workspace recursively (excluding .git and .forge)
+	filepath.Walk(workspaceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name == ".git" || name == ".forge" || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			return watcher.Add(path)
+		}
+		return nil
+	})
+
+	fmt.Printf("👀 Watching for changes in %s...\n", workspaceDir)
+
+	runOnce(pipelinePath, workspaceDir, envFile, secretFlags, ref, commitSHA)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	debounceTimer := time.NewTimer(0)
+	<-debounceTimer.C // stop it immediately
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				debounceTimer.Reset(500 * time.Millisecond)
+			}
+		case <-debounceTimer.C:
+			fmt.Printf("\n🔄 Change detected, re-running...\n")
+			executor.Cleanup()
+			// Re-detect ref/commit on change
+			ref = currentGitRef()
+			commitSHA = currentGitCommit()
+			runOnce(pipelinePath, workspaceDir, envFile, secretFlags, ref, commitSHA)
+			fmt.Printf("\n👀 Watching for changes...\n")
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "watcher error: %v\n", err)
+		}
+	}
+}
+
+func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, ref, commitSHA string) bool {
 	fmt.Printf("📋 Compiling %s\n", pipelinePath)
 	p, err := compiler.Compile(pipelinePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n✗ compile error: %v\n", err)
-		os.Exit(1)
+		return false
 	}
 	fmt.Printf("   %d steps compiled\n", len(p.Steps))
-
-	workspaceDir, _ := os.Getwd()
 
 	resolverOpts := []localenv.Option{
 		localenv.WithSecretFlags(secretFlags),
 		localenv.WithAutoEnvFile(workspaceDir),
 	}
 	if envFile != "" {
-
 		resolverOpts = []localenv.Option{
 			localenv.WithSecretFlags(secretFlags),
 			localenv.WithEnvFile(envFile),
@@ -161,11 +238,20 @@ func runCommand() {
 	resolver, err := localenv.New(resolverOpts...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
-		os.Exit(1)
+		return false
 	}
 
-	// Resolve secrets for each step.
+	// Resolve secrets and inject SCM info for each step.
 	for _, step := range p.Steps {
+		if step.Env == nil {
+			step.Env = make(map[string]string)
+		}
+		step.Env["FORGE_REF"] = ref
+		step.Env["FORGE_COMMIT_SHA"] = commitSHA
+		if strings.HasPrefix(ref, "refs/tags/") {
+			step.Env["FORGE_COMMIT_TAG"] = strings.TrimPrefix(ref, "refs/tags/")
+		}
+
 		if len(step.Secrets) == 0 {
 			continue
 		}
@@ -176,7 +262,7 @@ func runCommand() {
 			val, err := resolver.Resolve(name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\n✗ %v\n", err)
-				os.Exit(1)
+				return false
 			}
 			step.Env[name] = val
 			step.RedactValues = append(step.RedactValues, val)
@@ -195,7 +281,7 @@ func runCommand() {
 	exec, err := executor.New(workspaceDir, logDir, cacheDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ executor setup: %v\n", err)
-		os.Exit(1)
+		return false
 	}
 	exec.IsLocal = true
 
@@ -205,21 +291,22 @@ func runCommand() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigs
-		fmt.Fprintf(os.Stderr, "\n⚡ interrupted — canceling...\n")
-		cancel()
+		select {
+		case <-sigs:
+			fmt.Fprintf(os.Stderr, "\n⚡ interrupted — canceling...\n")
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
 	result, err := exec.RunPipeline(ctx, p)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ pipeline error: %v\n", err)
-		os.Exit(1)
+		return false
 	}
 
 	runner.PrintSummary(result)
-	if !result.Passed {
-		os.Exit(1)
-	}
+	return result.Passed
 }
 
 func validateCommand() {
@@ -319,7 +406,7 @@ func schedulerCommand() {
 }
 
 func agentCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) >= 3 {
 		schedulerURL = os.Args[2]
 	}
@@ -394,12 +481,16 @@ func agentCommand() {
 }
 
 func submitCommand() {
+	// Detect current Git info
+	ref := currentGitRef()
+	commitSHA := currentGitCommit()
+
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge submit <pipeline-file> [scheduler-url]")
 		os.Exit(1)
 	}
 	pipelinePath := os.Args[2]
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) >= 4 {
 		schedulerURL = os.Args[3]
 	}
@@ -416,18 +507,61 @@ func submitCommand() {
 	// Convert pipeline steps -> api.StepDefs for the HTTP request.
 	steps := make([]api.StepDef, len(p.Steps))
 	for i, s := range p.Steps {
+		var uploads []api.ArtifactUploadSpec
+		for _, u := range s.ArtifactUploads {
+			uploads = append(uploads, api.ArtifactUploadSpec{
+				Path: u.Path,
+				Name: u.Name,
+			})
+		}
+		var downloads []api.ArtifactDownloadSpec
+		for _, d := range s.ArtifactDownloads {
+			downloads = append(downloads, api.ArtifactDownloadSpec{
+				Name: d.Name,
+				Dest: d.Dest,
+			})
+		}
+
+		var pipelineRef *api.PipelineRef
+		if s.PipelineRef != nil {
+			pipelineRef = &api.PipelineRef{
+				Path:             s.PipelineRef.Path,
+				Wait:             s.PipelineRef.Wait,
+				Variables:        s.PipelineRef.Variables,
+				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
+				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
+			}
+		}
+
+		var release *api.ReleaseConfig
+		if s.Release != nil {
+			release = &api.ReleaseConfig{
+				Name:      s.Release.Name,
+				Tag:       s.Release.Tag,
+				Body:      s.Release.Body,
+				Artifacts: s.Release.Artifacts,
+			}
+		}
+
 		steps[i] = api.StepDef{
-			ID:           s.ID,
-			Image:        s.Image,
-			Entrypoint:   s.Entrypoint,
-			Command:      s.Command,
-			WorkDir:      s.WorkDir,
-			Env:          s.Env,
-			DependsOn:    s.DependsOn,
-			Inputs:       s.Inputs,
-			Timeout:      s.Timeout,
-			SecretNames:  s.Secrets, // names only values never leave the agent.
-			DockerSocket: s.DockerSocket,
+			ID:                s.ID,
+			Image:             s.Image,
+			Entrypoint:        s.Entrypoint,
+			Command:           s.Command,
+			WorkDir:           s.WorkDir,
+			Env:               s.Env,
+			DependsOn:         s.DependsOn,
+			Inputs:            s.Inputs,
+			Timeout:           s.Timeout,
+			SecretNames:       s.Secrets,
+			DockerSocket:      s.DockerSocket,
+			Condition:         s.Condition,
+			AlwaysRun:         s.AlwaysRun,
+			Type:              s.Type,
+			ArtifactUploads:   uploads,
+			ArtifactDownloads: downloads,
+			PipelineRef:       pipelineRef,
+			Release:           release,
 		}
 	}
 
@@ -436,6 +570,8 @@ func submitCommand() {
 		Steps:        steps,
 		WorkspaceDir: workspaceDir,
 		OrgID:        os.Getenv("FORGE_ORG"),
+		Ref:          ref,
+		CommitSHA:    commitSHA,
 	})
 
 	resp, err := cliPost(
@@ -472,7 +608,7 @@ func statusCommand() {
 		os.Exit(1)
 	}
 	runID := os.Args[2]
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) >= 4 {
 		schedulerURL = os.Args[3]
 	}
@@ -523,7 +659,7 @@ func jobIcon(s api.JobStatus) string {
 }
 
 func tokenCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge token <create|list|revoke> [args]")
 		os.Exit(1)
@@ -601,7 +737,7 @@ func cancelCommand() {
 		fmt.Fprintln(os.Stderr, "usage: forge cancel <run-id>")
 		os.Exit(1)
 	}
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	resp, err := cliPost(
 		fmt.Sprintf("%s/api/v1/runs/%s/cancel", schedulerURL, os.Args[2]),
 		"application/json", nil)
@@ -624,7 +760,7 @@ func rerunCommand() {
 		fmt.Fprintln(os.Stderr, "usage: forge rerun <run-id>")
 		os.Exit(1)
 	}
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	resp, err := cliPost(
 		fmt.Sprintf("%s/api/v1/runs/%s/rerun", schedulerURL, os.Args[2]),
 		"application/json", nil)
@@ -640,7 +776,7 @@ func rerunCommand() {
 }
 
 func runsCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge runs <prune> [--days N]")
 		os.Exit(1)
@@ -672,7 +808,7 @@ func runsCommand() {
 }
 
 func artifactsCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge artifacts <list|download> [args]")
 		fmt.Fprintln(os.Stderr, "")
@@ -771,7 +907,7 @@ func artifactsCommand() {
 }
 
 func flakyCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	days := "30"
 	minRuns := "5"
 	for i := 2; i < len(os.Args)-1; i++ {
@@ -986,9 +1122,9 @@ steps:
 `
 
 func projectCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: forge project <add|list> [args]")
+		fmt.Fprintln(os.Stderr, "usage: forge project <add|list|update|schedule> [args]")
 		os.Exit(1)
 	}
 	switch os.Args[2] {
@@ -1056,6 +1192,130 @@ func projectCommand() {
 		fmt.Printf("\n  ⚠ Webhook secret (save this — it won't be shown again):\n")
 		fmt.Printf("  %s\n", proj.WebhookSecret)
 
+	case "update":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: forge project update <project-id-or-name> [--name <new-name>] [--repo <new-repo-url>] [--token <new-scm-token>] [--pipeline <new-path>]")
+			os.Exit(1)
+		}
+		projectID := os.Args[3]
+		req := api.UpdateProjectRequest{}
+		for i := 4; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--name":
+				i++
+				if i < len(os.Args) {
+					req.Name = &os.Args[i]
+				}
+			case "--repo":
+				i++
+				if i < len(os.Args) {
+					req.RepoURL = &os.Args[i]
+				}
+			case "--token":
+				i++
+				if i < len(os.Args) {
+					req.SCMToken = &os.Args[i]
+				}
+			case "--pipeline":
+				i++
+				if i < len(os.Args) {
+					req.PipelinePath = &os.Args[i]
+				}
+			case "--branch":
+				i++
+				if i < len(os.Args) {
+					req.BranchFilter = append(req.BranchFilter, os.Args[i])
+				}
+			}
+		}
+		body, _ := json.Marshal(req)
+		url := fmt.Sprintf("%s/api/v1/projects/%s", schedulerURL, projectID)
+
+		client := &http.Client{}
+		httpReq, err := http.NewRequest("PUT", url, bytes.NewReader(body))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if token := cliToken(); token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			var errResp api.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Fprintf(os.Stderr, "✗ project update failed (HTTP %d): %s\n", resp.StatusCode, errResp.Error)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ project updated\n")
+
+	case "schedule":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: forge project schedule <project-id-or-name> [--cron <expression>] [--pipeline <path>] [--delete]")
+			os.Exit(1)
+		}
+		projectID := os.Args[3]
+		req := api.UpdateProjectRequest{}
+		deleteSchedule := false
+		for i := 4; i < len(os.Args); i++ {
+			switch os.Args[i] {
+			case "--cron":
+				i++
+				if i < len(os.Args) {
+					req.Cron = &os.Args[i]
+				}
+			case "--pipeline":
+				i++
+				if i < len(os.Args) {
+					req.ScheduledPath = &os.Args[i]
+				}
+			case "--delete":
+				deleteSchedule = true
+			}
+		}
+
+		if deleteSchedule {
+			empty := ""
+			req.Cron = &empty
+			req.ScheduledPath = &empty
+		}
+
+		body, _ := json.Marshal(req)
+		url := fmt.Sprintf("%s/api/v1/projects/%s", schedulerURL, projectID)
+
+		client := &http.Client{}
+		httpReq, _ := http.NewRequest("PUT", url, bytes.NewReader(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+		if token := os.Getenv("FORGE_API_TOKEN"); token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			var errResp api.ErrorResponse
+			json.NewDecoder(resp.Body).Decode(&errResp)
+			fmt.Fprintf(os.Stderr, "✗ schedule update failed (HTTP %d): %s\n", resp.StatusCode, errResp.Error)
+			os.Exit(1)
+		}
+		if deleteSchedule {
+			fmt.Printf("✓ schedule deleted for project %s\n", projectID)
+		} else {
+			fmt.Printf("✓ schedule updated for project %s\n", projectID)
+		}
+
 	case "list":
 		orgID := os.Getenv("FORGE_ORG")
 		url := schedulerURL + "/api/v1/projects"
@@ -1093,7 +1353,7 @@ func triggerCommand() {
 
 	branch := "main"
 	commit := ""
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -1135,7 +1395,7 @@ func triggerCommand() {
 }
 
 func orgCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge org <create|list> [args]")
 		os.Exit(1)
@@ -1181,7 +1441,7 @@ func orgCommand() {
 }
 
 func policyCommand() {
-	schedulerURL := "http://localhost:8080"
+	schedulerURL := cliSchedulerURL()
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: forge policy <create|list|delete> [args]")
 		os.Exit(1)
@@ -1504,6 +1764,16 @@ func cliToken() string {
 	return os.Getenv("FORGE_API_TOKEN")
 }
 
+func cliSchedulerURL() string {
+	if u := os.Getenv("FORGE_SCHEDULER_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	if u := os.Getenv("FORGE_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	return "http://localhost:8080"
+}
+
 // cliPost makes an authenticated POST from the CLI.
 func cliPost(url, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest("POST", url, body)
@@ -1515,6 +1785,27 @@ func cliPost(url, contentType string, body io.Reader) (*http.Response, error) {
 		req.Header.Set("Authorization", "Bearer "+t)
 	}
 	return http.DefaultClient.Do(req)
+}
+
+func currentGitRef() string {
+	cmd := exec.Command("git", "symbolic-ref", "HEAD")
+	if out, err := cmd.Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	// Try tags
+	cmd = exec.Command("git", "describe", "--tags", "--exact-match")
+	if out, err := cmd.Output(); err == nil {
+		return "refs/tags/" + strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+func currentGitCommit() string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	if out, err := cmd.Output(); err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
 }
 
 // cliGet makes an authenticated GET from the CLI.
@@ -1542,10 +1833,7 @@ func cliDelete(url string) (*http.Response, error) {
 }
 
 func pruneCommand() {
-	schedulerURL := os.Getenv("FORGE_URL")
-	if schedulerURL == "" {
-		schedulerURL = "http://localhost:8080"
-	}
+	schedulerURL := cliSchedulerURL()
 
 	arg := "30d"
 	if len(os.Args) > 2 {

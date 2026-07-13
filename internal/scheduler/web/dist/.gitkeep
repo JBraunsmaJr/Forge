@@ -1,1 +1,0 @@
-# Keep this directory even if empty so go:embed doesn't fail.
