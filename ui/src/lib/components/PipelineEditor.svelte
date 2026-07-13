@@ -9,7 +9,7 @@
 
     interface Step {
         id: string;
-        type: 'command' | 'generator' | 'pipeline' | 'release';
+        type: 'command' | 'generator' | 'pipeline' | 'release' | 'approval';
         image: string;
         command: string;
         depends_on: string[];
@@ -25,6 +25,7 @@
         workdir: string;
         always_run: boolean;
         pipeline_ref: { name: string, path: string };
+        matrix: { key: string, values: string[] }[];
         expanded: boolean;
     }
 
@@ -36,7 +37,7 @@
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
             condition: '', docker_socket: false, 
             timeout: '5m', workdir: '', always_run: false,
-            pipeline_ref: { name: '', path: '' }, expanded: true 
+            pipeline_ref: { name: '', path: '' }, matrix: [], expanded: true 
         },
         { 
             id: 'test', type: 'command', image: 'golang:1.26', command: 'go test ./...', depends_on: ['lint'], 
@@ -44,7 +45,7 @@
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
             condition: '', docker_socket: false, 
             timeout: '10m', workdir: '', always_run: false,
-            pipeline_ref: { name: '', path: '' }, expanded: false 
+            pipeline_ref: { name: '', path: '' }, matrix: [], expanded: false 
         }
     ];
 
@@ -56,7 +57,7 @@
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
             condition: '', docker_socket: false, 
             timeout: '', workdir: '', always_run: false,
-            pipeline_ref: { name: '', path: '' }, expanded: true 
+            pipeline_ref: { name: '', path: '' }, matrix: [], expanded: true 
         }];
     }
 
@@ -113,26 +114,32 @@
         steps[stepIndex].artifact_downloads = steps[stepIndex].artifact_downloads.filter((_, i) => i !== artIndex);
     }
 
-    function addSecret(stepIndex: number) {
-        const secret = prompt("Enter secret name:");
-        if (secret) {
-            steps[stepIndex].secrets = [...steps[stepIndex].secrets, secret];
-        }
-    }
-
     function removeSecret(stepIndex: number, secret: string) {
         steps[stepIndex].secrets = steps[stepIndex].secrets.filter(s => s !== secret);
     }
 
-    function addInput(stepIndex: number) {
-        const input = prompt("Enter input glob pattern:");
-        if (input) {
-            steps[stepIndex].inputs = [...steps[stepIndex].inputs, input];
-        }
-    }
-
     function removeInput(stepIndex: number, input: string) {
         steps[stepIndex].inputs = steps[stepIndex].inputs.filter(i => i !== input);
+    }
+
+    function addMatrix(stepIndex: number) {
+        steps[stepIndex].matrix = [...steps[stepIndex].matrix, { key: '', values: [] }];
+        steps = [...steps];
+    }
+
+    function removeMatrix(stepIndex: number, matrixIndex: number) {
+        steps[stepIndex].matrix = steps[stepIndex].matrix.filter((_, i) => i !== matrixIndex);
+        steps = [...steps];
+    }
+
+    function removeMatrixValue(stepIndex: number, matrixIndex: number, valueIndex: number) {
+        steps[stepIndex].matrix[matrixIndex].values = steps[stepIndex].matrix[matrixIndex].values.filter((_, i) => i !== valueIndex);
+        steps = [...steps];
+    }
+
+    function removeReleaseArtifact(stepIndex: number, art: string) {
+        steps[stepIndex].release.artifacts = steps[stepIndex].release.artifacts.filter(a => a !== art);
+        steps = [...steps];
     }
 
     $: yaml = generateYAML(pipelineName, steps);
@@ -150,7 +157,7 @@
                 if (s.pipeline_ref.path) {
                     lines.push(`      path: ${s.pipeline_ref.path}`);
                 }
-            } else {
+            } else if (s.type !== 'approval' && s.type !== 'release') {
                 lines.push(`    image: ${s.image}`);
                 if (s.command.includes('\n')) {
                     lines.push(`    run: |`);
@@ -181,6 +188,15 @@
                 }
             }
             
+            if (s.matrix.length > 0) {
+                lines.push(`    matrix:`);
+                s.matrix.forEach(m => {
+                    if (m.key) {
+                        lines.push(`      ${m.key}: [${m.values.join(', ')}]`);
+                    }
+                });
+            }
+            
             if (s.env.length > 0) {
                 lines.push(`    env:`);
                 s.env.forEach(e => {
@@ -193,15 +209,23 @@
                 if (s.artifact_uploads.length > 0) {
                     lines.push(`      upload:`);
                     s.artifact_uploads.forEach(a => {
-                        lines.push(`        - name: ${a.name}`);
-                        lines.push(`          path: ${a.path}`);
+                        if (a.name) {
+                            lines.push(`        - name: ${a.name}`);
+                            lines.push(`          path: ${a.path}`);
+                        } else {
+                            lines.push(`        - path: ${a.path}`);
+                        }
                     });
                 }
                 if (s.artifact_downloads.length > 0) {
                     lines.push(`      download:`);
                     s.artifact_downloads.forEach(a => {
-                        lines.push(`        - name: ${a.name}`);
-                        lines.push(`          dest: ${a.dest}`);
+                        if (a.dest) {
+                            lines.push(`        - name: ${a.name}`);
+                            lines.push(`          dest: ${a.dest}`);
+                        } else {
+                            lines.push(`        - name: ${a.name}`);
+                        }
                     });
                 }
             }
@@ -311,9 +335,10 @@
                                             <option value="generator">Generator (Dynamic)</option>
                                             <option value="pipeline">Trigger Pipeline</option>
                                             <option value="release">SCM Release</option>
+                                            <option value="approval">Manual Approval</option>
                                         </select>
                                     </div>
-                                    {#if step.type !== 'pipeline'}
+                                    {#if step.type !== 'pipeline' && step.type !== 'approval' && step.type !== 'release'}
                                         <div class="field">
                                             <label for="step-image-{step.id}">Docker Image</label>
                                             <input id="step-image-{step.id}" type="text" bind:value={step.image} placeholder="e.g. alpine:latest" />
@@ -347,7 +372,34 @@
                                         <label for="step-rel-body-{step.id}">Release Description</label>
                                         <textarea id="step-rel-body-{step.id}" bind:value={step.release.body} rows="2" placeholder="Changelog..."></textarea>
                                     </div>
-                                {:else}
+                                    <div class="sub-section" style="margin-bottom: 12px;">
+                                        <span class="label">Release Artifacts (Attached to GitHub Release)</span>
+                                        <div class="dep-chips">
+                                            {#each step.release.artifacts as art}
+                                                <span class="chip">
+                                                    {art}
+                                                    <button class="chip-remove" on:click={() => removeReleaseArtifact(i, art)} title="Remove Artifact">&times;</button>
+                                                </span>
+                                            {/each}
+                                            <input 
+                                                type="text" 
+                                                class="chip-input" 
+                                                placeholder="+ Add Artifact..."
+                                                on:keydown={(e) => {
+                                                    if (e.key === 'Enter') {
+                                                        e.preventDefault();
+                                                        const val = e.currentTarget.value.trim();
+                                                        if (val) {
+                                                            step.release.artifacts = [...step.release.artifacts, val];
+                                                            e.currentTarget.value = '';
+                                                            steps = [...steps];
+                                                        }
+                                                    }
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                {:else if step.type !== 'approval' && step.type !== 'release'}
                                     <div class="field">
                                         <label for="step-command-{step.id}">Command / Script</label>
                                         <textarea id="step-command-{step.id}" bind:value={step.command} rows="3" placeholder="Enter shell commands..."></textarea>
@@ -375,6 +427,47 @@
                                             <span class="empty-text">No other steps to depend on.</span>
                                         {/if}
                                     </div>
+                                </div>
+
+                                <div class="section">
+                                    <div class="section-header">
+                                        <Cpu size={14} />
+                                        <span>Matrix Strategy</span>
+                                        <button class="btn-add-small" on:click={() => addMatrix(i)}><Plus size={12} /></button>
+                                    </div>
+                                    {#each step.matrix as m, mi}
+                                        <div class="matrix-row">
+                                            <input type="text" bind:value={m.key} placeholder="Dimension (e.g. os)" style="width: 150px;" />
+                                            <div class="dep-chips" style="flex: 1; margin: 0;">
+                                                {#each m.values as val, vi}
+                                                    <span class="chip">
+                                                        {val}
+                                                        <button class="chip-remove" on:click={() => removeMatrixValue(i, mi, vi)}>&times;</button>
+                                                    </span>
+                                                {/each}
+                                                <input 
+                                                    type="text" 
+                                                    class="chip-input" 
+                                                    placeholder="+ Add Value..."
+                                                    on:keydown={(e) => {
+                                                        if (e.key === 'Enter') {
+                                                            e.preventDefault();
+                                                            const val = e.currentTarget.value.trim();
+                                                            if (val) {
+                                                                m.values = [...m.values, val];
+                                                                e.currentTarget.value = '';
+                                                                steps = [...steps];
+                                                            }
+                                                        }
+                                                    }}
+                                                />
+                                            </div>
+                                            <button class="btn-icon danger" on:click={() => removeMatrix(i, mi)}><Trash2 size={12} /></button>
+                                        </div>
+                                    {/each}
+                                    {#if step.matrix.length === 0}
+                                        <span class="empty-text">No matrix dimensions defined.</span>
+                                    {/if}
                                 </div>
 
                                 <div class="grid-2">
@@ -464,7 +557,22 @@
                                                         <button class="chip-remove" on:click={() => removeSecret(i, s)} title="Remove Secret">&times;</button>
                                                     </span>
                                                 {/each}
-                                                <button class="btn-text" on:click={() => addSecret(i)}>+ Add Secret</button>
+                                                <input 
+                                                    type="text" 
+                                                    class="chip-input" 
+                                                    placeholder="+ Add Secret..."
+                                                    on:keydown={(e) => {
+                                                        if (e.key === 'Enter') {
+                                                            e.preventDefault();
+                                                            const val = e.currentTarget.value.trim();
+                                                            if (val) {
+                                                                step.secrets = [...step.secrets, val];
+                                                                e.currentTarget.value = '';
+                                                                steps = [...steps];
+                                                            }
+                                                        }
+                                                    }}
+                                                />
                                             </div>
                                         </div>
                                     </div>
@@ -478,7 +586,22 @@
                                                     <button class="chip-remove" on:click={() => removeInput(i, inp)} title="Remove Input">&times;</button>
                                                 </span>
                                             {/each}
-                                            <button class="btn-text" on:click={() => addInput(i)}>+ Add Input Glob</button>
+                                            <input 
+                                                type="text" 
+                                                class="chip-input" 
+                                                placeholder="+ Add Input Glob..."
+                                                on:keydown={(e) => {
+                                                    if (e.key === 'Enter') {
+                                                        e.preventDefault();
+                                                        const val = e.currentTarget.value.trim();
+                                                        if (val) {
+                                                            step.inputs = [...step.inputs, val];
+                                                            e.currentTarget.value = '';
+                                                            steps = [...steps];
+                                                        }
+                                                    }
+                                                }}
+                                            />
                                         </div>
                                     </div>
                                 </div>
@@ -658,6 +781,8 @@
     .step-type-badge.command { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
     .step-type-badge.generator { background: #9e6a0322; color: #d29922; border: 1px solid #9e6a0344; }
     .step-type-badge.pipeline { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+    .step-type-badge.release { background: #8957e522; color: #a371f7; border: 1px solid #8957e544; }
+    .step-type-badge.approval { background: #d2992222; color: #f0883e; border: 1px solid #d2992244; }
 
     .id-input {
         background: transparent;
@@ -973,9 +1098,36 @@
         cursor: not-allowed;
     }
 
+    .matrix-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+        background: #161b22;
+        padding: 8px;
+        border-radius: 4px;
+    }
+
     .empty-text {
         font-size: 0.75rem;
         color: #484f58;
         font-style: italic;
+    }
+
+    .chip-input {
+        background: transparent !important;
+        border: 1px dashed #30363d !important;
+        border-radius: 16px !important;
+        padding: 4px 12px !important;
+        font-size: 0.75rem !important;
+        width: 120px !important;
+        color: #8b949e !important;
+    }
+
+    .chip-input:focus {
+        border-style: solid !important;
+        border-color: #58a6ff !important;
+        color: #e6edf3 !important;
+        width: 200px !important;
     }
 </style>
