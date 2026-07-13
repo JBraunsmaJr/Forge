@@ -140,6 +140,52 @@ func TestComputeTaskHash_ChangedCommand(t *testing.T) {
 	}
 }
 
+// TestComputeTaskHash_IgnoredEnvVars verifies that non-deterministic FORGE_
+// variables are excluded from the hash, allowing cache hits across different
+// runs or trigger events.
+func TestComputeTaskHash_IgnoredEnvVars(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.go"), "package main")
+
+	step1 := &pipeline.Step{
+		ID:      "build",
+		Image:   "golang:1.26.5",
+		Command: []string{"go", "build"},
+		Inputs:  []string{"*.go"},
+		Env: map[string]string{
+			"FORGE_EVENT":     "push",
+			"FORGE_API_TOKEN": "token-1",
+			"CUSTOM_VAR":      "val",
+		},
+	}
+
+	step2 := &pipeline.Step{
+		ID:      "build",
+		Image:   "golang:1.26.5",
+		Command: []string{"go", "build"},
+		Inputs:  []string{"*.go"},
+		Env: map[string]string{
+			"FORGE_EVENT":     "manual",
+			"FORGE_API_TOKEN": "token-2",
+			"CUSTOM_VAR":      "val",
+		},
+	}
+
+	hash1, _ := ComputeTaskHash(step1, dir)
+	hash2, _ := ComputeTaskHash(step2, dir)
+
+	if hash1 != hash2 {
+		t.Errorf("hashes should be identical despite different FORGE_EVENT/FORGE_API_TOKEN\n  %s\n  %s", hash1, hash2)
+	}
+
+	// Verify that DIFFERENT custom vars still produce different hashes
+	step2.Env["CUSTOM_VAR"] = "val-changed"
+	hash3, _ := ComputeTaskHash(step2, dir)
+	if hash1 == hash3 {
+		t.Error("expected different hashes when custom env var changes")
+	}
+}
+
 // TestComputeTaskHash_NoInputs verifies that a step with no inputs
 // declared is never considered a cache hit (always re-runs).
 func TestComputeTaskHash_NoInputs(t *testing.T) {
