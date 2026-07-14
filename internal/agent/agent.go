@@ -2220,10 +2220,17 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	}
 	defer submitResp.Body.Close()
 
+	if submitResp.StatusCode != http.StatusCreated {
+		var errResp api.ErrorResponse
+		json.NewDecoder(submitResp.Body).Decode(&errResp)
+		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("scheduler error (HTTP %d): %s", submitResp.StatusCode, errResp.Error))...)
+		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "", false)
+	}
+
 	var runResp api.SubmitRunResponse
 	json.NewDecoder(submitResp.Body).Decode(&runResp)
 	if runResp.RunID == "" {
-		logs = append(logs, pipelineLog("ERROR", "scheduler returned empty run ID")...)
+		logs = append(logs, pipelineLog("ERROR", "scheduler returned empty run ID (unknown error)")...)
 		return a.reportComplete(spec, 1, time.Since(start).Milliseconds(), logs, "", false)
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("child run submitted: %s", runResp.RunID[:8]))...)

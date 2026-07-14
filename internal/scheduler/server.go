@@ -1102,7 +1102,8 @@ func (s *Server) handleSearchLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
-	if !requireOperator(w, r) {
+	if !hasRole(r, "operator") && !agentOnly(r) {
+		writeError(w, http.StatusForbidden, "operator or agent permission required")
 		return
 	}
 	_, span := tracing.Tracer().Start(r.Context(), "handleSubmitRun")
