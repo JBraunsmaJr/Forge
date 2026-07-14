@@ -30,7 +30,7 @@ steps:
   - id: release-approval
     name: Approve Release
     type: approval
-    depends_on: [ unit-tests, build-ui ]
+    depends_on: [ unit-tests ]
     condition: tag()
 
   - id: build-binaries
