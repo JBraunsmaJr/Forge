@@ -1044,7 +1044,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 // by the agent since the scheduler has already acted on them.
 func isSchedulerCondition(cond string) bool {
 	c := strings.TrimSpace(strings.ToLower(cond))
-	return c == "" || c == "success()" || c == "failure()" || c == "always()" || c == "tag()"
+	return c == "" || c == "success()" || c == "failure()" || c == "always()" || c == "tag()" || strings.HasPrefix(c, "branch(")
 }
 
 // evalRuntimeCondition evaluates an environment-variable condition expression.

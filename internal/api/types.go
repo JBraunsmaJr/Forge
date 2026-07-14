@@ -46,7 +46,7 @@ type JobSpec struct {
 	Ref       string `json:"ref,omitempty"`
 	CommitSHA string `json:"commit_sha,omitempty"`
 	// Condition is a step-level expression evaluated by the agent at runtime.
-	// Scheduler-level keywords (success()/failure()/always()) are handled by
+	// Scheduler-level keywords (success()/failure()/always()/tag()/branch(...)) are handled by
 	// unlockDownstream; env-var expressions ($BRANCH == 'main') are handled here.
 	Condition string `json:"condition,omitempty"`
 	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
