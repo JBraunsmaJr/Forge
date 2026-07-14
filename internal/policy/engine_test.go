@@ -15,7 +15,7 @@ func makePolicy(name string, forbid bool, stepIDs ...string) api.PolicyInfo {
 }
 
 func applyTest(userSteps []api.StepDef, policies []api.PolicyInfo) ([]api.StepDef, []string, error) {
-	return Apply(userSteps, policies, "test-pipeline", "/tmp", "test-org")
+	return Apply(userSteps, policies, "test-pipeline", "/tmp", "test-org", nil)
 }
 
 func TestApply_InjectsSteps(t *testing.T) {
@@ -217,6 +217,22 @@ print(json.dumps(steps))
 
 	if len(result) < 2 {
 		t.Errorf("expected at least 2 steps, got %d", len(result))
+	}
+}
+
+func TestApply_SkipsPreviouslyApplied(t *testing.T) {
+	userSteps := []api.StepDef{{ID: "lint"}}
+	policies := []api.PolicyInfo{makePolicy("security", false, "sec-scan")}
+	// "security" is already applied
+	result, names, err := Apply(userSteps, policies, "test", "/tmp", "org", []string{"security"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 step (no injection), got %d", len(result))
+	}
+	if len(names) != 0 {
+		t.Errorf("expected 0 new applied policies, got %v", names)
 	}
 }
 

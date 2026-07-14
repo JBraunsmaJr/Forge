@@ -1161,6 +1161,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 			steps, appliedPolicies, err = policyengine.Apply(
 				steps, policies,
 				req.PipelineName, workspaceDir, req.OrgID,
+				req.AppliedPolicies,
 			)
 			if err != nil {
 

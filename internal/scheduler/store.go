@@ -173,8 +173,8 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 		       leased_at    = $3,
 		       heartbeat_at = $3,
 		       started_at   = $3
-		FROM   next
-		WHERE  jobs.id = next.id
+		FROM   next, runs
+		WHERE  jobs.id = next.id AND jobs.run_id = runs.id
 		RETURNING
 			jobs.id, jobs.run_id, jobs.step_id, jobs.image, jobs.entrypoint,
 			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
@@ -185,7 +185,9 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.release_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
-			COALESCE(jobs.artifact_downloads::text, '[]')
+			COALESCE(jobs.artifact_downloads::text, '[]'),
+			runs.workspace_dir,
+			runs.applied_policies
 		`,
 		leaseID, agentID, now,
 	)
@@ -212,8 +214,8 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 		       leased_at    = $2,
 		       heartbeat_at = $2,
 		       started_at   = $2
-		FROM   next
-		WHERE  jobs.id = next.id
+		FROM   next, runs
+		WHERE  jobs.id = next.id AND jobs.run_id = runs.id
 		RETURNING
 			jobs.id, jobs.run_id, jobs.step_id, jobs.image, jobs.entrypoint,
 			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
@@ -224,7 +226,9 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.release_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
-			COALESCE(jobs.artifact_downloads::text, '[]')
+			COALESCE(jobs.artifact_downloads::text, '[]'),
+			runs.workspace_dir,
+			runs.applied_policies
 		`,
 		leaseID, now,
 	)
@@ -239,7 +243,8 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		inputsJSON, secretsJSON                    []byte
 		pipelineRefJSON, releaseConfigJSON         string
 		artifactUploadsJSON, artifactDownloadsJSON string
-		workDir                                    string
+		workDir, workspaceDir                      string
+		appliedPoliciesJSON                        []byte
 		timeoutNS                                  int64
 		dockerSocket                               bool
 		condition                                  string
@@ -255,6 +260,8 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		&pipelineRefJSON,
 		&releaseConfigJSON,
 		&artifactUploadsJSON, &artifactDownloadsJSON,
+		&workspaceDir,
+		&appliedPoliciesJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, false
@@ -266,12 +273,13 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 
 	var entrypoint, command, secretNames []string
 	var env map[string]string
-	var inputs []string
+	var inputs, appliedPolicies []string
 	json.Unmarshal(entrypointJSON, &entrypoint)
 	json.Unmarshal(commandJSON, &command)
 	json.Unmarshal(envJSON, &env)
 	json.Unmarshal(inputsJSON, &inputs)
 	json.Unmarshal(secretsJSON, &secretNames)
+	json.Unmarshal(appliedPoliciesJSON, &appliedPolicies)
 
 	var pipelineRef *api.PipelineRef
 	if pipelineRefJSON != "null" && pipelineRefJSON != "" {
@@ -309,6 +317,8 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		DockerSocket:      dockerSocket,
 		Type:              stepType,
 		Condition:         condition,
+		AppliedPolicies:   appliedPolicies,
+		WorkspaceDir:      workspaceDir,
 		AlwaysRun:         alwaysRun,
 		OrgID:             orgID,
 		ProjectID:         projectID,
