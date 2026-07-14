@@ -51,6 +51,9 @@ def main():
                 "workdir": "/workspace",
                 "artifact_uploads": [
                     {"path": "trivy-fs-report.html", "name": "Filesystem Security Report"}
+                ],
+                "inputs":[
+                    "Dockerfile"
                 ]
             })
             injected.append({
@@ -60,10 +63,13 @@ def main():
                 "env":     {"TRIVY_EXIT_CODE": "1"},
                 "depends_on": ["trivy-fs-report"],
                 "workdir": "/workspace",
+                "inputs":[
+                    "Dockerfile"
+                ]
             })
 
     # ---------------------------------- Python ----------------------------------
-    if workspace_has("requirements.txt", "Pipfile", "pyproject.toml"):
+    if workspace_has("requirements.txt"):
         if "pip-audit" not in existing_ids:
             req_match = workspace_find("requirements.txt")
             if req_match:
@@ -71,6 +77,7 @@ def main():
                 injected.append({
                     "id":      "pip-audit",
                     "image":   "python:3.11-slim",
+                    "inputs": [req_match],
                     "command": ["sh", "-c",
                                 f"pip install --quiet pip-audit && "
                                 f"pip-audit -r {req_file} > pip-audit-output.txt ; "
@@ -87,6 +94,7 @@ def main():
                     ]
                 })
 
+
     # ---------------------------------- Go ----------------------------------
     if workspace_has("go.mod"):
         if "govulncheck" not in existing_ids:
@@ -97,6 +105,7 @@ def main():
                 injected.append({
                     "id":      "govulncheck",
                     "image":   "golang:1.26.5-alpine",
+                    "inputs": ["go.mod"],
                     # govulncheck must be installed first; wrap in sh -c for &&
                     "command": ["sh", "-c",
                                 "go install golang.org/x/vuln/cmd/govulncheck@latest && "
@@ -124,6 +133,7 @@ def main():
                 injected.append({
                     "id":      "npm-audit",
                     "image":   "node:20-alpine",
+                    "inputs": [pkg_match],
                     "command": ["sh", "-c",
                                 "npm audit --audit-level=high > npm-audit-output.txt ; "
                                 "RET=$? ; "

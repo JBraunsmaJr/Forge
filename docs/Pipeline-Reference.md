@@ -227,6 +227,7 @@ Supported functions:
 - `failure()`: At least one dependency failed.
 - `always()`: Run regardless of dependency status.
 - `tag()`: Only run if the pipeline was triggered by a Git tag.
+- `branch(name)`: Only run if the pipeline branch matches the given name or glob pattern. Supports multiple branches: `branch(main, develop, feature/*)`.
 
 ```yaml
 - id: notify-failure

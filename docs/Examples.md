@@ -365,7 +365,9 @@ Forge uses simple, readable function calls and a dedicated `always_run` flag:
 1. **`success()` (Default):** Run only if all dependencies passed.
 2. **`failure()`:** Run only if at least one dependency failed.
 3. **`always()`:** Run regardless of dependency status.
-4. **`always_run: true`:** A shortcut for `condition: always()`.
+4. **`tag()`:** Run only if the pipeline was triggered by a Git tag.
+5. **`branch(name)`:** Run only if the pipeline branch matches the name or glob pattern (e.g., `branch(main)`, `branch(feature/*)`).
+6. **`always_run: true`:** A shortcut for `condition: always()`.
 
 ### Event-based Logic
 

@@ -28,6 +28,16 @@ func TestEvaluateCondition(t *testing.T) {
 		{"tag()", false, "refs/tags/v1.0.0", true},
 		{"tag()", true, "refs/heads/main", false},
 		{"TAG()", true, "refs/tags/v1.2.3", true},
+		// Branch tests
+		{"branch(main)", true, "refs/heads/main", true},
+		{"branch(main)", true, "refs/heads/develop", false},
+		{"branch(feature/*)", true, "refs/heads/feature/login", true},
+		{"branch(feature/*)", true, "refs/heads/main", false},
+		{"branch(main, develop)", true, "refs/heads/develop", true},
+		{"branch(main, develop)", true, "refs/heads/feature/x", false},
+		{"branch(*)", true, "refs/heads/anything", true},
+		{"branch(*)", true, "refs/tags/v1.0.0", false},
+		{"branch(main)", true, "refs/tags/v1.0.0", false},
 	}
 
 	for _, tt := range tests {
@@ -69,6 +79,25 @@ func TestPruneSteps(t *testing.T) {
 		pruned := PruneSteps(steps, "refs/tags/v1.0.0")
 		if len(pruned) != 4 {
 			t.Errorf("expected 4 steps, got %d", len(pruned))
+		}
+	})
+	t.Run("Prune branch() when not on branch", func(t *testing.T) {
+		branchSteps := []api.StepDef{
+			{ID: "A", Condition: "branch(main)"},
+			{ID: "B", Condition: ""},
+		}
+		pruned := PruneSteps(branchSteps, "refs/heads/develop")
+		if len(pruned) != 1 || pruned[0].ID != "B" {
+			t.Errorf("expected only step B, got %v", pruned)
+		}
+	})
+	t.Run("Keep branch() when on branch", func(t *testing.T) {
+		branchSteps := []api.StepDef{
+			{ID: "A", Condition: "branch(main)"},
+		}
+		pruned := PruneSteps(branchSteps, "refs/heads/main")
+		if len(pruned) != 1 {
+			t.Errorf("expected step A to remain, got %d steps", len(pruned))
 		}
 	})
 

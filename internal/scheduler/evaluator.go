@@ -1,26 +1,47 @@
 package scheduler
 
 import (
+	"path"
 	"strings"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 )
 
 // evaluateCondition handler simple Forge condition expressions.
-// Supported: "success()", "failure()", "always()", "tag()" or empty (default to success).
+// Supported: "success()", "failure()", "always()", "tag()", "branch(...)" or empty (default to success).
 func evaluateCondition(condition string, runPassed bool, ref string) bool {
-	cond := strings.TrimSpace(strings.ToLower(condition))
-	if cond == "" || cond == "success()" {
+	condition = strings.TrimSpace(condition)
+	condLower := strings.ToLower(condition)
+
+	if condLower == "" || condLower == "success()" {
 		return runPassed
 	}
-	if cond == "always()" {
+	if condLower == "always()" {
 		return true
 	}
-	if cond == "failure()" {
+	if condLower == "failure()" {
 		return !runPassed
 	}
-	if cond == "tag()" {
+	if condLower == "tag()" {
 		return strings.HasPrefix(ref, "refs/tags/")
+	}
+
+	if strings.HasPrefix(condLower, "branch(") && strings.HasSuffix(condLower, ")") {
+		if !strings.HasPrefix(ref, "refs/heads/") {
+			return false
+		}
+		branch := strings.TrimPrefix(ref, "refs/heads/")
+		// Extract arguments from original condition to preserve case
+		args := condition[len("branch(") : len(condition)-1]
+		patterns := strings.Split(args, ",")
+		for _, p := range patterns {
+			p = strings.TrimSpace(p)
+			matched, _ := path.Match(p, branch)
+			if matched {
+				return true
+			}
+		}
+		return false
 	}
 
 	return false
@@ -37,6 +58,11 @@ func PruneSteps(steps []api.StepDef, ref string) []api.StepDef {
 		cond := strings.TrimSpace(strings.ToLower(s.Condition))
 		if cond == "tag()" && !strings.HasPrefix(ref, "refs/tags/") {
 			removed[s.ID] = true
+		}
+		if strings.HasPrefix(cond, "branch(") && strings.HasSuffix(cond, ")") {
+			if !evaluateCondition(s.Condition, true, ref) {
+				removed[s.ID] = true
+			}
 		}
 	}
 
