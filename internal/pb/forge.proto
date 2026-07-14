@@ -100,11 +100,26 @@ message JobSpec {
   string condition = 20;
   bool always_run = 21;
   PipelineRef pipeline_ref = 22;
+  // AppliedStepIDs is a list of step IDs already present in the run hierarchy,
+  // used to avoid duplicate step injection by policies.
+  repeated string applied_step_ids = 24;
+  // WorkspaceDir is the path to the shared workspace for the run.
+  string workspace_dir = 25;
+  // Ref is the git ref (e.g. "refs/heads/main") the run was submitted for.
+  string ref = 26;
 }
 
 message PipelineRef {
   string path = 1;
   bool wait = 2;
+  // Variables are injected into every step of the child pipeline as env vars.
+  map<string, string> variables = 3;
+  // ArtifactsSend names artifacts from the PARENT run to make available
+  // in the child run.
+  repeated string artifacts_send = 4;
+  // ArtifactsReceive downloads artifacts from the CHILD run into the
+  // parent run's artifact store once the child completes.
+  repeated string artifacts_receive = 5;
 }
 
 message ArtifactUploadSpec {

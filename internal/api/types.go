@@ -52,9 +52,9 @@ type JobSpec struct {
 	// WorkspaceDir is the path to the shared workspace for the run.
 	// (added for Bug 3: child pipelines sharing parent workspace)
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
-	// AppliedPolicies is a list of policy names already applied to this run
-	// (or its parent), used to avoid duplicate injection.
-	AppliedPolicies []string `json:"applied_policies,omitempty"`
+	// AppliedStepIDs is a list of step IDs already present in the run hierarchy,
+	// used to avoid duplicate step injection by policies.
+	AppliedStepIDs []string `json:"applied_step_ids,omitempty"`
 	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
 	// log it clearly (the scheduler already acted on it via unlockDownstream).
 	AlwaysRun bool `json:"always_run,omitempty"`
@@ -74,8 +74,10 @@ type SubmitRunRequest struct {
 	ProjectID    string    `json:"project_id,omitempty"` // scopes secrets to this project
 	Ref          string    `json:"ref,omitempty"`        // Git ref, e.g. "refs/heads/main"
 	CommitSHA    string    `json:"commit_sha,omitempty"`
-	// AppliedPolicies is a list of policy names already applied to the parent run.
-	AppliedPolicies []string `json:"applied_policies,omitempty"`
+	// PreferredAgentID pins the run to a specific agent (e.g. for shared workspace).
+	PreferredAgentID string `json:"preferred_agent_id,omitempty"`
+	// AppliedStepIDs is a list of step IDs already present in the parent run.
+	AppliedStepIDs []string `json:"applied_step_ids,omitempty"`
 }
 
 // StepDef carries a step's definition inside a SubmitRunRequest.
@@ -192,16 +194,16 @@ type RunSummary struct {
 // RunDetail is the rich response used by the DAG view.
 // It includes per-job dependency info so the browser can draw edges.
 type RunDetail struct {
-	RunID           string      `json:"run_id"`
-	Name            string      `json:"name"`
-	Status          JobStatus   `json:"status"`
-	CreatedAt       time.Time   `json:"created_at"`
-	Jobs            []JobDetail `json:"jobs"`
-	AppliedPolicies []string    `json:"applied_policies,omitempty"`
-	OrgID           string      `json:"org_id,omitempty"`
-	ProjectID       string      `json:"project_id,omitempty"`
-	CommitSHA       string      `json:"commit_sha,omitempty"`
-	SCMProvider     string      `json:"scm_provider,omitempty"`
+	RunID          string      `json:"run_id"`
+	Name           string      `json:"name"`
+	Status         JobStatus   `json:"status"`
+	CreatedAt      time.Time   `json:"created_at"`
+	Jobs           []JobDetail `json:"jobs"`
+	AppliedStepIDs []string    `json:"applied_step_ids,omitempty"`
+	OrgID          string      `json:"org_id,omitempty"`
+	ProjectID      string      `json:"project_id,omitempty"`
+	CommitSHA      string      `json:"commit_sha,omitempty"`
+	SCMProvider    string      `json:"scm_provider,omitempty"`
 }
 
 // JobDetail carries everything the DAG renderer needs for one node.
@@ -360,10 +362,11 @@ type PolicyTransformer struct {
 
 // TransformerInput is what the policy engine writes to the transformer's stdin.
 type TransformerInput struct {
-	PipelineName string    `json:"pipeline_name"`
-	Steps        []StepDef `json:"steps"`
-	WorkspaceDir string    `json:"workspace_dir"`
-	OrgID        string    `json:"org_id"`
+	PipelineName   string    `json:"pipeline_name"`
+	Steps          []StepDef `json:"steps"`
+	WorkspaceDir   string    `json:"workspace_dir"`
+	OrgID          string    `json:"org_id"`
+	AppliedStepIDs []string  `json:"applied_step_ids,omitempty"`
 }
 
 // ProjectInfo represents a source repo registered with Forge.

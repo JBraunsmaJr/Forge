@@ -265,31 +265,37 @@ func (a *Agent) Run(ctx context.Context) error {
 		if pbSpec := msg.GetJob(); pbSpec != nil {
 			// Convert pb.JobSpec back to api.JobSpec
 			spec := &api.JobSpec{
-				JobID:        pbSpec.JobId,
-				RunID:        pbSpec.RunId,
-				LeaseID:      pbSpec.LeaseId,
-				StepID:       pbSpec.StepId,
-				Image:        pbSpec.Image,
-				Entrypoint:   pbSpec.Entrypoint,
-				Command:      pbSpec.Command,
-				WorkDir:      pbSpec.WorkDir,
-				Env:          pbSpec.Env,
-				Inputs:       pbSpec.Inputs,
-				SecretNames:  pbSpec.SecretNames,
-				DockerSocket: pbSpec.DockerSocket,
-				Timeout:      time.Duration(pbSpec.TimeoutNs),
-				Type:         pbSpec.Type,
-				OrgID:        pbSpec.OrgId,
-				ProjectID:    pbSpec.ProjectId,
-				CommitSHA:    pbSpec.CommitSha,
-				Condition:    pbSpec.Condition,
-				AlwaysRun:    pbSpec.AlwaysRun,
+				JobID:          pbSpec.JobId,
+				RunID:          pbSpec.RunId,
+				LeaseID:        pbSpec.LeaseId,
+				StepID:         pbSpec.StepId,
+				Image:          pbSpec.Image,
+				Entrypoint:     pbSpec.Entrypoint,
+				Command:        pbSpec.Command,
+				WorkDir:        pbSpec.WorkDir,
+				Env:            pbSpec.Env,
+				Inputs:         pbSpec.Inputs,
+				SecretNames:    pbSpec.SecretNames,
+				DockerSocket:   pbSpec.DockerSocket,
+				Timeout:        time.Duration(pbSpec.TimeoutNs),
+				Type:           pbSpec.Type,
+				OrgID:          pbSpec.OrgId,
+				ProjectID:      pbSpec.ProjectId,
+				CommitSHA:      pbSpec.CommitSha,
+				Condition:      pbSpec.Condition,
+				AlwaysRun:      pbSpec.AlwaysRun,
+				AppliedStepIDs: pbSpec.AppliedStepIds,
+				WorkspaceDir:   pbSpec.WorkspaceDir,
+				Ref:            pbSpec.Ref,
 			}
 
 			if pbSpec.PipelineRef != nil {
 				spec.PipelineRef = &api.PipelineRef{
-					Path: pbSpec.PipelineRef.Path,
-					Wait: pbSpec.PipelineRef.Wait,
+					Path:             pbSpec.PipelineRef.Path,
+					Wait:             pbSpec.PipelineRef.Wait,
+					Variables:        pbSpec.PipelineRef.Variables,
+					ArtifactsSend:    pbSpec.PipelineRef.ArtifactsSend,
+					ArtifactsReceive: pbSpec.PipelineRef.ArtifactsReceive,
 				}
 			}
 
@@ -597,15 +603,18 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		}
 		defer os.RemoveAll(jobBaseDir)
 	} else {
-		// Verify workspace exists on this agent
+		// Use provided workspace dir. If it doesn't exist, create it.
+		// Automatic checkout logic below will populate it if empty.
 		if _, err := os.Stat(jobWorkspace); err != nil {
-			err = fmt.Errorf("shared workspace not found on this agent: %w", err)
-			a.reportComplete(spec, 1, 0, []api.LogEvent{{
-				Timestamp: time.Now(),
-				Level:     "ERROR",
-				Message:   err.Error(),
-			}}, "", false)
-			return err
+			if err := os.MkdirAll(jobWorkspace, 0755); err != nil {
+				err = fmt.Errorf("creating shared workspace: %w", err)
+				a.reportComplete(spec, 1, 0, []api.LogEvent{{
+					Timestamp: time.Now(),
+					Level:     "ERROR",
+					Message:   err.Error(),
+				}}, "", false)
+				return err
+			}
 		}
 	}
 
@@ -2223,13 +2232,15 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	// Submit the child run.
 	childRunName := fmt.Sprintf("%s → %s", spec.StepID, childPipeline.Name)
 	body, _ := json.Marshal(api.SubmitRunRequest{
-		PipelineName:    childRunName,
-		Steps:           steps,
-		WorkspaceDir:    jobWorkspace,
-		OrgID:           spec.OrgID,
-		ProjectID:       spec.ProjectID,
-		Ref:             spec.Ref,
-		AppliedPolicies: spec.AppliedPolicies,
+		PipelineName:     childRunName,
+		Steps:            steps,
+		WorkspaceDir:     jobWorkspace,
+		PreferredAgentID: a.id,
+		OrgID:            spec.OrgID,
+		ProjectID:        spec.ProjectID,
+		Ref:              spec.Ref,
+		CommitSHA:        spec.CommitSHA,
+		AppliedStepIDs:   spec.AppliedStepIDs,
 	})
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -2257,6 +2268,12 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		logs = append(logs, pipelineLog("INFO", "fire-and-forget — not waiting for child run")...)
 		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "", false)
 	}
+
+	// Release the concurrency slot while waiting for the child pipeline to finish.
+	// This prevents deadlocks if the child pipeline jobs have affinity to this agent
+	// and the agent's concurrency limit is reached.
+	<-a.semaphore
+	defer func() { a.semaphore <- struct{}{} }()
 
 	// Poll until the child run finishes.
 	finalStatus, pollLogs := a.waitForChildRun(ctx, runResp.RunID)

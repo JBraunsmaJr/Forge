@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id               TEXT        PRIMARY KEY,
     name             TEXT        NOT NULL,
     workspace_dir    TEXT        NOT NULL DEFAULT '',
-    applied_policies JSONB       NOT NULL DEFAULT '[]',
+    applied_step_ids JSONB       NOT NULL DEFAULT '[]',
     org_id           TEXT        REFERENCES orgs(id) ON DELETE SET NULL,
     project_id       TEXT,
     ref              TEXT,
@@ -87,6 +87,8 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS ref TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS commit_sha TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS scm_provider TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS preferred_agent_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS applied_step_ids JSONB NOT NULL DEFAULT '[]';
 
 -- ── Jobs ─────────────────────────────────────────────────────────────────────
 -- References runs — must come after runs.
