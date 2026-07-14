@@ -201,31 +201,37 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				s.scheduler.publishRunDetail(spec.RunID)
 
 				pbSpec := &pb.JobSpec{
-					JobId:        spec.JobID,
-					RunId:        spec.RunID,
-					LeaseId:      spec.LeaseID,
-					StepId:       spec.StepID,
-					Image:        spec.Image,
-					Entrypoint:   spec.Entrypoint,
-					Command:      spec.Command,
-					WorkDir:      spec.WorkDir,
-					Env:          spec.Env,
-					Inputs:       spec.Inputs,
-					SecretNames:  spec.SecretNames,
-					DockerSocket: spec.DockerSocket,
-					TimeoutNs:    int64(spec.Timeout),
-					Type:         spec.Type,
-					OrgId:        spec.OrgID,
-					ProjectId:    spec.ProjectID,
-					CommitSha:    spec.CommitSHA,
-					Condition:    spec.Condition,
-					AlwaysRun:    spec.AlwaysRun,
+					JobId:          spec.JobID,
+					RunId:          spec.RunID,
+					LeaseId:        spec.LeaseID,
+					StepId:         spec.StepID,
+					Image:          spec.Image,
+					Entrypoint:     spec.Entrypoint,
+					Command:        spec.Command,
+					WorkDir:        spec.WorkDir,
+					Env:            spec.Env,
+					Inputs:         spec.Inputs,
+					SecretNames:    spec.SecretNames,
+					DockerSocket:   spec.DockerSocket,
+					TimeoutNs:      int64(spec.Timeout),
+					Type:           spec.Type,
+					OrgId:          spec.OrgID,
+					ProjectId:      spec.ProjectID,
+					CommitSha:      spec.CommitSHA,
+					Condition:      spec.Condition,
+					AlwaysRun:      spec.AlwaysRun,
+					AppliedStepIds: spec.AppliedStepIDs,
+					WorkspaceDir:   spec.WorkspaceDir,
+					Ref:            spec.Ref,
 				}
 
 				if spec.PipelineRef != nil {
 					pbSpec.PipelineRef = &pb.PipelineRef{
-						Path: spec.PipelineRef.Path,
-						Wait: spec.PipelineRef.Wait,
+						Path:             spec.PipelineRef.Path,
+						Wait:             spec.PipelineRef.Wait,
+						Variables:        spec.PipelineRef.Variables,
+						ArtifactsSend:    spec.PipelineRef.ArtifactsSend,
+						ArtifactsReceive: spec.PipelineRef.ArtifactsReceive,
 					}
 				}
 

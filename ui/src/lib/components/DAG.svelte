@@ -184,9 +184,6 @@
             Pipeline DAG — 
             {#if $activeRun}
                 {$activeRun.name}
-                {#each $activeRun.applied_policies || [] as policy}
-                    <span class="policy-badge">🛡 {policy}</span>
-                {/each}
 
                 {#if comparison && comparison.diff_ms !== 0}
                     <span class="comparison-badge" class:regression={comparison.regression_detected}>

@@ -13,31 +13,29 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/api"
 )
 
+var runTransformerFunc = runTransformer
+
 func Apply(
 	userSteps []api.StepDef,
 	policies []api.PolicyInfo,
 	pipelineName, workspaceDir, orgID string,
-	previouslyApplied []string,
-) ([]api.StepDef, []string, error) {
+	previouslyAppliedSteps []string,
+) ([]api.StepDef, error) {
 
 	steps := userSteps
-	var appliedPolicies []string
 
 	/*
 		Track existing IDs for ForbidOverride checks during static injection.
 		- We rebuild this map after each transformer since it can add/remove steps.
 	*/
 	existingIDs := buildIDSet(steps)
-	appliedMap := make(map[string]bool)
-	for _, name := range previouslyApplied {
-		appliedMap[name] = true
+	parentIDs := make(map[string]bool)
+	for _, id := range previouslyAppliedSteps {
+		existingIDs[id] = true
+		parentIDs[id] = true
 	}
 
 	for _, pol := range policies {
-		if appliedMap[pol.Name] {
-			continue // Already applied to parent/previous run
-		}
-		policyApplied := false
 
 		// Static injection
 		if len(pol.Steps) > 0 {
@@ -46,7 +44,7 @@ func Apply(
 				step.PolicySource = pol.Name
 				if existingIDs[step.ID] {
 					if pol.ForbidOverride {
-						return nil, nil, fmt.Errorf(
+						return nil, fmt.Errorf(
 							"policy %q: step %q is mandatory and cannot be overridden",
 							pol.Name, step.ID,
 						)
@@ -55,7 +53,6 @@ func Apply(
 				}
 				injected = append(injected, step)
 				existingIDs[step.ID] = true
-				policyApplied = true
 			}
 			if len(injected) > 0 {
 				// Policy steps first, then the rest.
@@ -65,15 +62,36 @@ func Apply(
 
 		// Transformer ------------------------------------------------------------------
 		if pol.Transformer != nil {
-			newSteps, err := runTransformer(pol.Transformer, steps, api.TransformerInput{
-				PipelineName: pipelineName,
-				Steps:        steps,
-				WorkspaceDir: workspaceDir,
-				OrgID:        orgID,
+			beforeIDs := buildIDSet(steps)
+
+			// Collect all IDs currently in the pipeline (parent + current run so far)
+			allExistingIDs := make([]string, 0, len(existingIDs))
+			for id := range existingIDs {
+				allExistingIDs = append(allExistingIDs, id)
+			}
+
+			newSteps, err := runTransformerFunc(pol.Transformer, steps, api.TransformerInput{
+				PipelineName:   pipelineName,
+				Steps:          steps,
+				WorkspaceDir:   workspaceDir,
+				OrgID:          orgID,
+				AppliedStepIDs: allExistingIDs,
 			})
 			if err != nil {
-				return nil, nil, fmt.Errorf("policy %q transformer: %w", pol.Name, err)
+				return nil, fmt.Errorf("policy %q transformer: %w", pol.Name, err)
 			}
+
+			// Filter out steps that were already processed in the parent run OR
+			// by previous policies in the same run, but were NOT in the child
+			// pipeline before this transformer ran.
+			filtered := make([]api.StepDef, 0, len(newSteps))
+			for _, s := range newSteps {
+				if existingIDs[s.ID] && !beforeIDs[s.ID] {
+					continue
+				}
+				filtered = append(filtered, s)
+			}
+			newSteps = filtered
 
 			// Mark any step the transformer added with the policy name so the UI can add a badge to it.
 			for i := range newSteps {
@@ -84,15 +102,26 @@ func Apply(
 
 			steps = newSteps
 			existingIDs = buildIDSet(steps)
-			policyApplied = true
-		}
-
-		if policyApplied {
-			appliedPolicies = append(appliedPolicies, pol.Name)
+			for _, id := range previouslyAppliedSteps {
+				existingIDs[id] = true
+			}
 		}
 	}
 
-	return steps, appliedPolicies, nil
+	// Final deduplication safeguard: ensure all step IDs are unique, preserving the first occurrence.
+	// This catches any duplicates that might have leaked through complex transformer compositions.
+	finalSteps := make([]api.StepDef, 0, len(steps))
+	seen := make(map[string]bool)
+	for _, s := range steps {
+		if seen[s.ID] {
+			continue
+		}
+		finalSteps = append(finalSteps, s)
+		seen[s.ID] = true
+	}
+	steps = finalSteps
+
+	return steps, nil
 }
 
 // runTransformer executes a policy transformer, piping the input JSON to its stdin and parsing

@@ -21,16 +21,16 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string, parentRunID string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, steps, appliedPolicies, parentRunID)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID, steps, appliedStepIDs, parentRunID)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider string, steps []api.StepDef, appliedPolicies []string, parentRunID string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID string) (string, error) {
 
-	policiesJSON, _ := json.Marshal(appliedPolicies)
+	stepIDsJSON, _ := json.Marshal(appliedStepIDs)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -48,10 +48,15 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 		parentRunParam = parentRunID
 	}
 
+	var preferredAgentParam interface{}
+	if preferredAgentID != "" {
+		preferredAgentParam = preferredAgentID
+	}
+
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_policies, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		runID, name, workspaceDir, policiesJSON, orgIDParam, projectID, ref, commitSHA, scmProvider, parentRunParam,
+		`INSERT INTO runs (id, name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		runID, name, workspaceDir, stepIDsJSON, orgIDParam, projectID, ref, commitSHA, scmProvider, parentRunParam, preferredAgentParam,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -161,8 +166,16 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 
 	row := s.db.QueryRow(`
 		WITH next AS (
-			SELECT id FROM jobs
-			WHERE  status = 'queued'
+			SELECT jobs.id FROM jobs
+			JOIN runs ON jobs.run_id = runs.id
+			WHERE  jobs.status = 'queued'
+			ORDER BY
+				CASE
+					WHEN runs.preferred_agent_id = $2 THEN 0
+					WHEN runs.preferred_agent_id IS NULL THEN 1
+					ELSE 2
+				END ASC,
+				jobs.id ASC
 			LIMIT  1
 			FOR UPDATE SKIP LOCKED
 		)
@@ -187,7 +200,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
-			runs.applied_policies
+			runs.applied_step_ids
 		`,
 		leaseID, agentID, now,
 	)
@@ -228,7 +241,7 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
-			runs.applied_policies
+			runs.applied_step_ids
 		`,
 		leaseID, now,
 	)
@@ -244,7 +257,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		pipelineRefJSON, releaseConfigJSON         string
 		artifactUploadsJSON, artifactDownloadsJSON string
 		workDir, workspaceDir                      string
-		appliedPoliciesJSON                        []byte
+		appliedStepIDsJSON                         []byte
 		timeoutNS                                  int64
 		dockerSocket                               bool
 		condition                                  string
@@ -261,7 +274,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		&releaseConfigJSON,
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 		&workspaceDir,
-		&appliedPoliciesJSON,
+		&appliedStepIDsJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, false
@@ -273,13 +286,13 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 
 	var entrypoint, command, secretNames []string
 	var env map[string]string
-	var inputs, appliedPolicies []string
+	var inputs, appliedStepIDs []string
 	json.Unmarshal(entrypointJSON, &entrypoint)
 	json.Unmarshal(commandJSON, &command)
 	json.Unmarshal(envJSON, &env)
 	json.Unmarshal(inputsJSON, &inputs)
 	json.Unmarshal(secretsJSON, &secretNames)
-	json.Unmarshal(appliedPoliciesJSON, &appliedPolicies)
+	json.Unmarshal(appliedStepIDsJSON, &appliedStepIDs)
 
 	var pipelineRef *api.PipelineRef
 	if pipelineRefJSON != "null" && pipelineRefJSON != "" {
@@ -317,7 +330,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		DockerSocket:      dockerSocket,
 		Type:              stepType,
 		Condition:         condition,
-		AppliedPolicies:   appliedPolicies,
+		AppliedStepIDs:    appliedStepIDs,
 		WorkspaceDir:      workspaceDir,
 		AlwaysRun:         alwaysRun,
 		OrgID:             orgID,
@@ -826,11 +839,10 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 // RunDetail returns the full run state for the DAG view.
 func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	detail := &api.RunDetail{RunID: runID}
-	var policiesJSON []byte
 	var orgID, projectID, commitSHA, scmProvider sql.NullString
 	err := s.db.QueryRow(
-		`SELECT name, applied_policies, created_at, org_id, project_id, commit_sha, scm_provider FROM runs WHERE id=$1`, runID,
-	).Scan(&detail.Name, &policiesJSON, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider)
+		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider FROM runs WHERE id=$1`, runID,
+	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider)
 	if err != nil {
 		return nil, false
 	}
@@ -847,9 +859,6 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	if scmProvider.Valid {
 		detail.SCMProvider = scmProvider.String
 	}
-
-	var appliedPolicies []string
-	json.Unmarshal(policiesJSON, &appliedPolicies)
 
 	rows, err := s.db.Query(`
 		SELECT id, step_id, status, depends_on,
@@ -879,7 +888,6 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		jobs = []api.JobDetail{}
 	}
 	detail.Jobs = jobs
-	detail.AppliedPolicies = appliedPolicies
 	detail.Status = overallStatus(statuses)
 
 	return detail, true
@@ -1169,17 +1177,17 @@ func (s *Store) GetJobStepID(jobID string) string {
 
 // RerunSteps returns the original step definitions and workspace dir for a run
 // so it can be resubmitted as a new run.
-func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, ref, commitSHA string, appliedPolicies []string, err error) {
-	var policiesJSON []byte
-	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,''), applied_policies FROM runs WHERE id=$1`, runID).
-		Scan(&name, &workspaceDir, &orgID, &projectID, &ref, &commitSHA, &policiesJSON)
+func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID string, appliedStepIDs []string, err error) {
+	var stepIDsJSON []byte
+	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,''), COALESCE(preferred_agent_id,''), applied_step_ids FROM runs WHERE id=$1`, runID).
+		Scan(&name, &workspaceDir, &orgID, &projectID, &ref, &commitSHA, &preferredAgentID, &stepIDsJSON)
 	if err == sql.ErrNoRows {
-		return "", nil, "", "", "", "", "", nil, fmt.Errorf("run %s not found", runID)
+		return "", nil, "", "", "", "", "", "", nil, fmt.Errorf("run %s not found", runID)
 	}
 	if err != nil {
-		return "", nil, "", "", "", "", "", nil, err
+		return "", nil, "", "", "", "", "", "", nil, err
 	}
-	json.Unmarshal(policiesJSON, &appliedPolicies)
+	json.Unmarshal(stepIDsJSON, &appliedStepIDs)
 
 	rows, err := s.db.Query(`
 		SELECT step_id, step_type, image, entrypoint, command, work_dir, env,
@@ -1192,7 +1200,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       status
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
-		return "", nil, "", "", "", "", "", nil, err
+		return "", nil, "", "", "", "", "", "", nil, err
 	}
 	defer rows.Close()
 
@@ -1260,7 +1268,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			Status:            api.JobStatus(status),
 		})
 	}
-	return name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, nil
+	return name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, nil
 }
 
 // RecordStepResult stores a step outcome for flaky detection analysis.

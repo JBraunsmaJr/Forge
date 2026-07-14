@@ -86,7 +86,6 @@ export interface RunComparison {
 
 export interface RunDetail extends Run {
     jobs: Job[];
-    applied_policies: string[];
 }
 
 export interface LogEvent {

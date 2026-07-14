@@ -244,7 +244,7 @@ The browser uses xterm.js to render the terminal, including full ANSI escape cod
 
 ```
 runs
-  id, name, workspace_dir, applied_policies, org_id, project_id, created_at
+  id, name, workspace_dir, org_id, project_id, created_at
 
 jobs
   id, run_id, step_id, step_type, image, command, work_dir,

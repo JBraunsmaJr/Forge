@@ -436,10 +436,8 @@ func (s *Server) triggerWebhookRun(
 		return "", fmt.Errorf("populating workspace from cache: %w", err)
 	}
 
-	// Apply org policies if this project has an org.
-	var appliedPolicies []string
 	if proj.OrgID != "" {
-		steps, appliedPolicies, err = s.applyWebhookPolicies(steps, proj.OrgID, pipeline.Name, workspaceDir)
+		steps, err = s.applyWebhookPolicies(steps, proj.OrgID, pipeline.Name, workspaceDir)
 		if err != nil {
 			return "", fmt.Errorf("policy injection: %w", err)
 		}
@@ -474,7 +472,12 @@ func (s *Server) triggerWebhookRun(
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, steps, appliedPolicies, "")
+	var appliedStepIDs []string
+	for _, s := range steps {
+		appliedStepIDs = append(appliedStepIDs, s.ID)
+	}
+
+	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, "", steps, appliedStepIDs, "")
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}
@@ -519,13 +522,13 @@ func fetchRawFile(url, token string) ([]byte, error) {
 }
 
 // applyPoliciesForWebhook applies org policies before submitting a webhook run.
-func (s *Server) applyWebhookPolicies(steps []api.StepDef, orgID, pipelineName, workspaceDir string) ([]api.StepDef, []string, error) {
+func (s *Server) applyWebhookPolicies(steps []api.StepDef, orgID, pipelineName, workspaceDir string) ([]api.StepDef, error) {
 	if orgID == "" {
-		return steps, nil, nil
+		return steps, nil
 	}
 	policies, ok := s.orgs.GetPolicies(orgID)
 	if !ok || len(policies) == 0 {
-		return steps, nil, nil
+		return steps, nil
 	}
 	return policyengine.Apply(steps, policies, pipelineName, workspaceDir, orgID, nil)
 }

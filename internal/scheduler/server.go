@@ -1123,7 +1123,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		cannot bypass it by emitting steps from the pipeline.json.
 	*/
 	steps := req.Steps
-	var appliedPolicies []string
+	appliedStepIDs := req.AppliedStepIDs
 
 	if req.OrgID != "" {
 		policies, ok := s.orgs.GetPolicies(req.OrgID)
@@ -1158,10 +1158,10 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			steps, appliedPolicies, err = policyengine.Apply(
+			steps, err = policyengine.Apply(
 				steps, policies,
 				req.PipelineName, workspaceDir, req.OrgID,
-				req.AppliedPolicies,
+				req.AppliedStepIDs,
 			)
 			if err != nil {
 
@@ -1178,7 +1178,21 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 
 	steps = PruneSteps(steps, req.Ref)
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", steps, appliedPolicies, "")
+	// Collect all step IDs that will be part of this run to propagate them to children.
+	for _, s := range steps {
+		found := false
+		for _, id := range appliedStepIDs {
+			if id == s.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			appliedStepIDs = append(appliedStepIDs, s.ID)
+		}
+	}
+
+	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", req.PreferredAgentID, steps, appliedStepIDs, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1189,12 +1203,8 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 	runsTotal.WithLabelValues(req.OrgID, req.ProjectID, "cli").Inc()
 	jobsSubmittedTotal.WithLabelValues(req.OrgID, req.ProjectID).Add(float64(len(steps)))
 
-	if len(appliedPolicies) > 0 {
-		fmt.Printf("[scheduler] run %s: applied policies %v\n", runID[:8], appliedPolicies)
-	} else {
-		fmt.Printf("[scheduler] run submitted: %s (%s, %d steps)\n",
-			runID[:8], req.PipelineName, len(steps))
-	}
+	fmt.Printf("[scheduler] run submitted: %s (%s, %d steps)\n",
+		runID[:8], req.PipelineName, len(steps))
 
 	s.publishRunDetail(runID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{
@@ -1711,7 +1721,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1732,7 +1742,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1742,7 +1752,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1765,7 +1775,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1782,7 +1792,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	}
 	runID := detail.RunID
 
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, appliedPolicies, err := s.store.RerunSteps(runID)
+	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1832,7 +1842,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", steps, appliedPolicies, runID)
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
