@@ -44,3 +44,4 @@ steps:
     type: pipeline
     pipeline: .forge/main.yml
     depends_on: [ unit-tests ]
+    artifacts_send: [ui-dist.tar.gz]
