@@ -578,19 +578,36 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 		Each job gets its own unique directory to prevent collisions
 		during parallel runs on the same agent.
+		If WorkspaceDir is provided in the spec (e.g. for child pipelines),
+		we use that instead of creating a new one.
 	*/
-	jobBaseDir := filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
-	jobWorkspace := filepath.Join(jobBaseDir, "workspace")
-	if err := os.MkdirAll(jobWorkspace, 0755); err != nil {
-		err = fmt.Errorf("creating job workspace: %w", err)
-		a.reportComplete(spec, 1, 0, []api.LogEvent{{
-			Timestamp: time.Now(),
-			Level:     "ERROR",
-			Message:   err.Error(),
-		}}, "", false)
-		return err
+	jobWorkspace := spec.WorkspaceDir
+	jobBaseDir := ""
+	if jobWorkspace == "" {
+		jobBaseDir = filepath.Join(a.workspaceDir, "forge-job-"+spec.JobID)
+		jobWorkspace = filepath.Join(jobBaseDir, "workspace")
+		if err := os.MkdirAll(jobWorkspace, 0755); err != nil {
+			err = fmt.Errorf("creating job workspace: %w", err)
+			a.reportComplete(spec, 1, 0, []api.LogEvent{{
+				Timestamp: time.Now(),
+				Level:     "ERROR",
+				Message:   err.Error(),
+			}}, "", false)
+			return err
+		}
+		defer os.RemoveAll(jobBaseDir)
+	} else {
+		// Verify workspace exists on this agent
+		if _, err := os.Stat(jobWorkspace); err != nil {
+			err = fmt.Errorf("shared workspace not found on this agent: %w", err)
+			a.reportComplete(spec, 1, 0, []api.LogEvent{{
+				Timestamp: time.Now(),
+				Level:     "ERROR",
+				Message:   err.Error(),
+			}}, "", false)
+			return err
+		}
 	}
-	defer os.RemoveAll(jobBaseDir)
 
 	/*
 		If the job belongs to a repository (ProjectID + CommitSHA are set),
@@ -2206,12 +2223,13 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	// Submit the child run.
 	childRunName := fmt.Sprintf("%s → %s", spec.StepID, childPipeline.Name)
 	body, _ := json.Marshal(api.SubmitRunRequest{
-		PipelineName: childRunName,
-		Steps:        steps,
-		WorkspaceDir: a.workspaceDir,
-		OrgID:        spec.OrgID,
-		ProjectID:    spec.ProjectID,
-		Ref:          spec.Ref,
+		PipelineName:    childRunName,
+		Steps:           steps,
+		WorkspaceDir:    jobWorkspace,
+		OrgID:           spec.OrgID,
+		ProjectID:       spec.ProjectID,
+		Ref:             spec.Ref,
+		AppliedPolicies: spec.AppliedPolicies,
 	})
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {

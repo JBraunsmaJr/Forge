@@ -17,6 +17,7 @@ func Apply(
 	userSteps []api.StepDef,
 	policies []api.PolicyInfo,
 	pipelineName, workspaceDir, orgID string,
+	previouslyApplied []string,
 ) ([]api.StepDef, []string, error) {
 
 	steps := userSteps
@@ -27,8 +28,15 @@ func Apply(
 		- We rebuild this map after each transformer since it can add/remove steps.
 	*/
 	existingIDs := buildIDSet(steps)
+	appliedMap := make(map[string]bool)
+	for _, name := range previouslyApplied {
+		appliedMap[name] = true
+	}
 
 	for _, pol := range policies {
+		if appliedMap[pol.Name] {
+			continue // Already applied to parent/previous run
+		}
 		policyApplied := false
 
 		// Static injection

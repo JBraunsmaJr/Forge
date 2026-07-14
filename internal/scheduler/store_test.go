@@ -66,6 +66,9 @@ func TestSubmitAndLease(t *testing.T) {
 	if spec.LeaseID == "" {
 		t.Error("expected a lease ID")
 	}
+	if spec.WorkspaceDir != "/workspace" {
+		t.Errorf("expected WorkspaceDir '/workspace', got %q", spec.WorkspaceDir)
+	}
 }
 
 func TestLeaseEmpty(t *testing.T) {

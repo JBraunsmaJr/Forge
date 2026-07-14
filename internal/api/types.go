@@ -49,6 +49,12 @@ type JobSpec struct {
 	// Scheduler-level keywords (success()/failure()/always()/tag()/branch(...)) are handled by
 	// unlockDownstream; env-var expressions ($BRANCH == 'main') are handled here.
 	Condition string `json:"condition,omitempty"`
+	// WorkspaceDir is the path to the shared workspace for the run.
+	// (added for Bug 3: child pipelines sharing parent workspace)
+	WorkspaceDir string `json:"workspace_dir,omitempty"`
+	// AppliedPolicies is a list of policy names already applied to this run
+	// (or its parent), used to avoid duplicate injection.
+	AppliedPolicies []string `json:"applied_policies,omitempty"`
 	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
 	// log it clearly (the scheduler already acted on it via unlockDownstream).
 	AlwaysRun bool `json:"always_run,omitempty"`
@@ -68,6 +74,8 @@ type SubmitRunRequest struct {
 	ProjectID    string    `json:"project_id,omitempty"` // scopes secrets to this project
 	Ref          string    `json:"ref,omitempty"`        // Git ref, e.g. "refs/heads/main"
 	CommitSHA    string    `json:"commit_sha,omitempty"`
+	// AppliedPolicies is a list of policy names already applied to the parent run.
+	AppliedPolicies []string `json:"applied_policies,omitempty"`
 }
 
 // StepDef carries a step's definition inside a SubmitRunRequest.

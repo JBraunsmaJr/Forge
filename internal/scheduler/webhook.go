@@ -527,7 +527,7 @@ func (s *Server) applyWebhookPolicies(steps []api.StepDef, orgID, pipelineName, 
 	if !ok || len(policies) == 0 {
 		return steps, nil, nil
 	}
-	return policyengine.Apply(steps, policies, pipelineName, workspaceDir, orgID)
+	return policyengine.Apply(steps, policies, pipelineName, workspaceDir, orgID, nil)
 }
 
 func (s *Server) extractSourceToDir(repoURL, commit, dir string) error {
