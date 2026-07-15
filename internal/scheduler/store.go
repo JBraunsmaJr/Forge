@@ -310,9 +310,13 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	json.Unmarshal([]byte(artifactDownloadsJSON), &artifactDownloads)
 
 	// Fetch org_id, project_id and ref from the parent run for secret scoping and conditions.
-	var orgID, projectID, ref, commitSHA string
-	s.db.QueryRow(`SELECT COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,'') FROM runs WHERE id=$1`, runID).
-		Scan(&orgID, &projectID, &ref, &commitSHA)
+	var orgID, projectID, ref, commitSHA, repoURL string
+	s.db.QueryRow(`
+		SELECT COALESCE(r.org_id, ''), COALESCE(r.project_id, ''), COALESCE(r.ref, ''), COALESCE(r.commit_sha, ''), COALESCE(p.repo_url, '')
+		FROM runs r
+		LEFT JOIN projects p ON r.project_id = p.id
+		WHERE r.id=$1`, runID).
+		Scan(&orgID, &projectID, &ref, &commitSHA, &repoURL)
 
 	return &api.JobSpec{
 		JobID:             jobID,
@@ -337,6 +341,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		ProjectID:         projectID,
 		Ref:               ref,
 		CommitSHA:         commitSHA,
+		RepoURL:           repoURL,
 		PipelineRef:       pipelineRef,
 		Release:           releaseConfig,
 		ArtifactUploads:   artifactUploads,
@@ -667,6 +672,38 @@ func (s *Store) ApproveJob(jobID string) error {
 	err = tx.QueryRow(`
 		UPDATE jobs 
 		SET    status = 'passed', 
+		       finished_at = NOW(),
+		       duration_ms = COALESCE(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000, 0)::BIGINT
+		WHERE  id = $1 AND status = 'approval'
+		RETURNING run_id`, jobID).Scan(&runID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("job not found or not in approval state")
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := s.unlockDownstream(tx, runID); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) DenyJob(jobID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var runID string
+	err = tx.QueryRow(`
+		UPDATE jobs 
+		SET    status = 'failed', 
 		       finished_at = NOW(),
 		       duration_ms = COALESCE(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000, 0)::BIGINT
 		WHERE  id = $1 AND status = 'approval'
@@ -1327,4 +1364,59 @@ func (s *Store) FlakySteps(windowDays, minRuns int, minFlakeRate float64) ([]api
 		}
 	}
 	return results, nil
+}
+
+func (s *Store) ListAuditLogs(orgID, eventType string, from, to *time.Time) ([]api.AuditEntry, error) {
+	query := `SELECT id, timestamp, actor_id, actor_name, action, target_type, target_id, details, ip_address, org_id
+	          FROM audit_logs WHERE 1=1`
+	var args []interface{}
+	argCount := 1
+
+	if orgID != "" {
+		query += fmt.Sprintf(" AND org_id = $%d", argCount)
+		args = append(args, orgID)
+		argCount++
+	}
+	if eventType != "" {
+		query += fmt.Sprintf(" AND action = $%d", argCount)
+		args = append(args, eventType)
+		argCount++
+	}
+	if from != nil {
+		query += fmt.Sprintf(" AND timestamp >= $%d", argCount)
+		args = append(args, *from)
+		argCount++
+	}
+	if to != nil {
+		query += fmt.Sprintf(" AND timestamp <= $%d", argCount)
+		args = append(args, *to)
+		argCount++
+	}
+
+	query += " ORDER BY timestamp DESC"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []api.AuditEntry
+	for rows.Next() {
+		var l api.AuditEntry
+		var detailsJSON []byte
+		var ip, oid, aid, aname, tt, tid sql.NullString
+		if err := rows.Scan(&l.ID, &l.Timestamp, &aid, &aname, &l.Action, &tt, &tid, &detailsJSON, &ip, &oid); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(detailsJSON, &l.Details)
+		l.ActorID = aid.String
+		l.ActorName = aname.String
+		l.TargetType = tt.String
+		l.TargetID = tid.String
+		l.IPAddress = ip.String
+		l.OrgID = oid.String
+		logs = append(logs, l)
+	}
+	return logs, nil
 }

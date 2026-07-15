@@ -155,6 +155,19 @@ export interface Token {
     created_at: string;
 }
 
+export interface AuditEntry {
+    id: string;
+    timestamp: string;
+    actor_id: string;
+    actor_name: string;
+    action: string;
+    target_type: string;
+    target_id: string;
+    details: any;
+    ip_address?: string;
+    org_id?: string;
+}
+
 export interface AgentInfo {
     id: string;
     last_heartbeat: string;
@@ -325,6 +338,14 @@ export const api = {
     // Agent management
     listAgents: (): Promise<AgentInfo[]> =>
         fetchAuth('/api/v1/agents').then(r => r?.json()).then(data => data || []),
+
+    // Audit management
+    listAuditLogs: (orgID = '', eventType = '', from = '', to = ''): Promise<AuditEntry[]> => {
+        let url = `/api/v1/audit?org_id=${orgID}&event_type=${eventType}`;
+        if (from) url += `&from=${from}`;
+        if (to) url += `&to=${to}`;
+        return fetchAuth(url).then(r => r?.json()).then(data => data || []);
+    },
 
     // Auth & SSO
     authStatus: (): Promise<AuthStatus> =>

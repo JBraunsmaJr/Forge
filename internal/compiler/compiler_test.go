@@ -30,7 +30,7 @@ func writeTempPipeline(t *testing.T, p jsonPipeline) string {
 func TestCompile_ValidPipeline(t *testing.T) {
 	path := writeTempPipeline(t, jsonPipeline{
 		Name: "test-pipeline",
-		Steps: []jsonStep{
+		Steps: []JSONStep{
 			{
 				ID:    "lint",
 				Image: "alpine:latest",
@@ -68,7 +68,7 @@ func TestCompile_ValidPipeline(t *testing.T) {
 func TestCompile_Conditions(t *testing.T) {
 	path := writeTempPipeline(t, jsonPipeline{
 		Name: "test-pipeline",
-		Steps: []jsonStep{
+		Steps: []JSONStep{
 			{
 				ID:        "always-run",
 				Image:     "alpine:latest",
@@ -100,7 +100,7 @@ func TestCompile_Conditions(t *testing.T) {
 func TestCompile_MatrixExpansion(t *testing.T) {
 	path := writeTempPipeline(t, jsonPipeline{
 		Name: "matrix-pipeline",
-		Steps: []jsonStep{
+		Steps: []JSONStep{
 			{
 				ID:    "build",
 				Image: "golang:alpine",
@@ -166,7 +166,7 @@ func TestCompile_MatrixExpansion(t *testing.T) {
 func TestCompile_ErrorCases(t *testing.T) {
 	t.Run("missing name", func(t *testing.T) {
 		path := writeTempPipeline(t, jsonPipeline{
-			Steps: []jsonStep{{ID: "x", Run: "echo"}},
+			Steps: []JSONStep{{ID: "x", Run: "echo"}},
 		})
 		_, err := Compile(path)
 		if err == nil {
@@ -185,7 +185,7 @@ func TestCompile_ErrorCases(t *testing.T) {
 	t.Run("step missing run and command", func(t *testing.T) {
 		path := writeTempPipeline(t, jsonPipeline{
 			Name:  "p",
-			Steps: []jsonStep{{ID: "x", Image: "alpine"}},
+			Steps: []JSONStep{{ID: "x", Image: "alpine"}},
 		})
 		_, err := Compile(path)
 		if err == nil {
@@ -196,7 +196,7 @@ func TestCompile_ErrorCases(t *testing.T) {
 	t.Run("unknown dependency", func(t *testing.T) {
 		path := writeTempPipeline(t, jsonPipeline{
 			Name: "p",
-			Steps: []jsonStep{
+			Steps: []JSONStep{
 				{ID: "a", Run: "echo", DependsOn: []string{"does-not-exist"}},
 			},
 		})
@@ -209,7 +209,7 @@ func TestCompile_ErrorCases(t *testing.T) {
 	t.Run("invalid timeout", func(t *testing.T) {
 		path := writeTempPipeline(t, jsonPipeline{
 			Name: "p",
-			Steps: []jsonStep{
+			Steps: []JSONStep{
 				{ID: "a", Run: "echo", Timeout: "not-a-duration"},
 			},
 		})
@@ -231,7 +231,7 @@ func TestCompile_ErrorCases(t *testing.T) {
 func TestCompile_Defaults(t *testing.T) {
 	path := writeTempPipeline(t, jsonPipeline{
 		Name:  "p",
-		Steps: []jsonStep{{Image: "alpine:latest", Run: "echo hello"}},
+		Steps: []JSONStep{{Image: "alpine:latest", Run: "echo hello"}},
 	})
 
 	p, err := Compile(path)
@@ -254,7 +254,7 @@ func TestCompile_Defaults(t *testing.T) {
 func TestCompile_RunWrappedInSh(t *testing.T) {
 	path := writeTempPipeline(t, jsonPipeline{
 		Name:  "p",
-		Steps: []jsonStep{{Image: "alpine:latest", Run: "echo a && echo b"}},
+		Steps: []JSONStep{{Image: "alpine:latest", Run: "echo a && echo b"}},
 	})
 
 	p, err := Compile(path)

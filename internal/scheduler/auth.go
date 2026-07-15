@@ -171,6 +171,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		rec, ok := s.tokens.Verify(raw)
 		if !ok {
+			ip := r.RemoteAddr
+			if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+				ip = strings.Split(forwarded, ",")[0]
+			}
+			prefix := ""
+			if len(raw) >= 8 {
+				prefix = raw[:8]
+			}
+			s.store.db.Exec(`
+				INSERT INTO audit_logs (id, action, details, ip_address)
+				VALUES ($1, $2, $3, $4)`,
+				newID(), "auth.failure", []byte(fmt.Sprintf(`{"token_prefix":"%s"}`, prefix)), ip)
+
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			fmt.Fprintf(w, `{"error":"invalid or revoked token"}`)
@@ -331,6 +344,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("[auth] token created: %s (%s)\n", info.Name, info.Role)
+	s.AuditLog(r, "token.create", "token", info.ID, map[string]any{"name": info.Name, "role": info.Role, "org_id": info.OrgID, "project_id": info.ProjectID})
 	writeJSON(w, http.StatusCreated, api.CreateTokenResponse{Token: raw, Info: *info})
 }
 
@@ -350,19 +364,38 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Printf("[auth] token %s revoked\n", r.PathValue("id"))
+	s.AuditLog(r, "token.revoke", "token", r.PathValue("id"), nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) AuditLog(r *http.Request, action, targetType, targetID string, details any) {
 	rec, _ := r.Context().Value(contextKeyToken).(*tokenRecord)
-	var actorID, actorName string
+	var actorID, actorName, orgID string
 	if rec != nil {
 		actorID = rec.ID
 		actorName = rec.Name
+		orgID = rec.OrgID
 	}
+
+	ip := r.RemoteAddr
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		ip = strings.Split(forwarded, ",")[0]
+	}
+
+	// Details can also contain org_id override
+	if m, ok := details.(map[string]any); ok {
+		if o, ok := m["org_id"].(string); ok && o != "" {
+			orgID = o
+		}
+	} else if m, ok := details.(map[string]string); ok {
+		if o, ok := m["org_id"]; ok && o != "" {
+			orgID = o
+		}
+	}
+
 	detailsJSON, _ := json.Marshal(details)
 	s.store.db.Exec(`
-		INSERT INTO audit_logs (id, actor_id, actor_name, action, target_type, target_id, details)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		newID(), actorID, actorName, action, targetType, targetID, detailsJSON)
+		INSERT INTO audit_logs (id, actor_id, actor_name, action, target_type, target_id, details, ip_address, org_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		newID(), actorID, actorName, action, targetType, targetID, detailsJSON, ip, orgID)
 }

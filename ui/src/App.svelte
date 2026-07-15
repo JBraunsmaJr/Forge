@@ -13,6 +13,7 @@
     import AgentsView from './lib/components/AgentsView.svelte';
     import PipelineEditor from './lib/components/PipelineEditor.svelte';
     import LogSearchView from './lib/components/LogSearchView.svelte';
+    import AuditView from './lib/components/AuditView.svelte';
 
     import { api, authUrl, wsUrl, getToken, type Job, type RunDetail } from './lib/api';
     import { activeRun, selectedJob, connStatus, authRequired, runs, currentView, currentUser, navigateToRunID } from './lib/stores';
@@ -191,6 +192,8 @@
                     <PipelineEditor />
                 {:else if $currentView === 'search'}
                     <LogSearchView />
+                {:else if $currentView === 'audit'}
+                    <AuditView />
                 {/if}
             </div>
         {/if}
