@@ -1279,9 +1279,16 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 
 	args := []string{
 		"create",
+		"--entrypoint", "",
 		"--label", "forge.managed=true",
 		"--label", "forge.debug=true",
+		"--label", "forge.run_id=" + spec.RunID,
+		"--label", "forge.job_id=" + spec.JobID,
+		"--label", "forge.agent_id=" + a.id,
 		"--workdir", workDir,
+	}
+	if net := os.Getenv("FORGE_DOCKER_NETWORK"); net != "" {
+		args = append(args, "--network", net)
 	}
 	if spec.DockerSocket {
 		hostSocket := "/var/run/docker.sock"
@@ -1290,8 +1297,16 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		} else if runtime.GOOS == "windows" {
 			hostSocket = `\\.\pipe\docker_engine`
 		}
-		args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
-		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
+
+		// If running in a container, use --volumes-from to inherit the proxied socket mount.
+		// This avoids issues with host paths not matching container paths for named volumes.
+		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+			args = append(args, "--volumes-from", hostname)
+			args = append(args, "-e", "DOCKER_HOST=unix://"+hostSocket)
+		} else {
+			args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
+			args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
+		}
 	}
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
@@ -1342,8 +1357,12 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 			On non-alpine images `apk` doesn't exist -> exits non-zero -> || true no-ops.
 	*/
 	fmt.Printf("[agent %s] preparing terminal tools in %s…\n", a.id[:8], containerID[:12])
+	apkCmd := "apk add -q --no-cache util-linux"
+	if spec.DockerSocket {
+		apkCmd += " docker-cli"
+	}
 	exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c",
-		"apk add -q --no-cache util-linux >/dev/null 2>&1 || true",
+		apkCmd+" >/dev/null 2>&1 || true",
 	).Run()
 
 	// Store container ID so the WS terminal handler can look it up be session.
@@ -2382,7 +2401,8 @@ func (a *Agent) cleanupJobContainers(runID string) {
 	// Stop and remove all containers created by this run
 	out, _ := exec.Command("docker", "ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id).Output()
+		"--filter", "label=forge.agent_id="+a.id,
+		"--filter", "label!=forge.debug=true").Output()
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
 		exec.Command("docker", "stop", "-t", "5", id).Run()
@@ -2434,4 +2454,9 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 	}
 
 	return res.SocketPath, nil
+}
+
+func isRunningInContainer() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
 }

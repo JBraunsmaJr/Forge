@@ -75,38 +75,67 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		if resp.Request.Method == "GET" && strings.HasPrefix(resp.Request.URL.Path, "/containers/json") && resp.StatusCode == http.StatusOK {
+		path := resp.Request.URL.Path
+		resource, id := s.parsePath(path)
+
+		if resp.Request.Method == "GET" && resource == "containers" && (id == "json" || id == "") {
 			return s.filterContainerList(agentID, resp)
 		}
 		return nil
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/containers/") {
-			containerID := strings.TrimPrefix(r.URL.Path, "/containers/")
-			containerID = strings.Split(containerID, "/")[0]
+		resource, id := s.parsePath(r.URL.Path)
 
-			if containerID != "" && containerID != "json" {
-				labels, err := s.getContainerLabels(containerID)
-				if err != nil {
-					// If container doesn't exist, let it pass to proxy to return 404
-					proxy.ServeHTTP(w, r)
-					return
-				}
-
-				if labels["forge.managed"] != "true" {
-					http.Error(w, "not a forge-managed container", http.StatusForbidden)
-					return
-				}
-
-				if labels["forge.agent_id"] != agentID {
-					http.Error(w, "container owned by different agent", http.StatusForbidden)
+		// Destructive or info-leaking actions on specific resources
+		if id != "" && id != "json" && id != "create" && id != "prune" {
+			labels, err := s.getResourceLabels(resource, id)
+			if err == nil {
+				if labels["forge.managed"] != "true" || labels["forge.agent_id"] != agentID {
+					// We return a generic forbidden message for security (don't reveal too much)
+					http.Error(w, fmt.Sprintf("forbidden: access to %s %s denied", resource, id), http.StatusForbidden)
 					return
 				}
 			}
 		}
+
+		// Prune protection
+		if id == "prune" && r.Method == "POST" {
+			// Ideally we would rewrite the query to include filters, but for alpha hardening
+			// let's just block prune from agents for now to be safe.
+			http.Error(w, "forbidden: prune is disabled via proxy", http.StatusForbidden)
+			return
+		}
+
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+func (s *ProxyServer) parsePath(path string) (resource, id string) {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) > 0 && strings.HasPrefix(parts[0], "v") {
+		parts = parts[1:]
+	}
+	if len(parts) > 0 {
+		resource = parts[0]
+	}
+	if len(parts) > 1 {
+		id = parts[1]
+	}
+	return
+}
+
+func (s *ProxyServer) getResourceLabels(resource, id string) (map[string]string, error) {
+	switch resource {
+	case "containers":
+		return s.getContainerLabels(id)
+	case "volumes":
+		return s.getVolumeLabels(id)
+	case "networks":
+		return s.getNetworkLabels(id)
+	default:
+		return nil, fmt.Errorf("unsupported resource type: %s", resource)
+	}
 }
 
 func (s *ProxyServer) getContainerLabels(containerID string) (map[string]string, error) {
@@ -139,6 +168,66 @@ func (s *ProxyServer) getContainerLabels(containerID string) (map[string]string,
 	}
 
 	return result.Config.Labels, nil
+}
+
+func (s *ProxyServer) getVolumeLabels(name string) (map[string]string, error) {
+	client := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return net.Dial("unix", s.DockerSocket)
+			},
+		},
+	}
+
+	resp, err := client.Get("http://docker/volumes/" + name)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("docker returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Labels map[string]string `json:"Labels"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result.Labels, nil
+}
+
+func (s *ProxyServer) getNetworkLabels(id string) (map[string]string, error) {
+	client := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return net.Dial("unix", s.DockerSocket)
+			},
+		},
+	}
+
+	resp, err := client.Get("http://docker/networks/" + id)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("docker returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Labels map[string]string `json:"Labels"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result.Labels, nil
 }
 
 func (s *ProxyServer) filterContainerList(agentID string, resp *http.Response) error {

@@ -349,8 +349,16 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 		} else if runtime.GOOS == "windows" {
 			hostSocket = `\\.\pipe\docker_engine`
 		}
-		args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
-		args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
+
+		// If running in a container, use --volumes-from to inherit the proxied socket mount.
+		// This avoids issues with host paths not matching container paths for named volumes.
+		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+			args = append(args, "--volumes-from", hostname)
+			args = append(args, "-e", "DOCKER_HOST=unix://"+hostSocket)
+		} else {
+			args = append(args, "--volume", hostSocket+":/var/run/docker.sock")
+			args = append(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock")
+		}
 	}
 
 	if len(step.Entrypoint) > 0 {
@@ -501,4 +509,9 @@ func Cleanup() error {
 	}
 
 	return nil
+}
+
+func isRunningInContainer() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
 }

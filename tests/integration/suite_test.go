@@ -205,6 +205,9 @@ type stepDef struct {
 	ArtifactUploads   []uploadSpec      `json:"artifact_uploads,omitempty"`
 	ArtifactDownloads []downloadSpec    `json:"artifact_downloads,omitempty"`
 	Timeout           string            `json:"timeout,omitempty"`
+	DockerSocket      bool              `json:"docker_socket,omitempty"`
+	AlwaysRun         bool              `json:"always_run,omitempty"`
+	Condition         string            `json:"condition,omitempty"`
 }
 
 type uploadSpec struct {
@@ -280,6 +283,17 @@ func assertFailed(t *testing.T, s runStatus) {
 	if s.Status != "failed" {
 		t.Errorf("expected run to fail, got status %q", s.Status)
 	}
+}
+
+func getRun(t *testing.T, c *client, runID string) runStatus {
+	t.Helper()
+	resp, err := c.get("/api/v1/runs/" + runID + "/detail")
+	if err != nil {
+		t.Fatalf("get run detail: %v", err)
+	}
+	var s runStatus
+	decode(t, resp, &s)
+	return s
 }
 
 // echoStep returns a fast alpine step that just prints a message.
