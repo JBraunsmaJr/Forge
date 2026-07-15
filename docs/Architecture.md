@@ -103,10 +103,11 @@ Each agent:
 1. Registers with the local Proxy to receive a unique, label-enforcing Unix socket
 2. Polls the scheduler for the next queued job
 3. Executes the job in a Docker container through the Proxy
-4. Streams log output back to the scheduler in real-time batches
-5. Downloads and uploads artifacts via pre-signed URLs
-6. Heartbeats every 10 seconds to prove it's still alive
-7. Reports completion with exit code and final log set
+4. Joins the Docker network specified by `FORGE_DOCKER_NETWORK` to ensure connectivity to the scheduler/artifact store if they are in the same Docker ecosystem.
+5. Streams log output back to the scheduler in real-time batches
+6. Downloads and uploads artifacts via pre-signed URLs
+7. Heartbeats every 10 seconds to prove it's still alive
+8. Reports completion with exit code and final log set
 
 ### Docker Isolation & Security (Alpha-Hardening)
 

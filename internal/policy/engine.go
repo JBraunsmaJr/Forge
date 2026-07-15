@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,14 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 			"--label", "forge.managed=true",
 			"--label", "forge.policy=true",
 		}
+
+		if net := os.Getenv("FORGE_DOCKER_NETWORK"); net != "" {
+			createArgs = append(createArgs, "--network", net)
+		}
+
+		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+			createArgs = append(createArgs, "--volumes-from", hostname)
+		}
 		if len(t.Command) > 0 {
 			createArgs = append(createArgs, "--entrypoint", t.Command[0])
 			createArgs = append(createArgs, t.Image)
@@ -233,4 +242,9 @@ func buildIDSet(steps []api.StepDef) map[string]bool {
 		m[s.ID] = true
 	}
 	return m
+}
+
+func isRunningInContainer() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
 }
