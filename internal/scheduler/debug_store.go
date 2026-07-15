@@ -14,6 +14,7 @@ const debugSessionTTL = 15 * time.Minute
 // debugSession holds state for one interactive debug container
 type debugSession struct {
 	id           string
+	runID        string
 	jobID        string
 	image        string
 	workDir      string
@@ -57,7 +58,7 @@ func newDebugStore() *DebugStore {
 
 // CreateSession opens a new debug session for a failed job. The caller provides
 // the job's spec (image, env, workspace) so the agent can recreate the exact environment.
-func (d *DebugStore) CreateSession(jobID, image, workDir string,
+func (d *DebugStore) CreateSession(jobID, runID, image, workDir string,
 	env map[string]string, workspaceDir, projectID, commitSHA string, dockerSocket bool) *api.DebugSessionInfo {
 
 	d.mu.Lock()
@@ -68,6 +69,7 @@ func (d *DebugStore) CreateSession(jobID, image, workDir string,
 	now := time.Now()
 	s := &debugSession{
 		id:           id,
+		runID:        runID,
 		jobID:        jobID,
 		image:        image,
 		workDir:      workDir,
@@ -100,6 +102,8 @@ func (d *DebugStore) LeaseNext(agentID string) (*api.DebugJobSpec, bool) {
 		s.agentID = agentID
 		return &api.DebugJobSpec{
 			SessionID:    s.id,
+			RunID:        s.runID,
+			JobID:        s.jobID,
 			Image:        s.image,
 			WorkDir:      s.workDir,
 			Env:          s.env,

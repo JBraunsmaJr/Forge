@@ -242,6 +242,8 @@ type DebugSessionInfo struct {
 // DebugJobSpec is what the scheduler sends to an agent when it leases a debug session.
 type DebugJobSpec struct {
 	SessionID    string            `json:"session_id"`
+	RunID        string            `json:"run_id"`
+	JobID        string            `json:"job_id"`
 	Image        string            `json:"image"`
 	WorkDir      string            `json:"workdir"`
 	Env          map[string]string `json:"env"`
