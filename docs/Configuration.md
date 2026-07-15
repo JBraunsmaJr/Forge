@@ -29,6 +29,7 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_GITHUB_CLIENT_SECRET`  | —                        | GitHub OAuth2 Client Secret for SSO.                                                                                                                                                                     |
 | `FORGE_GITLAB_CLIENT_ID`      | —                        | GitLab OAuth2 Client ID for SSO.                                                                                                                                                                         |
 | `FORGE_GITLAB_CLIENT_SECRET`  | —                        | GitLab OAuth2 Client Secret for SSO.                                                                                                                                                                     |
+| `FORGE_DOCKER_NETWORK`         | —                        | The network that policy transformer containers will be attached to. Must match the network the scheduler container is on.                                                                                |
 | `FORGE_PUBLIC_URL`            | `http://localhost:8080`  | The public URL of the scheduler, used for OAuth callback redirects.                                                                                                                                      |
 | `FORGE_UI_URL`                | `http://localhost:8080`  | The URL to redirect back to after successful SSO login.                                                                                                                                                  |
 
@@ -46,6 +47,7 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_GRPC_ADDR`          | —                       | Optional. Explicit `host:port` for the gRPC session (e.g. `scheduler:50051`). If unset, derived from `FORGE_SCHEDULER_URL`. |
 | `FORGE_DOCKER_MAX_GB`      | `50`                    | Max GB Docker is allowed to use before LRU eviction triggers.                                                               |
 | `FORGE_DOCKER_MAX_PERCENT` | `80`                    | Max disk usage percentage before LRU eviction triggers.                                                                     |
+| `FORGE_DOCKER_NETWORK`     | —                       | **Important for containerized agents.** The network that job containers will join. Use this to ensure jobs can reach reachable IPs or internal service names.                                |
 
 ---
 
@@ -157,3 +159,26 @@ To enable Single Sign-On, you must register Forge as an OAuth application with y
 *   `FORGE_PUBLIC_URL` must match the base URL used in the provider's configuration. It defaults to `http://localhost:8080`.
 *   If your Forge instance is behind a proxy/TLS, ensure `FORGE_PUBLIC_URL` uses `https://`.
 *   After logging in via SSO, Forge creates a session cookie. The `FORGE_UI_URL` determines where the browser is redirected after a successful handshake (usually your dashboard home).
+
+---
+
+## Distributed Deployment
+
+When deploying Forge across multiple hosts, keep the following configuration rules in mind:
+
+### 1. Scheduler Accessibility
+Agents must be able to reach the scheduler via both HTTP and gRPC.
+- Set `FORGE_SCHEDULER_URL` on agents to the scheduler's public address (e.g., `http://10.0.0.5:8080` or `https://forge.example.com`).
+- Ensure port `50051` is open on the scheduler host if not using a unified load balancer.
+
+### 2. Artifact Access (Minio/S3)
+If using MinIO on the same host as the scheduler, the agent (on a different host) won't be able to reach `http://minio:9000`.
+- Set `FORGE_S3_PUBLIC_URL` on the **scheduler** to an address reachable by the agents (e.g., `http://10.0.0.5:9000`).
+
+### 3. Docker Networking
+If running both Agent and Job containers in Docker:
+- Set `FORGE_DOCKER_NETWORK` on the agent to the name of the network where it should place job containers.
+- If the agent itself is in a container, it must use `--volumes-from <agent-container-name>` (handled automatically if `/.dockerenv` exists) to share the Docker socket, OR you must mount `/var/run/docker.sock`.
+
+### 4. Secrets (Vault)
+- Set `FORGE_VAULT_ADDR` on agents to an address reachable from the agent's host.
