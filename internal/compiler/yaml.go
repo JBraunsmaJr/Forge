@@ -267,6 +267,7 @@ func (p *yamlParser) parseLiteralBlock(contentIndent int) string {
 
 // parseScalar converts a YAML scalar string to its Go representation.
 func parseScalar(s string) interface{} {
+	s = stripComment(s)
 	if s == "" || s == "~" || s == "null" {
 		return nil
 	}
@@ -288,6 +289,51 @@ func parseScalar(s string) interface{} {
 		}
 	}
 
+	return s
+}
+
+func stripComment(s string) string {
+	if s == "" {
+		return ""
+	}
+	// If it starts with a quote, the comment must be after the matching closing quote.
+	if s[0] == '"' || s[0] == '\'' {
+		quote := s[0]
+		escaped := false
+		for i := 1; i < len(s); i++ {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if s[i] == '\\' && quote == '"' {
+				escaped = true
+				continue
+			}
+			if s[i] == quote {
+				// Potential end of quote. In YAML, '' inside '' is an escaped '.
+				if quote == '\'' && i+1 < len(s) && s[i+1] == '\'' {
+					i++ // skip next '
+					continue
+				}
+				// Found end of quote. Strip everything after it that starts with #
+				after := s[i+1:]
+				if idx := strings.Index(after, "#"); idx >= 0 {
+					return s[:i+1]
+				}
+				return s
+			}
+		}
+		return s
+	}
+
+	// Unquoted. Strip # if it's at the start or preceded by whitespace.
+	for i := 0; i < len(s); i++ {
+		if s[i] == '#' {
+			if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' {
+				return strings.TrimSpace(s[:i])
+			}
+		}
+	}
 	return s
 }
 

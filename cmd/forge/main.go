@@ -24,12 +24,14 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/localenv"
+	"github.com/JBraunsmaJr/forge/internal/proxy"
 	"github.com/JBraunsmaJr/forge/internal/runner"
 	"github.com/JBraunsmaJr/forge/internal/scheduler"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/store"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"github.com/fsnotify/fsnotify"
+	"runtime"
 )
 
 var version = "dev"
@@ -79,6 +81,8 @@ func main() {
 		projectCommand()
 	case "trigger":
 		triggerCommand()
+	case "proxy":
+		proxyCommand()
 	case "prune":
 		pruneCommand()
 	case "version":
@@ -290,7 +294,7 @@ func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, r
 		}
 	}
 
-	exec, err := executor.New(workspaceDir, logDir, cas)
+	exec, err := executor.New(workspaceDir, logDir, "local", cas)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ executor setup: %v\n", err)
 		return false
@@ -446,6 +450,8 @@ func agentCommand() {
 		fmt.Fprintln(os.Stderr, "⚠ FORGE_API_TOKEN not set — scheduler requests will be rejected")
 	}
 
+	proxyURL := os.Getenv("FORGE_PROXY_URL")
+
 	agentID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 
 	// Cleanup configuration
@@ -485,7 +491,7 @@ func agentCommand() {
 		cancel()
 	}()
 
-	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, maxGB, maxPercent, pruneSchedule, concurrency)
+	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, proxyURL, maxGB, maxPercent, pruneSchedule, concurrency)
 	if err := a.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		os.Exit(1)
@@ -1941,6 +1947,79 @@ func openBrowser(url string) {
 	}
 }
 
+func proxyCommand() {
+	port := "9090"
+	socketDir := "/run/forge-sockets"
+	dockerSocket := "/var/run/docker.sock"
+
+	// Parse optional flags
+	for i := 2; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--port":
+			i++
+			if i < len(os.Args) {
+				port = os.Args[i]
+			}
+		case "--socket-dir":
+			i++
+			if i < len(os.Args) {
+				socketDir = os.Args[i]
+			}
+		case "--docker-socket":
+			i++
+			if i < len(os.Args) {
+				dockerSocket = os.Args[i]
+			}
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		if socketDir == "/run/forge-sockets" {
+			socketDir = filepath.Join(os.TempDir(), "forge-sockets")
+		}
+		if dockerSocket == "/var/run/docker.sock" {
+			dockerSocket = `\\.\pipe\docker_engine`
+		}
+	}
+
+	fmt.Printf("[proxy] starting management server on :%s\n", port)
+	fmt.Printf("[proxy] socket directory: %s\n", socketDir)
+	fmt.Printf("[proxy] docker socket: %s\n", dockerSocket)
+
+	p := proxy.NewProxyServer(dockerSocket, socketDir)
+	defer p.Shutdown()
+
+	http.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		socketPath, err := p.Register(req.AgentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"socket_path": socketPath,
+		})
+	})
+
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ proxy server: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func printUsage() {
 	fmt.Print(`forge — a CI/CD pipeline runner
 
@@ -1954,6 +2033,7 @@ Local execution:
 Distributed execution:
   forge scheduler [addr]                 start the scheduler (default :8080)
   forge agent [scheduler-url]            start a worker agent
+  forge proxy [options]                  start the Docker socket proxy
   forge submit <pipeline.yml>            submit a pipeline to the scheduler
   forge login [provider]                 login via SSO (default: github)
   forge trigger <project-id>             manually trigger a project pipeline

@@ -52,6 +52,11 @@ func (s *Server) handleGetDebugSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDebugStream(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Upgrade") == "websocket" {
+		s.handleDebugStreamWS(w, r)
+		return
+	}
+
 	sessionID := r.PathValue("id")
 
 	w.Header().Set("Content-Type", "text/event-stream")

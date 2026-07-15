@@ -70,6 +70,7 @@ type Agent struct {
 	vault        *secrets.Client
 	client       *http.Client
 	apiToken     string // FORGE_API_TOKEN — sent with every scheduler request
+	proxyURL     string // FORGE_PROXY_URL — management endpoint
 	debugConts   sync.Map
 
 	// Concurrency control
@@ -89,7 +90,7 @@ type Agent struct {
 }
 
 // New creates an agent that connects to schedulerURL.
-func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken string, maxGB, maxPercent float64, schedule string, concurrency int) *Agent {
+func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, proxyURL string, maxGB, maxPercent float64, schedule string, concurrency int) *Agent {
 	var vault *secrets.Client
 	if vaultAddr != "" && vaultToken != "" {
 		vault = secrets.NewClient(vaultAddr, vaultToken)
@@ -105,6 +106,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		logDir:           logDir,
 		vault:            vault,
 		apiToken:         apiToken,
+		proxyURL:         proxyURL,
 		client:           &http.Client{Timeout: 10 * time.Second},
 		maxDockerGB:      maxGB,
 		maxDockerPercent: maxPercent,
@@ -118,6 +120,16 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 
 // Run starts the agent's gRPC session and handles jobs. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
+	if a.proxyURL != "" {
+		socketPath, err := a.registerWithProxy(ctx)
+		if err != nil {
+			fmt.Printf("[agent %s] warning: failed to register with proxy: %v. Falling back to direct socket.\n", a.id[:8], err)
+		} else {
+			fmt.Printf("[agent %s] using proxied Docker socket: %s\n", a.id[:8], socketPath)
+			os.Setenv("DOCKER_HOST", "unix://"+socketPath)
+		}
+	}
+
 	// Determine gRPC address from schedulerURL or environment variable
 	grpcAddrRaw := os.Getenv("FORGE_GRPC_ADDR")
 	isSecure := strings.HasPrefix(a.schedulerURL, "https://")
@@ -354,8 +366,9 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fmt.Printf("[agent %s] running scheduled docker system prune...\n", a.id[:8])
-			exec.Command("docker", "system", "prune", "-f").Run()
+			fmt.Printf("[agent %s] running scheduled docker container prune...\n", a.id[:8])
+			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.id).Run()
+			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.id).Run()
 			// Also clean up any old workspace directories
 			a.cleanupWorkspaces()
 		}
@@ -565,6 +578,9 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	defer close(done)
 	go a.heartbeatLoop(spec.JobID, spec.LeaseID, done)
 
+	// Ensure cleanup of any stray containers/networks/volumes created by this run
+	defer a.cleanupJobContainers(spec.RunID)
+
 	/*
 		Runtime Condition Evaluation
 
@@ -648,7 +664,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	jobLogDir := filepath.Join(a.logDir, spec.JobID)
 	defer os.RemoveAll(jobLogDir)
-	exec, err := executor.New(jobWorkspace, jobLogDir, a.cas)
+	exec, err := executor.New(jobWorkspace, jobLogDir, a.id, a.cas)
 	if err != nil {
 		err = fmt.Errorf("creating executor: %w", err)
 		a.reportComplete(spec, 1, 0, []api.LogEvent{{
@@ -675,6 +691,8 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Secrets:      spec.SecretNames,
 		DockerSocket: spec.DockerSocket,
 		Type:         spec.Type,
+		RunID:        spec.RunID,
+		JobID:        spec.JobID,
 	}
 
 	if step.Image == "" {
@@ -1786,6 +1804,8 @@ func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID s
 			}
 			if err != nil {
 				cancel()
+				// Break the main ReadMessage loop by closing the connection
+				conn.Close()
 				return
 			}
 		}
@@ -2356,4 +2376,62 @@ func (a *Agent) bridgeArtifact(ctx context.Context, srcRunID, dstRunID, dstJobID
 
 func pipelineLog(level, msg string) []api.LogEvent {
 	return []api.LogEvent{{Timestamp: time.Now(), Level: level, Message: "[pipeline] " + msg}}
+}
+
+func (a *Agent) cleanupJobContainers(runID string) {
+	// Stop and remove all containers created by this run
+	out, _ := exec.Command("docker", "ps", "-aq",
+		"--filter", "label=forge.run_id="+runID,
+		"--filter", "label=forge.agent_id="+a.id).Output()
+	ids := strings.Fields(strings.TrimSpace(string(out)))
+	for _, id := range ids {
+		exec.Command("docker", "stop", "-t", "5", id).Run()
+		exec.Command("docker", "rm", "-f", id).Run()
+	}
+
+	// Remove networks created by this run
+	out, _ = exec.Command("docker", "network", "ls", "-q",
+		"--filter", "label=forge.run_id="+runID,
+		"--filter", "label=forge.agent_id="+a.id).Output()
+	ids = strings.Fields(strings.TrimSpace(string(out)))
+	for _, id := range ids {
+		exec.Command("docker", "network", "rm", id).Run()
+	}
+
+	// Remove volumes created by this run
+	out, _ = exec.Command("docker", "volume", "ls", "-q",
+		"--filter", "label=forge.run_id="+runID,
+		"--filter", "label=forge.agent_id="+a.id).Output()
+	ids = strings.Fields(strings.TrimSpace(string(out)))
+	for _, id := range ids {
+		exec.Command("docker", "volume", "rm", id).Run()
+	}
+}
+
+func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
+	body, _ := json.Marshal(map[string]string{"agent_id": a.id})
+	req, err := http.NewRequestWithContext(ctx, "POST", a.proxyURL+"/register", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("proxy returned status %d", resp.StatusCode)
+	}
+
+	var res struct {
+		SocketPath string `json:"socket_path"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+
+	return res.SocketPath, nil
 }

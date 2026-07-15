@@ -44,6 +44,12 @@ graph TD
     Agent1 -- "Polls" --> Scheduler
     Agent2 -- "Polls" --> Scheduler
     
+    Agent1 -- "Proxied Docker" --> Proxy1[Docker Proxy]
+    Agent2 -- "Proxied Docker" --> Proxy2[Docker Proxy]
+
+    Proxy1 -- "Label-Scoped" --> Docker1[(Docker Engine)]
+    Proxy2 -- "Label-Scoped" --> Docker2[(Docker Engine)]
+
     Agent1 -- "Secrets" --> Vault
     Agent2 -- "Secrets" --> Vault
     
@@ -90,16 +96,25 @@ RETURNING jobs.id, jobs.run_id, ...
 
 ## The Agent
 
-Agents are stateless workers. Each agent:
+Agents are stateless workers. For security, agents are typically deployed alongside a **Forge Proxy** which intercepts all Docker socket communication.
 
-1. Polls the scheduler for the next queued job
-2. Executes the job in a Docker container
-3. Streams log output back to the scheduler in real-time batches
-4. Downloads and uploads artifacts via pre-signed URLs
-5. Heartbeats every 10 seconds to prove it's still alive
-6. Reports completion with exit code and final log set
+Each agent:
 
-Agents also run a debug listener. When a debug session is requested, the agent starts a Docker container and bridges its stdin/stdout to the scheduler via an internal connection. The scheduler then exposes this to the browser via a WebSocket. This "reverse connection" model ensures that agents do not need to expose any ports to the public internet or the browser.
+1. Registers with the local Proxy to receive a unique, label-enforcing Unix socket
+2. Polls the scheduler for the next queued job
+3. Executes the job in a Docker container through the Proxy
+4. Streams log output back to the scheduler in real-time batches
+5. Downloads and uploads artifacts via pre-signed URLs
+6. Heartbeats every 10 seconds to prove it's still alive
+7. Reports completion with exit code and final log set
+
+### Docker Isolation & Security (Alpha-Hardening)
+
+To prevent an agent or a job from interfering with other jobs or the host system, Forge implements multi-layer Docker isolation:
+
+- **Label Stamping**: Every container, network, and volume created by Forge is automatically stamped with `forge.managed=true`, `forge.agent_id`, `forge.run_id`, and `forge.job_id`.
+- **Socket Proxying**: The Forge Proxy intercepts all Docker API calls. It ensures that an agent can only see and interact with resources that carry its own `forge.agent_id`. This prevents `docker rm -f $(docker ps -aq)` from destroying the entire CI stack.
+- **Scoped Pruning**: Agents perform cleanup using these same labels, ensuring they only prune their own stale resources.
 
 ### Heartbeat and failure recovery
 
