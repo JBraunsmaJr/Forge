@@ -145,6 +145,7 @@ services:
       FORGE_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
       FORGE_WORKSPACE: /var/lib/forge/workspace
       FORGE_CACHE_DIR: /var/lib/forge/cache
+      FORGE_PROXY_URL: http://proxy:9090
       # ── Docker image cleanup ───────────────────────────────────────────────
       # Agents prune the host Docker daemon on a schedule to prevent disk fill.
       # FORGE_PRUNE_SCHEDULE  — how often to run 'docker system prune -f'.
@@ -157,7 +158,7 @@ services:
       FORGE_DOCKER_MAX_GB: ${FORGE_DOCKER_MAX_GB:-50}
       FORGE_DOCKER_MAX_PERCENT: ${FORGE_DOCKER_MAX_PERCENT:-80}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - forge_sockets:/run/forge-sockets
       - cache_data:/var/lib/forge/cache
     working_dir: /tmp
     depends_on:
@@ -165,8 +166,22 @@ services:
         condition: service_started   # entrypoint waits for scheduler TCP, not healthcheck
       vault:
         condition: service_started
+      proxy:
+        condition: service_started
     restart: unless-stopped
     networks: [ forge ]
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/jbraunsmajr/forge/forge:latest
+    command: [ "proxy", "--socket-dir", "/run/forge-sockets" ]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - forge_sockets:/run/forge-sockets
+    networks: [ forge ]
+    restart: unless-stopped
 
   init:
     build:
@@ -192,6 +207,7 @@ volumes:
   git_cache:
   cache_data:
   minio_data:
+  forge_sockets:
 
 networks:
   forge:
