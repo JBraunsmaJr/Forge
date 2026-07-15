@@ -101,6 +101,9 @@ services:
       FORGE_PUBLIC_URL: ${FORGE_PUBLIC_URL}
       FORGE_UI_URL: ${FORGE_UI_URL}
       FORGE_S3_PUBLIC_URL: ${FORGE_S3_PUBLIC_URL:-http://localhost:9000}
+      # The network that policy transformer containers will be attached to.
+      # Must match the name of the network this scheduler is on.
+      FORGE_DOCKER_NETWORK: ${FORGE_DOCKER_NETWORK:-forge}
     ports:
       - "8080:8080"
       - "50051:50051"
@@ -117,6 +120,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - cache_data:/var/lib/forge/cache
     restart: unless-stopped
     networks:
@@ -131,3 +135,4 @@ volumes:
 networks:
   forge:
     driver: bridge
+    name: forge

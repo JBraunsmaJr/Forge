@@ -4,9 +4,14 @@ steps:
 
   - id: unit-tests
     image: golang:1.26.5-alpine
+    docker_socket: true
     run: |
       echo "Running unit tests..."
 
+  - id: docker-fail
+    image: golang:1.26.5-alpine
+    docker_socket: true
+    run: exit 1
 
   - id: integration-tests
     image: golang:1.26.5-alpine

@@ -998,15 +998,21 @@ func (s *Store) RunDetailByJobID(jobID string) (*api.RunDetail, bool) {
 	return s.RunDetail(runID)
 }
 
-// GetJobDetails returns image/workdir/workspaceDir and repo info for a debug session.
-func (s *Store) GetJobDetails(jobID string) (image, workDir, workspaceDir, projectID, commitSHA string, dockerSocket bool) {
-	var runID string
-	s.db.QueryRow(
+// GetJobDetails returns runID/image/workdir/workspaceDir and repo info for a debug session.
+func (s *Store) GetJobDetails(jobID string) (runID, image, workDir, workspaceDir, projectID, commitSHA string, dockerSocket bool) {
+	err := s.db.QueryRow(
 		`SELECT image, work_dir, run_id, docker_socket FROM jobs WHERE id=$1`, jobID,
 	).Scan(&image, &workDir, &runID, &dockerSocket)
-	s.db.QueryRow(
+	if err != nil {
+		fmt.Printf("[scheduler] error getting job details for %s: %v\n", jobID, err)
+		return
+	}
+	err = s.db.QueryRow(
 		`SELECT workspace_dir, project_id, commit_sha FROM runs WHERE id=$1`, runID,
 	).Scan(&workspaceDir, &projectID, &commitSHA)
+	if err != nil {
+		fmt.Printf("[scheduler] error getting run details for %s: %v\n", runID, err)
+	}
 	return
 }
 
