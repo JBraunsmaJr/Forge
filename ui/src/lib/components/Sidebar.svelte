@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { api, type Run } from '../api';
     import { runs, activeRun, connStatus, currentView, sidebarOpen } from '../stores';
-    import { Play, Briefcase, Building2, ShieldCheck, Key, Server, Layout, Search } from '@lucide/svelte';
+    import { Play, Briefcase, Building2, ShieldCheck, Key, Server, Layout, Search, Shield } from '@lucide/svelte';
 
     let search = '';
     let statusFilter = '';
@@ -94,6 +94,10 @@
         <button class:active={$currentView === 'agents'} on:click={() => currentView.set('agents')} title="Runners Health">
             <Server size={20} />
             <span>Runners</span>
+        </button>
+        <button class:active={$currentView === 'audit'} on:click={() => currentView.set('audit')} title="Audit Logs">
+            <Shield size={20} />
+            <span>Audit</span>
         </button>
     </div>
 

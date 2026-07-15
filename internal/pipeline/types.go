@@ -27,6 +27,11 @@ type Step struct {
 	// definitions which are added to the live DAG at runtime (R11).
 	Type string
 
+	// Uses is a reference to a remote template.
+	Uses string
+	// With holds parameters for the template.
+	With map[string]string
+
 	// WorkDir is the working directory inside the container.
 	WorkDir string
 
@@ -78,6 +83,9 @@ type Step struct {
 	// RunID and JobID are used for Docker label scoping.
 	RunID string
 	JobID string
+
+	// OIDCToken is a short-lived identity token issued by the scheduler.
+	OIDCToken string
 }
 
 // PipelineRef holds chaining configuration for pipeline steps.

@@ -73,6 +73,10 @@ The scheduler is a single HTTP server that:
 
 **Runs policy transformers** — when a pipeline is submitted under an org that has transformer policies, the scheduler runs Docker containers that receive the pipeline on stdin and return a modified pipeline on stdout.
 
+**Issues OIDC tokens** — for every job run, the scheduler issues a short-lived (1h) RS256-signed JWT that steps can use to authenticate with external services (GitHub, Cloud providers). The public keys are served via a standard JWKS endpoint.
+
+**Maintains Audit Logs** — captures an append-only log of all security-critical operations, including run triggers, policy applications, secret changes, and authentication failures.
+
 ### Why PostgreSQL for a job queue?
 
 The critical query is:
