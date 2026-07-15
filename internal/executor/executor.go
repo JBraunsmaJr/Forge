@@ -34,10 +34,13 @@ type Executor struct {
 	// Each event is forwarded to the scheduler as it's produced — not buffered
 	// until the step finishes. nil = no streaming (local runs).
 	StreamCallback func(stepID string, ts time.Time, level, message string)
+
+	// AgentID is used for Docker label scoping.
+	AgentID string
 }
 
 // New creates an Executor. cas may be nil to disable caching.
-func New(workspaceDir, logDir string, cas cache.Storer) (*Executor, error) {
+func New(workspaceDir, logDir, agentID string, cas cache.Storer) (*Executor, error) {
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("creating log dir: %w", err)
 	}
@@ -45,6 +48,7 @@ func New(workspaceDir, logDir string, cas cache.Storer) (*Executor, error) {
 	return &Executor{
 		WorkspaceDir: workspaceDir,
 		LogDir:       logDir,
+		AgentID:      agentID,
 		Cache:        cas,
 	}, nil
 }
@@ -121,7 +125,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 
 	if e.UseCopy {
 		// 1. Create container
-		args := buildDockerArgs(step, "", true)
+		args := e.buildDockerArgs(step, "", true)
 		out, err := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...).Output()
 		if err != nil {
 			logger.Error("failed to create container", map[string]any{"error": err.Error()})
@@ -140,7 +144,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy the host's "workspace" directory into the container's root.
 		// Since the host directory is named "workspace", it will become "/workspace" in the container.
 		src := filepath.Clean(e.WorkspaceDir)
-		cpIn := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
+		cpIn := exec.CommandContext(ctx, "docker", "cp", src+"/.", containerID+":/workspace")
 		if err := cpIn.Run(); err != nil {
 			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
@@ -157,7 +161,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// 3. Prepare start command
 		cmd = exec.CommandContext(ctx, "docker", "start", "-a", containerID)
 	} else {
-		args := buildDockerArgs(step, e.WorkspaceDir, false)
+		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
 		cmd = exec.CommandContext(ctx, "docker", append([]string{"run", "--rm"}, args...)...)
 	}
 
@@ -202,8 +206,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy && containerID != "" {
 		// 4. Copy workspace OUT (to capture any changes/artifacts)
 		// We copy "/workspace" from the container back to the host's job directory.
-		src := containerID + ":/workspace"
-		dst := filepath.Dir(filepath.Clean(e.WorkspaceDir))
+		src := containerID + ":/workspace/."
+		dst := e.WorkspaceDir
 		cpOut := exec.CommandContext(ctx, "docker", "cp", src, dst)
 		if err := cpOut.Run(); err != nil {
 			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error(), "src": src, "dst": dst})
@@ -312,7 +316,7 @@ func (e *Executor) RunPipeline(ctx context.Context, p *pipeline.Pipeline) (*pipe
 	}, nil
 }
 
-func buildDockerArgs(step *pipeline.Step, workspaceDir string, useCopy bool) []string {
+func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, useCopy bool) []string {
 	workDir := step.WorkDir
 	if workDir == "" {
 		workDir = "/workspace"
@@ -320,6 +324,9 @@ func buildDockerArgs(step *pipeline.Step, workspaceDir string, useCopy bool) []s
 
 	args := []string{
 		"--label", "forge.managed=true",
+		"--label", "forge.agent_id=" + e.AgentID,
+		"--label", "forge.run_id=" + step.RunID,
+		"--label", "forge.job_id=" + step.JobID,
 		"--workdir", workDir,
 		"--memory", "2g",
 		"--stop-timeout", "10",
@@ -389,7 +396,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	var containerID string
 
 	if e.UseCopy {
-		args := buildDockerArgs(step, "", true)
+		args := e.buildDockerArgs(step, "", true)
 		out, err := exec.Command("docker", append([]string{"create"}, args...)...).Output()
 		if err != nil {
 			return nil, fmt.Errorf("creating generator container: %w", err)
@@ -397,7 +404,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		containerID = strings.TrimSpace(string(out))
 
 		src := filepath.Clean(e.WorkspaceDir)
-		cpIn := exec.Command("docker", "cp", src, containerID+":/")
+		cpIn := exec.Command("docker", "cp", src+"/.", containerID+":/workspace")
 		if err := cpIn.Run(); err != nil {
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
@@ -405,7 +412,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 		cmdGen = exec.Command("docker", "start", "-a", containerID)
 	} else {
-		args := buildDockerArgs(step, e.WorkspaceDir, false)
+		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
 		cmdGen = exec.Command("docker", append([]string{"run", "--rm"}, args...)...)
 	}
 

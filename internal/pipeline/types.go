@@ -74,6 +74,10 @@ type Step struct {
 
 	// AlwaysRun ensures the step runs even if dependencies fail.
 	AlwaysRun bool
+
+	// RunID and JobID are used for Docker label scoping.
+	RunID string
+	JobID string
 }
 
 // PipelineRef holds chaining configuration for pipeline steps.

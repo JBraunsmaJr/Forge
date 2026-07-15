@@ -7,19 +7,35 @@ services:
       FORGE_VAULT_ADDR: ${FORGE_VAULT_ADDR}
       FORGE_VAULT_TOKEN: ${FORGE_VAULT_TOKEN}
       FORGE_GRPC_ADDR: ${FORGE_GRPC_ADDR}
+      FORGE_PROXY_URL: http://proxy:9090
       # The network that job containers will be attached to.
       # Ensure this network exists or let compose create it.
       FORGE_DOCKER_NETWORK: ${FORGE_DOCKER_NETWORK:-forge_agent_network}
       FORGE_AGENT_CONCURRENCY: "${FORGE_AGENT_CONCURRENCY:-1}"
       FORGE_WORKSPACE: ${FORGE_WORKSPACE:-/tmp/forge}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - forge_sockets:/run/forge-sockets
     working_dir: /tmp/forge
     restart: unless-stopped
+    depends_on:
+      - proxy
     deploy:
       replicas: ${AGENT_REPLICAS:-1}
     networks:
       - forge_agent_network
+
+  proxy:
+    image: ghcr.io/jbraunsmajr/forge/forge:latest
+    command: ["proxy", "--socket-dir", "/run/forge-sockets"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - forge_sockets:/run/forge-sockets
+    restart: unless-stopped
+    networks:
+      - forge_agent_network
+
+volumes:
+  forge_sockets:
 
 networks:
   forge_agent_network:

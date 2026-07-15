@@ -42,6 +42,7 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_SCHEDULER_URL`      | `http://localhost:8080` | The URL of the scheduler. Used for all agent-scheduler communication. Switch to `https://` for secure connections.          |
 | `FORGE_VAULT_ADDR`         | —                       | Vault server address. Required for steps that use `secrets:`. Example: `http://vault:8200`.                                 |
 | `FORGE_VAULT_TOKEN`        | —                       | Vault authentication token.                                                                                                 |
+| `FORGE_PROXY_URL`         | —                       | Optional. The URL of the Forge Docker Proxy (e.g. `http://proxy:9090`). If set, the agent will use a proxied Docker socket. |
 | `FORGE_GRPC_ADDR`          | —                       | Optional. Explicit `host:port` for the gRPC session (e.g. `scheduler:50051`). If unset, derived from `FORGE_SCHEDULER_URL`. |
 | `FORGE_DOCKER_MAX_GB`      | `50`                    | Max GB Docker is allowed to use before LRU eviction triggers.                                                               |
 | `FORGE_DOCKER_MAX_PERCENT` | `80`                    | Max disk usage percentage before LRU eviction triggers.                                                                     |
@@ -113,6 +114,11 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 - `FORGE_API_TOKEN` — same as `FORGE_ROOT_TOKEN` (dev convenience; use a separate agent token in production)
 - `FORGE_VAULT_ADDR` — points to the `vault` service
 - `FORGE_VAULT_TOKEN` — `forge-dev-token`
+- `FORGE_PROXY_URL` — `http://proxy:9090` (enables alpha-hardening)
+
+**proxy:**
+- Management server on `:9090`
+- Proxies Docker API from `/var/run/docker.sock` to per-agent Unix sockets in `/run/forge-sockets`
 
 ---
 

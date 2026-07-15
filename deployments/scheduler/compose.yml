@@ -117,6 +117,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - cache_data:/var/lib/forge/cache
     restart: unless-stopped
     networks:

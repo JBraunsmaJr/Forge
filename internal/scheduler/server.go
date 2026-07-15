@@ -13,7 +13,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -360,7 +359,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Debug sesion - browser side.
 	mux.HandleFunc("POST /api/v1/debug", s.handleCreateDebugSession)
 	mux.HandleFunc("GET /api/v1/debug/{id}", s.handleGetDebugSession)
-	mux.HandleFunc("GET /api/v1/debug/{id}/stream", s.handleDebugStreamWS)
+	mux.HandleFunc("GET /api/v1/debug/{id}/stream", s.handleDebugStream)
 	mux.HandleFunc("POST /api/v1/debug/{id}/exec", s.handleDebugExec)
 	mux.HandleFunc("DELETE /api/v1/debug/{id}", s.handleCloseDebugSession)
 	mux.HandleFunc("POST /api/v1/debug/{id}/cancel", s.handleCancelDebugCommand)
@@ -400,7 +399,7 @@ func (s *Server) Start(ctx context.Context) error {
 	go s.heartbeatMonitor(ctx)
 	go s.startRetentionWorker(ctx)
 	go s.startMetricsWorker(ctx)
-	go s.startDockerPruneWorker(ctx)
+	go s.startWorkspaceCleanupWorker(ctx)
 
 	stopDebug := make(chan struct{})
 	go s.debugExpiryMonitor(stopDebug)
@@ -1934,28 +1933,14 @@ func (s *Server) startRetentionWorker(ctx context.Context) {
 	}
 }
 
-func (s *Server) startDockerPruneWorker(ctx context.Context) {
-	schedule := os.Getenv("FORGE_PRUNE_SCHEDULE")
-	d := 24 * time.Hour
-	if schedule == "@hourly" {
-		d = time.Hour
-	} else if schedule != "" && schedule != "@daily" {
-		if val, err := time.ParseDuration(schedule); err == nil {
-			d = val
-		}
-	}
-
-	fmt.Printf("[scheduler] Docker prune scheduled every %s\n", d)
-	ticker := time.NewTicker(d)
+func (s *Server) startWorkspaceCleanupWorker(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fmt.Println("[scheduler] running scheduled docker system prune...")
-			exec.Command("docker", "system", "prune", "-f").Run()
 			s.cleanupWorkspaces()
 		}
 	}
