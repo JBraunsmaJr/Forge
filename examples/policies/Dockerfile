@@ -21,6 +21,11 @@ FROM python:3.13-alpine
 # JSON manipulation over Python. Not required for the Python scripts.
 RUN apk add --no-cache jq
 
+# Patch vulnerable packages inherited from the base image
+RUN pip install --no-cache-dir --upgrade pip \
+    "wheel>=0.46.2" \
+    "jaraco.context>=6.1.0"
+
 # Copy transformer scripts into the image.
 # In a real org you'd copy your own scripts here.
 COPY container-security.py /policies/container-security.py
