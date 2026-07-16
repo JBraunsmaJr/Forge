@@ -15,7 +15,7 @@
 #     --image forge-security-policies:latest \
 #     --command python3 /policies/language-security.py
 
-FROM python:3.11-alpine
+FROM python:3.13-alpine
 
 # jq is useful for shell-based transformer scripts that prefer
 # JSON manipulation over Python. Not required for the Python scripts.
