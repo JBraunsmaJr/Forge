@@ -127,36 +127,38 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 
 	for i, js := range jp.Steps {
 		originalID := js.ID
-		if js.Uses != "" {
-			// If it's a local file, resolve it now.
-			// Otherwise (remote reference), we leave it for the scheduler to resolve.
-			if strings.HasPrefix(js.Uses, ".") || filepath.IsAbs(js.Uses) {
-				resolved, err := resolveUses(js, filename)
-				if err != nil {
-					return nil, fmt.Errorf("step %q uses %q: %w", js.ID, js.Uses, err)
-				}
-				js = resolved
-			}
-		}
+		var toCompile []JSONStep
 
-		if len(js.Matrix) > 0 {
-			matrixSteps, err := expandMatrixStep(js, i)
+		if js.Uses != "" && (strings.HasPrefix(js.Uses, ".") || filepath.IsAbs(js.Uses)) {
+			resolved, err := resolveUses(js, filename)
 			if err != nil {
-				return nil, fmt.Errorf("step %q matrix: %w", js.ID, err)
+				return nil, fmt.Errorf("step %q uses %q: %w", js.ID, js.Uses, err)
 			}
-			for _, ms := range matrixSteps {
-				expandedMap[originalID] = append(expandedMap[originalID], ms.ID)
-			}
-			steps = append(steps, matrixSteps...)
-			continue
+			toCompile = resolved
+		} else {
+			toCompile = []JSONStep{js}
 		}
 
-		step, err := compileStep(js, i)
-		if err != nil {
-			return nil, fmt.Errorf("step %q: %w", js.ID, err)
+		for _, stepJSON := range toCompile {
+			if len(stepJSON.Matrix) > 0 {
+				matrixSteps, err := expandMatrixStep(stepJSON, i)
+				if err != nil {
+					return nil, fmt.Errorf("step %q matrix: %w", stepJSON.ID, err)
+				}
+				for _, ms := range matrixSteps {
+					expandedMap[originalID] = append(expandedMap[originalID], ms.ID)
+				}
+				steps = append(steps, matrixSteps...)
+				continue
+			}
+
+			step, err := compileStep(stepJSON, i)
+			if err != nil {
+				return nil, fmt.Errorf("step %q: %w", stepJSON.ID, err)
+			}
+			steps = append(steps, step)
+			expandedMap[originalID] = append(expandedMap[originalID], step.ID)
 		}
-		steps = append(steps, step)
-		expandedMap[originalID] = []string{step.ID}
 	}
 
 	// Post-process dependencies to handle matrix expansion
@@ -185,7 +187,7 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 	return p, nil
 }
 
-func resolveUses(js JSONStep, currentFile string) (JSONStep, error) {
+func resolveUses(js JSONStep, currentFile string) ([]JSONStep, error) {
 	templatePath := js.Uses
 	if !filepath.IsAbs(templatePath) {
 		templatePath = filepath.Join(filepath.Dir(currentFile), templatePath)
@@ -193,20 +195,18 @@ func resolveUses(js JSONStep, currentFile string) (JSONStep, error) {
 
 	data, err := os.ReadFile(templatePath)
 	if err != nil {
-		return js, fmt.Errorf("reading template %s: %w", templatePath, err)
+		return nil, fmt.Errorf("reading template %s: %w", templatePath, err)
 	}
 
 	resolvedSteps, err := ResolveTemplateData(js, data, templatePath)
 	if err != nil {
-		return js, err
+		return nil, err
 	}
 	if len(resolvedSteps) == 0 {
-		return js, fmt.Errorf("template %s returned no steps", templatePath)
+		return nil, fmt.Errorf("template %s returned no steps", templatePath)
 	}
 
-	// resolveUses currently only supports single-step expansion for local files
-	// as it's called during the main loop which expects one step back.
-	return resolvedSteps[0], nil
+	return resolvedSteps, nil
 }
 
 // ResolveTemplateData merges template data into a step, performing parameter substitution.
@@ -525,7 +525,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		stepType = "task"
 	}
 
-	if image == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" {
+	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" {
 		return nil, fmt.Errorf("image is required")
 	}
 
@@ -582,7 +582,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		}
 		image = "_release_" // sentinel
 		command = nil
-	} else if len(command) == 0 && stepType != "approval" && stepType != "release" {
+	} else if len(command) == 0 && stepType != "approval" && stepType != "release" && js.Uses == "" {
 		return nil, fmt.Errorf("either 'run', 'command', or 'pipeline' is required")
 	}
 

@@ -98,6 +98,41 @@ RETURNING jobs.id, jobs.run_id, ...
 
 ---
 
+## Pipeline Templates
+
+Forge supports reusable pipeline templates to reduce duplication and enforce standards across teams.
+
+### Local Templates
+Steps can reference local YAML/JSON files using the `uses:` keyword.
+```yaml
+steps:
+  - id: build
+    uses: ./templates/go-build.yml
+    with:
+      app_name: "forge"
+```
+
+### Cross-Repo Templates
+Templates can also be fetched from remote Git repositories.
+```yaml
+steps:
+  - id: security-scan
+    uses: github.com/my-org/shared-pipelines/scan.yml@v1.2.0
+```
+When a remote template is used, the Scheduler:
+1. Clones the repository to a local cache (`FORGE_GIT_CACHE`).
+2. Reads the specified file.
+3. Performs parameter substitution using the values provided in the `with:` block.
+4. Inlines the template steps into the main pipeline.
+
+### Parameter Substitution
+Templates use the `${{ inputs.NAME }}` syntax for parameters. These are substituted at compile-time by the Scheduler.
+
+### Namespacing
+When a template contains multiple steps, Forge automatically namespaces the step IDs to prevent collisions. For example, if a step with `id: build` uses a template that has steps `test` and `package`, the resulting steps will have IDs `build.test` and `build.package`.
+
+---
+
 ## The Agent
 
 Agents are stateless workers. For security, agents are typically deployed alongside a **Forge Proxy** which intercepts all Docker socket communication.

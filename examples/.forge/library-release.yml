@@ -46,15 +46,10 @@ steps:
       echo "✓ core-lib@${VERSION} published"
 
   - id: notify-release
-    image: curlimages/curl:latest
+    uses: ./templates/slack-notify.yml
     depends_on: [publish]
-    secrets: [SLACK_WEBHOOK]
-    timeout: 1m
-    run: |
-      VERSION="${GIT_TAG:-dev}"
-      curl -sf -X POST "$SLACK_WEBHOOK" \
-        -H "Content-Type: application/json" \
-        -d "{\"text\":\"🚀 core-lib@${VERSION} published. All downstream tests passed.\"}"
+    with:
+      message: "🚀 core-lib@${{ env.GIT_TAG }} published. All downstream tests passed."
 
   - id: cleanup
     image: alpine:latest
