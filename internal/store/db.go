@@ -63,8 +63,28 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     action      TEXT        NOT NULL,
     target_type TEXT,
     target_id   TEXT,
-    details     JSONB
+    details     JSONB,
+    ip_address  TEXT,
+    org_id      TEXT
 );
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS org_id TEXT;
+
+-- Enforce insert-only on audit_logs
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'audit_logs_immutable') THEN
+        CREATE OR REPLACE FUNCTION block_audit_mod() RETURNS TRIGGER AS $body$
+        BEGIN
+            RAISE EXCEPTION 'audit_logs are immutable';
+        END;
+        $body$ LANGUAGE plpgsql;
+
+        CREATE TRIGGER audit_logs_immutable
+        BEFORE UPDATE OR DELETE ON audit_logs
+        FOR EACH STATEMENT EXECUTE FUNCTION block_audit_mod();
+    END IF;
+END $$;
 
 -- ── Runs ──────────────────────────────────────────────────────────────────────
 -- References orgs — must come after orgs.

@@ -81,6 +81,8 @@ func main() {
 		projectCommand()
 	case "trigger":
 		triggerCommand()
+	case "audit":
+		auditCommand()
 	case "proxy":
 		proxyCommand()
 	case "prune":
@@ -576,6 +578,8 @@ func submitCommand() {
 			Condition:         s.Condition,
 			AlwaysRun:         s.AlwaysRun,
 			Type:              s.Type,
+			Uses:              s.Uses,
+			With:              s.With,
 			ArtifactUploads:   uploads,
 			ArtifactDownloads: downloads,
 			PipelineRef:       pipelineRef,
@@ -1759,6 +1763,64 @@ func secretCommand() {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown secret subcommand: %s\n", os.Args[2])
 		os.Exit(1)
+	}
+}
+
+func auditCommand() {
+	if len(os.Args) < 3 || os.Args[2] != "export" {
+		fmt.Fprintln(os.Stderr, "usage: forge audit export [--from YYYY-MM-DD] [--to YYYY-MM-DD]")
+		os.Exit(1)
+	}
+
+	from := ""
+	to := ""
+	for i := 3; i < len(os.Args); i++ {
+		if os.Args[i] == "--from" && i+1 < len(os.Args) {
+			from = os.Args[i+1]
+			i++
+		} else if os.Args[i] == "--to" && i+1 < len(os.Args) {
+			to = os.Args[i+1]
+			i++
+		}
+	}
+
+	schedulerURL := cliSchedulerURL()
+	query := url.Values{}
+	if from != "" {
+		query.Set("from", from)
+	}
+	if to != "" {
+		query.Set("to", to)
+	}
+
+	resp, err := cliGet(schedulerURL + "/api/v1/audit/export?" + query.Encode())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	checkResp(resp, http.StatusOK)
+
+	var logs []api.AuditEntry
+	if err := json.NewDecoder(resp.Body).Decode(&logs); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ failed to decode audit logs: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("timestamp,actor_id,actor_name,action,target_type,target_id,ip_address,org_id,details")
+	for _, l := range logs {
+		details, _ := json.Marshal(l.Details)
+		fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,\"%s\"\n",
+			l.Timestamp.Format(time.RFC3339),
+			l.ActorID,
+			l.ActorName,
+			l.Action,
+			l.TargetType,
+			l.TargetID,
+			l.IPAddress,
+			l.OrgID,
+			strings.ReplaceAll(string(details), "\"", "\"\""),
+		)
 	}
 }
 

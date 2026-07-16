@@ -375,6 +375,10 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 		}
 	}
 
+	if step.OIDCToken != "" {
+		args = append(args, "-e", "FORGE_ID_TOKEN="+step.OIDCToken)
+	}
+
 	for k, v := range step.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}

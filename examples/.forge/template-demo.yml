@@ -1,0 +1,22 @@
+name: Template System Demo
+
+steps:
+  - id: test
+    uses: ./templates/go-test.yml
+    with:
+      timeout: 5m
+
+  - id: publish-image
+    uses: ./templates/docker-build.yml
+    depends_on: [ test ]
+    with:
+      registry: ghcr.io
+      image: ghcr.io/my-org/my-app
+      tag: latest
+      dockerfile: Dockerfile
+
+  - id: notify
+    uses: ./templates/slack-notify.yml
+    depends_on: [ publish-image.push ]
+    with:
+      message: "🚀 My App has been built and pushed to GHCR!"

@@ -36,10 +36,10 @@ func scriptInterpreter(path string) string {
 
 type jsonPipeline struct {
 	Name  string     `json:"name"`
-	Steps []jsonStep `json:"steps"`
+	Steps []JSONStep `json:"steps"`
 }
 
-type jsonStep struct {
+type JSONStep struct {
 	ID               string              `json:"id"`
 	Name             string              `json:"name"`
 	Image            string              `json:"image"`
@@ -54,6 +54,7 @@ type jsonStep struct {
 	Secrets          []string            `json:"secrets"`
 	Type             string              `json:"type"` // "task" (default) | "generator"
 	Uses             string              `json:"uses,omitempty"`
+	With             map[string]string   `json:"with,omitempty"`
 	Condition        string              `json:"condition"`
 	AlwaysRun        bool                `json:"always_run"`
 	Matrix           map[string][]string `json:"matrix,omitempty"`
@@ -126,32 +127,38 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 
 	for i, js := range jp.Steps {
 		originalID := js.ID
-		if js.Uses != "" {
+		var toCompile []JSONStep
+
+		if js.Uses != "" && (strings.HasPrefix(js.Uses, ".") || filepath.IsAbs(js.Uses)) {
 			resolved, err := resolveUses(js, filename)
 			if err != nil {
 				return nil, fmt.Errorf("step %q uses %q: %w", js.ID, js.Uses, err)
 			}
-			js = resolved
+			toCompile = resolved
+		} else {
+			toCompile = []JSONStep{js}
 		}
 
-		if len(js.Matrix) > 0 {
-			matrixSteps, err := expandMatrixStep(js, i)
+		for _, stepJSON := range toCompile {
+			if len(stepJSON.Matrix) > 0 {
+				matrixSteps, err := expandMatrixStep(stepJSON, i)
+				if err != nil {
+					return nil, fmt.Errorf("step %q matrix: %w", stepJSON.ID, err)
+				}
+				for _, ms := range matrixSteps {
+					expandedMap[originalID] = append(expandedMap[originalID], ms.ID)
+				}
+				steps = append(steps, matrixSteps...)
+				continue
+			}
+
+			step, err := compileStep(stepJSON, i)
 			if err != nil {
-				return nil, fmt.Errorf("step %q matrix: %w", js.ID, err)
+				return nil, fmt.Errorf("step %q: %w", stepJSON.ID, err)
 			}
-			for _, ms := range matrixSteps {
-				expandedMap[originalID] = append(expandedMap[originalID], ms.ID)
-			}
-			steps = append(steps, matrixSteps...)
-			continue
+			steps = append(steps, step)
+			expandedMap[originalID] = append(expandedMap[originalID], step.ID)
 		}
-
-		step, err := compileStep(js, i)
-		if err != nil {
-			return nil, fmt.Errorf("step %q: %w", js.ID, err)
-		}
-		steps = append(steps, step)
-		expandedMap[originalID] = []string{step.ID}
 	}
 
 	// Post-process dependencies to handle matrix expansion
@@ -180,7 +187,7 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 	return p, nil
 }
 
-func resolveUses(js jsonStep, currentFile string) (jsonStep, error) {
+func resolveUses(js JSONStep, currentFile string) ([]JSONStep, error) {
 	templatePath := js.Uses
 	if !filepath.IsAbs(templatePath) {
 		templatePath = filepath.Join(filepath.Dir(currentFile), templatePath)
@@ -188,24 +195,69 @@ func resolveUses(js jsonStep, currentFile string) (jsonStep, error) {
 
 	data, err := os.ReadFile(templatePath)
 	if err != nil {
-		return js, fmt.Errorf("reading template %s: %w", templatePath, err)
+		return nil, fmt.Errorf("reading template %s: %w", templatePath, err)
 	}
 
-	ext := strings.ToLower(filepath.Ext(templatePath))
+	resolvedSteps, err := ResolveTemplateData(js, data, templatePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(resolvedSteps) == 0 {
+		return nil, fmt.Errorf("template %s returned no steps", templatePath)
+	}
+
+	return resolvedSteps, nil
+}
+
+// ResolveTemplateData merges template data into a step, performing parameter substitution.
+// It returns a slice of steps because a template may expand into multiple steps (inlining).
+func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	var err error
 	if ext == ".yml" || ext == ".yaml" {
 		data, err = yamlToJSON(data)
 		if err != nil {
-			return js, fmt.Errorf("parsing template YAML %s: %w", templatePath, err)
+			return nil, fmt.Errorf("parsing template YAML %s: %w", filename, err)
 		}
 	}
 
-	var template jsStepTemplate
+	// Perform ${{ inputs.NAME }} substitution from js.With
+	templateStr := string(data)
+	for k, v := range js.With {
+		templateStr = strings.ReplaceAll(templateStr, "${{ inputs."+k+" }}", v)
+	}
+	data = []byte(templateStr)
+
+	// We unmarshal into a generic map first to see if it's a multi-step template (has "steps" key)
+	// or a single step template.
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing template: %w", err)
+	}
+
+	if _, hasSteps := raw["steps"]; hasSteps {
+		var tp jsonPipeline
+		if err := json.Unmarshal(data, &tp); err != nil {
+			return nil, fmt.Errorf("parsing multi-step template: %w", err)
+		}
+
+		// Apply step ID namespacing if the parent step has an ID
+		if js.ID != "" {
+			for i := range tp.Steps {
+				tp.Steps[i].ID = js.ID + "." + tp.Steps[i].ID
+				// Also update depends_on
+				for j, dep := range tp.Steps[i].DependsOn {
+					tp.Steps[i].DependsOn[j] = js.ID + "." + dep
+				}
+			}
+		}
+
+		return tp.Steps, nil
+	}
+
+	var template JSONStep
 	if err := json.Unmarshal(data, &template); err != nil {
-		/*
-			Template might be a full pipeline fil, or just a step definition.
-			If it's a full pipeline we don't support using it as a step template yet
-		*/
-		return js, fmt.Errorf("parsing template: %w", err)
+		return nil, fmt.Errorf("parsing single-step template: %w", err)
 	}
 
 	// Merge template into js. Current js fields (if non-zero) win.
@@ -300,11 +352,11 @@ func resolveUses(js jsonStep, currentFile string) (jsonStep, error) {
 		js.Artifacts.Download = template.Artifacts.Download
 	}
 
-	return js, nil
+	return []JSONStep{js}, nil
 }
 
 // jsStepTemplate is a helper for unmarshaling a step template.
-// It's basically jsonStep without Uses to avoid recursion.
+// It's basically JSONStep without Uses to avoid recursion.
 type jsStepTemplate struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
@@ -319,6 +371,8 @@ type jsStepTemplate struct {
 	Timeout          string            `json:"timeout"`
 	Secrets          []string          `json:"secrets"`
 	Type             string            `json:"type"`
+	Uses             string            `json:"uses,omitempty"`
+	With             map[string]string `json:"with,omitempty"`
 	Condition        string            `json:"condition"`
 	AlwaysRun        bool              `json:"always_run"`
 	DockerSocket     bool              `json:"docker_socket"`
@@ -335,7 +389,7 @@ type jsStepTemplate struct {
 	} `json:"artifacts"`
 }
 
-func expandMatrixStep(js jsonStep, baseIndex int) ([]*pipeline.Step, error) {
+func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 	keys := make([]string, 0, len(js.Matrix))
 	for k := range js.Matrix {
 		keys = append(keys, k)
@@ -426,7 +480,7 @@ func expandMatrixStep(js jsonStep, baseIndex int) ([]*pipeline.Step, error) {
 	return steps, nil
 }
 
-func compileStep(js jsonStep, index int) (*pipeline.Step, error) {
+func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 	id := js.ID
 	if id == "" {
 		id = fmt.Sprintf("step-%d", index+1)
@@ -471,7 +525,7 @@ func compileStep(js jsonStep, index int) (*pipeline.Step, error) {
 		stepType = "task"
 	}
 
-	if image == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" {
+	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" {
 		return nil, fmt.Errorf("image is required")
 	}
 
@@ -528,7 +582,7 @@ func compileStep(js jsonStep, index int) (*pipeline.Step, error) {
 		}
 		image = "_release_" // sentinel
 		command = nil
-	} else if len(command) == 0 && stepType != "approval" && stepType != "release" {
+	} else if len(command) == 0 && stepType != "approval" && stepType != "release" && js.Uses == "" {
 		return nil, fmt.Errorf("either 'run', 'command', or 'pipeline' is required")
 	}
 
@@ -545,6 +599,8 @@ func compileStep(js jsonStep, index int) (*pipeline.Step, error) {
 		Timeout:           timeout,
 		Secrets:           js.Secrets,
 		Type:              stepType,
+		Uses:              js.Uses,
+		With:              js.With,
 		DockerSocket:      js.DockerSocket,
 		ArtifactUploads:   uploads,
 		ArtifactDownloads: downloads,

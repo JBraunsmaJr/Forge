@@ -1,0 +1,25 @@
+name: Docker Build and Push Template
+steps:
+  - id: login
+    name: Login to Registry
+    image: docker:27-cli
+    secrets: [ REGISTRY_USER, REGISTRY_TOKEN ]
+    run: |
+      echo "$REGISTRY_TOKEN" | docker login ${{ inputs.registry }} -u $REGISTRY_USER --password-stdin
+    docker_socket: true
+
+  - id: build
+    name: Build Image
+    image: docker:27-cli
+    depends_on: [ login ]
+    run: |
+      docker build -t ${{ inputs.image }}:${{ inputs.tag }} -f ${{ inputs.dockerfile }} .
+    docker_socket: true
+
+  - id: push
+    name: Push Image
+    image: docker:27-cli
+    depends_on: [ build ]
+    run: |
+      docker push ${{ inputs.image }}:${{ inputs.tag }}
+    docker_socket: true

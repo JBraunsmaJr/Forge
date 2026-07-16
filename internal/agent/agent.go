@@ -693,6 +693,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Type:         spec.Type,
 		RunID:        spec.RunID,
 		JobID:        spec.JobID,
+		OIDCToken:    spec.OIDCToken,
 	}
 
 	if step.Image == "" {
