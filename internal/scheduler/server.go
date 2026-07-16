@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
 	"github.com/JBraunsmaJr/forge/internal/cache"
+	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	"github.com/JBraunsmaJr/forge/internal/pb"
@@ -59,6 +61,7 @@ type Server struct {
 	addr        string
 	server      *http.Server
 	agents      *AgentRegistry
+	oidc        *OIDCProvider
 }
 
 // NewServer creates a scheduler server backed by the given Postgres database.
@@ -118,6 +121,11 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 	casDir := getenv("FORGE_CACHE_DIR", "/data/cache")
 	cas, _ := cache.NewLocal(casDir)
 
+	oidc, err := NewOIDCProvider(baseURL)
+	if err != nil {
+		fmt.Printf("[scheduler] failed to initialize OIDC provider: %v\n", err)
+	}
+
 	return &Server{
 		store:       NewStore(db),
 		orgs:        newOrgStore(db),
@@ -134,6 +142,7 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 		apiToken:    os.Getenv("FORGE_API_TOKEN"),
 		addr:        addr,
 		agents:      newAgentRegistry(),
+		oidc:        oidc,
 	}
 }
 
@@ -254,6 +263,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.Handle("GET /metrics", promhttp.Handler())
 
+	// OIDC
+	if s.oidc != nil {
+		mux.HandleFunc("GET /.well-known/openid-configuration", s.oidc.HandleConfiguration)
+		mux.HandleFunc("GET /api/v1/jwks", s.oidc.HandleJWKS)
+	}
+
 	// Token management
 	mux.HandleFunc("POST /api/v1/tokens", s.handleCreateToken)
 	mux.HandleFunc("GET /api/v1/tokens", s.handleListTokens)
@@ -306,6 +321,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/rerun", s.handleRerunJob)
 	mux.HandleFunc("POST /api/v1/runs/prune", s.handlePruneRuns)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
 
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
@@ -317,6 +333,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
 	mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
+	mux.HandleFunc("GET /api/v1/audit", s.handleListAuditLogs)
+	mux.HandleFunc("GET /api/v1/audit/export", s.handleListAuditLogs)
 
 	go s.releaseMonitor(ctx)
 
@@ -468,9 +486,26 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	s.AuditLog(r, "approve_job", "job", jobID, nil)
-	// Publish update to UI
 	runID := s.store.GetJobRunID(jobID)
+	s.AuditLog(r, "job.approve", "job", jobID, map[string]string{"run_id": runID})
+	// Publish update to UI
+	if runID != "" {
+		s.publishRunDetail(runID)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDenyJob(w http.ResponseWriter, r *http.Request) {
+	if !requireOperator(w, r) {
+		return
+	}
+	jobID := r.PathValue("id")
+	if err := s.store.DenyJob(jobID); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	runID := s.store.GetJobRunID(jobID)
+	s.AuditLog(r, "job.deny", "job", jobID, map[string]string{"run_id": runID})
 	if runID != "" {
 		s.publishRunDetail(runID)
 	}
@@ -933,6 +968,7 @@ func (s *Server) handleSetOrgSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.AuditLog(r, "secret.set", "org", orgID, map[string]string{"name": req.Name})
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -951,6 +987,7 @@ func (s *Server) handleDeleteOrgSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.AuditLog(r, "secret.delete", "org", orgID, map[string]string{"name": name})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -998,6 +1035,7 @@ func (s *Server) handleSetProjectSecret(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.AuditLog(r, "secret.set", "project", projectID, map[string]string{"name": req.Name})
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -1016,6 +1054,7 @@ func (s *Server) handleDeleteProjectSecret(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.AuditLog(r, "secret.delete", "project", projectID, map[string]string{"name": name})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1163,12 +1202,30 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 				req.AppliedStepIDs,
 			)
 			if err != nil {
-
 				writeError(w, http.StatusForbidden, err.Error())
 				return
 			}
+			s.AuditLog(r, "policy.applied", "org", req.OrgID, map[string]any{
+				"pipeline": req.PipelineName,
+				"policies": len(policies),
+			})
 		}
 	}
+
+	// Resolve remote templates (uses:)
+	var scmToken string
+	if req.ProjectID != "" {
+		_, _, token, ok := s.projects.GetProject(req.ProjectID)
+		if ok {
+			scmToken = token
+		}
+	}
+	resolvedSteps, err := s.resolveRemoteSteps(steps, scmToken, make(map[string]bool))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to resolve remote templates: %v", err))
+		return
+	}
+	steps = resolvedSteps
 
 	if err := validateSteps(steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline: %v", err))
@@ -1197,7 +1254,18 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.AuditLog(r, "submit_run", "run", runID, map[string]any{"pipeline": req.PipelineName, "org_id": req.OrgID, "project_id": req.ProjectID})
+	how := "CLI"
+	if r.Header.Get("X-Forge-Webhook") != "" {
+		how = "webhook"
+	}
+	s.AuditLog(r, "run.trigger", "run", runID, map[string]any{
+		"pipeline":   req.PipelineName,
+		"how":        how,
+		"ref":        req.Ref,
+		"commit_sha": req.CommitSHA,
+		"org_id":     req.OrgID,
+		"project_id": req.ProjectID,
+	})
 
 	runsTotal.WithLabelValues(req.OrgID, req.ProjectID, "cli").Inc()
 	jobsSubmittedTotal.WithLabelValues(req.OrgID, req.ProjectID).Add(float64(len(steps)))
@@ -1232,6 +1300,16 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+
+	if s.oidc != nil {
+		token, err := s.oidc.GenerateToken(spec.RunID, spec.JobID, spec.OrgID, spec.RepoURL)
+		if err == nil {
+			spec.OIDCToken = token
+		} else {
+			fmt.Printf("[scheduler] failed to generate OIDC token for job %s: %v\n", spec.JobID, err)
+		}
+	}
+
 	fmt.Printf("[scheduler] leased job %s to agent %s\n", spec.JobID[:8], req.AgentID[:8])
 	s.publishRunDetail(spec.RunID)
 	writeJSON(w, http.StatusOK, api.LeaseResponse{Job: spec})
@@ -1378,6 +1456,7 @@ func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	s.AuditLog(r, "org.create", "org", org.ID, req)
 	fmt.Printf("[scheduler] org created: %s (%s)\n", org.ID, org.Name)
 	writeJSON(w, http.StatusCreated, org)
 }
@@ -1413,6 +1492,7 @@ func (s *Server) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.AuditLog(r, "policy.create", "org", r.PathValue("id"), map[string]any{"policy_id": pol.ID, "name": pol.Name})
 	fmt.Printf("[scheduler] policy %q created for org %s\n", pol.Name, r.PathValue("id"))
 	writeJSON(w, http.StatusCreated, pol)
 }
@@ -1435,6 +1515,7 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.AuditLog(r, "policy.update", "org", r.PathValue("id"), map[string]any{"policy_id": pol.ID, "name": pol.Name})
 	fmt.Printf("[scheduler] policy %q updated for org %s\n", pol.Name, r.PathValue("id"))
 	writeJSON(w, http.StatusOK, pol)
 }
@@ -1456,6 +1537,7 @@ func (s *Server) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
+	s.AuditLog(r, "policy.delete", "org", r.PathValue("id"), map[string]any{"policy_id": r.PathValue("polID")})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1742,6 +1824,11 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.AuditLog(r, "run.rerun", "run", newRunID, map[string]string{"parent_run_id": runID})
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1775,6 +1862,11 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.AuditLog(r, "run.rerun_failed", "run", newRunID, map[string]string{"parent_run_id": runID})
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1842,6 +1934,11 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.AuditLog(r, "job.rerun", "run", newRunID, map[string]string{"parent_run_id": runID, "job_id": jobID})
 	s.publishRunDetail(newRunID)
 	writeJSON(w, http.StatusCreated, api.SubmitRunResponse{RunID: newRunID})
 }
@@ -1995,9 +2092,166 @@ func (s *Server) handleFlakySteps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
+func (s *Server) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	orgID := r.URL.Query().Get("org_id")
+	eventType := r.URL.Query().Get("event_type")
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+
+	var from, to *time.Time
+	if fromStr != "" {
+		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
+			from = &t
+		} else if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+			from = &t
+		}
+	}
+	if toStr != "" {
+		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
+			to = &t
+		} else if t, err := time.Parse("2006-01-02", toStr); err == nil {
+			to = &t
+		}
+	}
+
+	logs, err := s.store.ListAuditLogs(orgID, eventType, from, to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if r.URL.Query().Get("format") == "csv" {
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", "attachment; filename=audit_logs.csv")
+		writer := csv.NewWriter(w)
+		writer.Write([]string{"timestamp", "actor_id", "actor_name", "action", "target_type", "target_id", "ip_address", "org_id", "details"})
+		for _, l := range logs {
+			details, _ := json.Marshal(l.Details)
+			writer.Write([]string{
+				l.Timestamp.Format(time.RFC3339),
+				l.ActorID,
+				l.ActorName,
+				l.Action,
+				l.TargetType,
+				l.TargetID,
+				l.IPAddress,
+				l.OrgID,
+				string(details),
+			})
+		}
+		writer.Flush()
+		return
+	}
+
+	writeJSON(w, http.StatusOK, logs)
+}
+
 func interpolate(s string, env map[string]string) string {
 	for k, v := range env {
 		s = strings.ReplaceAll(s, "${{ env."+k+" }}", v)
 	}
+	return s
+}
+
+func (s *Server) resolveRemoteSteps(steps []api.StepDef, scmToken string, visited map[string]bool) ([]api.StepDef, error) {
+	var resolved []api.StepDef
+	for _, step := range steps {
+		if step.Uses == "" || strings.HasPrefix(step.Uses, ".") || filepath.IsAbs(step.Uses) {
+			resolved = append(resolved, step)
+			continue
+		}
+
+		// Remote reference
+		if visited[step.Uses] {
+			return nil, fmt.Errorf("circular reference detected in 'uses': %s", step.Uses)
+		}
+		visited[step.Uses] = true
+
+		repoURL, path, ref := parseUses(step.Uses)
+		if repoURL == "" {
+			return nil, fmt.Errorf("invalid 'uses' reference: %s", step.Uses)
+		}
+
+		// Fetch via gitcache
+		if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
+			return nil, fmt.Errorf("fetching remote template %s: %w", repoURL, err)
+		}
+
+		data, err := s.gitCache.Show(repoURL, ref, path)
+		if err != nil {
+			return nil, fmt.Errorf("reading remote template %s from %s: %w", path, repoURL, err)
+		}
+
+		// Compile the template
+		js := apiToJSONStep(step)
+		resolvedJSs, err := compiler.ResolveTemplateData(js, data, path)
+		if err != nil {
+			return nil, fmt.Errorf("resolving template %s: %w", step.Uses, err)
+		}
+
+		// Convert back to API steps and resolve recursively
+		var apiSteps []api.StepDef
+		for _, rjs := range resolvedJSs {
+			apiSteps = append(apiSteps, jsonStepToAPI(rjs))
+		}
+
+		nested, err := s.resolveRemoteSteps(apiSteps, scmToken, visited)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, nested...)
+
+		delete(visited, step.Uses)
+	}
+	return resolved, nil
+}
+
+func parseUses(uses string) (repoURL, path, ref string) {
+	ref = "HEAD"
+	if idx := strings.Index(uses, "@"); idx != -1 {
+		ref = uses[idx+1:]
+		uses = uses[:idx]
+	}
+
+	parts := strings.Split(uses, "/")
+	if len(parts) < 3 {
+		return "", "", ""
+	}
+
+	host := "github.com"
+	repoStart := 0
+	if strings.Contains(parts[0], ".") {
+		host = parts[0]
+		repoStart = 1
+	}
+
+	if len(parts) < repoStart+3 {
+		return "", "", ""
+	}
+
+	owner := parts[repoStart]
+	repoName := parts[repoStart+1]
+	repoURL = fmt.Sprintf("https://%s/%s/%s", host, owner, repoName)
+	path = strings.Join(parts[repoStart+2:], "/")
+
+	return
+}
+
+func apiToJSONStep(s api.StepDef) compiler.JSONStep {
+	// We use JSON for conversion to avoid missing fields during manual mapping
+	data, _ := json.Marshal(s)
+	var js compiler.JSONStep
+	json.Unmarshal(data, &js)
+	return js
+}
+
+func jsonStepToAPI(js compiler.JSONStep) api.StepDef {
+	data, _ := json.Marshal(js)
+	var s api.StepDef
+	json.Unmarshal(data, &s)
 	return s
 }

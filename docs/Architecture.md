@@ -73,6 +73,10 @@ The scheduler is a single HTTP server that:
 
 **Runs policy transformers** — when a pipeline is submitted under an org that has transformer policies, the scheduler runs Docker containers that receive the pipeline on stdin and return a modified pipeline on stdout.
 
+**Issues OIDC tokens** — for every job run, the scheduler issues a short-lived (1h) RS256-signed JWT that steps can use to authenticate with external services (GitHub, Cloud providers). The public keys are served via a standard JWKS endpoint.
+
+**Maintains Audit Logs** — captures an append-only log of all security-critical operations, including run triggers, policy applications, secret changes, and authentication failures.
+
 ### Why PostgreSQL for a job queue?
 
 The critical query is:
@@ -91,6 +95,41 @@ RETURNING jobs.id, jobs.run_id, ...
 ```
 
 `SKIP LOCKED` means: "give me a row that nobody else has locked right now." Two agents calling this simultaneously each get a different job — no double-assignment, no external lock manager needed. This is the same technique used by Sidekiq, Celery, and Que.
+
+---
+
+## Pipeline Templates
+
+Forge supports reusable pipeline templates to reduce duplication and enforce standards across teams.
+
+### Local Templates
+Steps can reference local YAML/JSON files using the `uses:` keyword.
+```yaml
+steps:
+  - id: build
+    uses: ./templates/go-build.yml
+    with:
+      app_name: "forge"
+```
+
+### Cross-Repo Templates
+Templates can also be fetched from remote Git repositories.
+```yaml
+steps:
+  - id: security-scan
+    uses: github.com/my-org/shared-pipelines/scan.yml@v1.2.0
+```
+When a remote template is used, the Scheduler:
+1. Clones the repository to a local cache (`FORGE_GIT_CACHE`).
+2. Reads the specified file.
+3. Performs parameter substitution using the values provided in the `with:` block.
+4. Inlines the template steps into the main pipeline.
+
+### Parameter Substitution
+Templates use the `${{ inputs.NAME }}` syntax for parameters. These are substituted at compile-time by the Scheduler.
+
+### Namespacing
+When a template contains multiple steps, Forge automatically namespaces the step IDs to prevent collisions. For example, if a step with `id: build` uses a template that has steps `test` and `package`, the resulting steps will have IDs `build.test` and `build.package`.
 
 ---
 

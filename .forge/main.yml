@@ -3,28 +3,22 @@ name: Forge Main
 steps:
 
   - id: build-policies
-    name: Build Policies
-    image: docker:27-cli
-    timeout: 5m
-    secrets: [ GITHUB_TOKEN, GITHUB_USER ]
+    uses: ./templates/docker-build.yml
     inputs:
       - examples/policies/**
-    run: |
-      echo "$GITHUB_TOKEN" | docker login ghcr.io -u $GITHUB_USER --password-stdin
-      docker build -t ghcr.io/jbraunsmajr/forge/forge-security-policies examples/policies/
-      docker push ghcr.io/jbraunsmajr/forge/forge-security-policies
-    docker_socket: true
+    with:
+      timeout: 5m
+      image: ghcr.io/jbraunsmajr/forge/forge-security-policies
+      dockerfile: examples/policies/Dockerfile
+      context: examples/policies/
 
   - id: build-image
-    name: Build Image
-    image: docker:27-cli
-    docker_socket: true
-    secrets: [ GITHUB_TOKEN, GITHUB_USER ]
-    timeout: 10m
-    run: |
-      echo "$GITHUB_TOKEN" | docker login ghcr.io -u $GITHUB_USER --password-stdin
-      docker build -t ghcr.io/jbraunsmajr/forge/forge -f Dockerfile .
-      docker push ghcr.io/jbraunsmajr/forge/forge
+    uses: ./templates/docker-build.yml
+    with:
+      timeout: 10m
+      image: ghcr.io/jbraunsmajr/forge/forge
+      dockerfile: Dockerfile
+      context: .
 
   - id: release-approval
     name: Approve Release

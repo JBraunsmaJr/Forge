@@ -58,6 +58,10 @@ type JobSpec struct {
 	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
 	// log it clearly (the scheduler already acted on it via unlockDownstream).
 	AlwaysRun bool `json:"always_run,omitempty"`
+	// RepoURL is the source repository for the run.
+	RepoURL string `json:"repo_url,omitempty"`
+	// OIDCToken is a short-lived identity token issued by the scheduler for this job.
+	OIDCToken string `json:"oidc_token,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 	// Release is populated when Type == "release".
@@ -97,6 +101,8 @@ type StepDef struct {
 	Condition    string            `json:"condition,omitempty"`
 	AlwaysRun    bool              `json:"always_run,omitempty"`
 	Type         string            `json:"type"`
+	Uses         string            `json:"uses,omitempty"`
+	With         map[string]string `json:"with,omitempty"`
 	PolicySource string            `json:"policy_source,omitempty"`
 	// Artifact specs — carried through to the agent via the jobs table.
 	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
@@ -561,6 +567,19 @@ type FlakyStep struct {
 	Failures     int     `json:"failures"`
 	FlakeRate    float64 `json:"flake_rate"` // failures / total_runs
 	LastSeen     string  `json:"last_seen"`
+}
+
+type AuditEntry struct {
+	ID         string    `json:"id"`
+	Timestamp  time.Time `json:"timestamp"`
+	ActorID    string    `json:"actor_id"`
+	ActorName  string    `json:"actor_name"`
+	Action     string    `json:"action"`
+	TargetType string    `json:"target_type"`
+	TargetID   string    `json:"target_id"`
+	Details    any       `json:"details"`
+	IPAddress  string    `json:"ip_address,omitempty"`
+	OrgID      string    `json:"org_id,omitempty"`
 }
 
 // AgentInfo carries health and status info for a self-hosted runner.

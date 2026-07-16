@@ -169,6 +169,32 @@ func (c *Cache) ResolveCommit(repoURL, branch string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+func (c *Cache) Show(repoURL, ref, path string) ([]byte, error) {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
+	dir := c.RepoDir(repoURL)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil, fmt.Errorf("repository not found in cache")
+	}
+
+	// Use git show to extract the file from the mirror.
+	// We try both as-is and with refs/heads/ prefix if it looks like a branch.
+	cmd := exec.Command("git", "-C", dir, "show", ref+":"+path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Try refs/heads/ prefix
+		cmd = exec.Command("git", "-C", dir, "show", "refs/heads/"+ref+":"+path)
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("git show failed: %w, output: %s", err, string(output))
+		}
+	}
+
+	return output, nil
+}
+
 func (c *Cache) ResolveRef(repoURL, name string) (string, error) {
 	lock := c.getLock(repoURL)
 	lock.Lock()
