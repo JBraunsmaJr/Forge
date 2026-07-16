@@ -1,0 +1,6 @@
+name: Go Test Template
+image: golang:1.26-alpine
+timeout: ${{ inputs.timeout }}
+run: |
+  go test ./... -v -coverprofile=coverage.out
+  go tool cover -func=coverage.out

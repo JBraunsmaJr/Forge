@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,5 +266,80 @@ func TestCompile_RunWrappedInSh(t *testing.T) {
 	cmd := p.Steps[0].Command
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {
 		t.Errorf("expected [sh -c <script>], got %v", cmd)
+	}
+}
+
+func TestCompile_Templates(t *testing.T) {
+	// Create a template file
+	templateContent := `
+name: Template
+steps:
+  - id: step1
+    image: alpine
+    run: echo "hello ${{ inputs.name }}"
+  - id: step2
+    image: alpine
+    depends_on: [step1]
+    run: echo "goodbye ${{ inputs.name }}"
+`
+	templateFile := filepath.Join(t.TempDir(), "template.yml")
+	if err := os.WriteFile(templateFile, []byte(templateContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a pipeline that uses the template
+	pipelineContent := fmt.Sprintf(`
+name: Pipeline
+steps:
+  - id: my-template
+    uses: ./%s
+    with:
+      name: world
+  - id: final
+    image: alpine
+    depends_on: [my-template.step2]
+    run: echo done
+`, filepath.Base(templateFile))
+
+	pipelineFile := filepath.Join(filepath.Dir(templateFile), "pipeline.yml")
+	if err := os.WriteFile(pipelineFile, []byte(pipelineContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := Compile(pipelineFile)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	if len(p.Steps) != 3 {
+		t.Errorf("expected 3 steps, got %d", len(p.Steps))
+	}
+
+	// Verify step1
+	s1 := p.Steps[0]
+	if s1.ID != "my-template.step1" {
+		t.Errorf("expected step1 ID to be my-template.step1, got %s", s1.ID)
+	}
+	expectedRun1 := "set -e\necho \"hello world\""
+	if s1.Command[2] != expectedRun1 {
+		t.Errorf("expected run1 to be %q, got %q", expectedRun1, s1.Command[2])
+	}
+
+	// Verify step2
+	s2 := p.Steps[1]
+	if s2.ID != "my-template.step2" {
+		t.Errorf("expected step2 ID to be my-template.step2, got %s", s2.ID)
+	}
+	if len(s2.DependsOn) != 1 || s2.DependsOn[0] != "my-template.step1" {
+		t.Errorf("expected s2 to depend on my-template.step1, got %v", s2.DependsOn)
+	}
+
+	// Verify final step
+	final := p.Steps[2]
+	if final.ID != "final" {
+		t.Errorf("expected final ID to be final, got %s", final.ID)
+	}
+	if len(final.DependsOn) != 1 || final.DependsOn[0] != "my-template.step2" {
+		t.Errorf("expected final to depend on my-template.step2, got %v", final.DependsOn)
 	}
 }

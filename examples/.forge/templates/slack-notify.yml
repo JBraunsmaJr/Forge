@@ -1,0 +1,7 @@
+name: Slack Notification
+image: curlimages/curl:latest
+secrets: [ SLACK_WEBHOOK ]
+run: |
+  curl -sf -X POST "$SLACK_WEBHOOK" \
+    -H "Content-Type: application/json" \
+    -d "{\"text\":\"${{ inputs.message }}\"}"
