@@ -56,7 +56,7 @@ func (p *yamlParser) peek() (string, bool) {
 
 // parseValue is the top-level entry point. It dispatches to the right
 // parser based on the current indentation level.
-func (p *yamlParser) parseValue(baseIndent int) (interface{}, error) {
+func (p *yamlParser) parseValue(baseIndent int) (any, error) {
 	line, ok := p.peek()
 	if !ok {
 		return nil, nil
@@ -81,8 +81,8 @@ func (p *yamlParser) parseValue(baseIndent int) (interface{}, error) {
 }
 
 // parseMapping reads a block mapping (key: value pairs at the same indent).
-func (p *yamlParser) parseMapping(mapIndent int) (map[string]interface{}, error) {
-	result := map[string]interface{}{}
+func (p *yamlParser) parseMapping(mapIndent int) (map[string]any, error) {
+	result := map[string]any{}
 
 	for {
 		line, ok := p.peek()
@@ -99,14 +99,14 @@ func (p *yamlParser) parseMapping(mapIndent int) (map[string]interface{}, error)
 		p.pos++
 		trimmed := strings.TrimSpace(line)
 
-		colonIdx := strings.Index(trimmed, ":")
-		if colonIdx < 0 {
+		before, after, ok0 := strings.Cut(trimmed, ":")
+		if !ok0 {
 			continue
 		}
-		key := strings.TrimSpace(trimmed[:colonIdx])
-		rest := strings.TrimSpace(trimmed[colonIdx+1:])
+		key := strings.TrimSpace(before)
+		rest := strings.TrimSpace(after)
 
-		var val interface{}
+		var val any
 		var err error
 
 		switch {
@@ -141,8 +141,8 @@ func (p *yamlParser) parseMapping(mapIndent int) (map[string]interface{}, error)
 }
 
 // parseSequence reads a block sequence (list of "- item" at the same indent).
-func (p *yamlParser) parseSequence(seqIndent int) ([]interface{}, error) {
-	var result []interface{}
+func (p *yamlParser) parseSequence(seqIndent int) ([]any, error) {
+	var result []any
 
 	for {
 		line, ok := p.peek()
@@ -161,7 +161,7 @@ func (p *yamlParser) parseSequence(seqIndent int) ([]interface{}, error) {
 
 		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
 
-		var item interface{}
+		var item any
 		var err error
 
 		if rest == "" {
@@ -177,7 +177,7 @@ func (p *yamlParser) parseSequence(seqIndent int) ([]interface{}, error) {
 			}
 		} else if strings.Contains(rest, ":") && !strings.HasPrefix(rest, "{") {
 
-			inlineMap := map[string]interface{}{}
+			inlineMap := map[string]any{}
 			colonIdx := strings.Index(rest, ":")
 			k := strings.TrimSpace(rest[:colonIdx])
 			v := strings.TrimSpace(rest[colonIdx+1:])
@@ -194,12 +194,12 @@ func (p *yamlParser) parseSequence(seqIndent int) ([]interface{}, error) {
 				}
 				p.pos++
 
-				ci := strings.Index(nextTrimmed, ":")
-				if ci < 0 {
+				before, after, ok0 := strings.Cut(nextTrimmed, ":")
+				if !ok0 {
 					continue
 				}
-				fk := strings.TrimSpace(nextTrimmed[:ci])
-				fv := strings.TrimSpace(nextTrimmed[ci+1:])
+				fk := strings.TrimSpace(before)
+				fv := strings.TrimSpace(after)
 
 				if fv == "|" {
 					inlineMap[fk] = p.parseLiteralBlock(indent(next) + 2)
@@ -266,7 +266,7 @@ func (p *yamlParser) parseLiteralBlock(contentIndent int) string {
 }
 
 // parseScalar converts a YAML scalar string to its Go representation.
-func parseScalar(s string) interface{} {
+func parseScalar(s string) any {
 	s = stripComment(s)
 	if s == "" || s == "~" || s == "null" {
 		return nil
@@ -317,7 +317,7 @@ func stripComment(s string) string {
 				}
 				// Found end of quote. Strip everything after it that starts with #
 				after := s[i+1:]
-				if idx := strings.Index(after, "#"); idx >= 0 {
+				if found := strings.Contains(after, "#"); found {
 					return s[:i+1]
 				}
 				return s
@@ -338,12 +338,12 @@ func stripComment(s string) string {
 }
 
 // parseInlineSeq splits "[a, b, c]" content into a []interface{}.
-func parseInlineSeq(inner string) []interface{} {
+func parseInlineSeq(inner string) []any {
 	if strings.TrimSpace(inner) == "" {
-		return []interface{}{}
+		return []any{}
 	}
 	parts := strings.Split(inner, ",")
-	result := make([]interface{}, 0, len(parts))
+	result := make([]any, 0, len(parts))
 	for _, p := range parts {
 		result = append(result, parseScalar(strings.TrimSpace(p)))
 	}

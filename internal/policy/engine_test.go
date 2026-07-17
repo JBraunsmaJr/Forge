@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -345,13 +346,7 @@ func TestApply_MultiPolicyDeduplication(t *testing.T) {
 
 	runTransformerFunc = func(transformer *api.PolicyTransformer, steps []api.StepDef, input api.TransformerInput) ([]api.StepDef, error) {
 		// Mock: check if 'npm-audit' is in input.AppliedStepIDs
-		found := false
-		for _, id := range input.AppliedStepIDs {
-			if id == "npm-audit" {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(input.AppliedStepIDs, "npm-audit")
 
 		res := append([]api.StepDef{}, steps...)
 		if !found {

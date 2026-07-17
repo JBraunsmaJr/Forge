@@ -4,6 +4,7 @@ package compiler
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -403,9 +404,7 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		for _, combo := range combinations {
 			for _, val := range values {
 				newCombo := make(map[string]string)
-				for k, v := range combo {
-					newCombo[k] = v
-				}
+				maps.Copy(newCombo, combo)
 				newCombo[key] = val
 				next = append(next, newCombo)
 			}
@@ -423,18 +422,18 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		}
 
 		// Build ID and Name suffix
-		suffix := ""
+		var suffix strings.Builder
 		for _, key := range keys {
 			val := combo[key]
 			cloned.Env[key] = val
-			suffix += fmt.Sprintf("-%s", val)
+			suffix.WriteString(fmt.Sprintf("-%s", val))
 		}
 
 		if cloned.ID != "" {
-			cloned.ID += suffix
+			cloned.ID += suffix.String()
 		}
 		if cloned.Name != "" {
-			cloned.Name += " (" + strings.TrimPrefix(suffix, "-") + ")"
+			cloned.Name += " (" + strings.TrimPrefix(suffix.String(), "-") + ")"
 		}
 
 		// Interpolate variables in string fields
@@ -582,7 +581,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		}
 		image = "_release_" // sentinel
 		command = nil
-	} else if len(command) == 0 && stepType != "approval" && stepType != "release" && js.Uses == "" {
+	} else if len(command) == 0 && stepType != "approval" && js.Uses == "" {
 		return nil, fmt.Errorf("either 'run', 'command', or 'pipeline' is required")
 	}
 

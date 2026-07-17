@@ -27,7 +27,7 @@ func (p *ProjectStore) CreateProject(orgID string, req api.CreateProjectRequest)
 
 	// Use nil for org_id when empty — the column allows NULL.
 	// Passing an empty string would violate the foreign-key constraint.
-	var orgIDParam interface{}
+	var orgIDParam any
 	if orgID != "" {
 		orgIDParam = orgID
 	}

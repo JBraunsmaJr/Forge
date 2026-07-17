@@ -23,22 +23,18 @@ const (
 // JobSpec is what the scheduler sends to an agent when it leases a job.
 // The agent uses this to know what to run.
 type JobSpec struct {
-	JobID             string                 `json:"job_id"`
-	RunID             string                 `json:"run_id"`
-	LeaseID           string                 `json:"lease_id"`
-	StepID            string                 `json:"step_id"`
-	Image             string                 `json:"image"`
-	Entrypoint        []string               `json:"entrypoint,omitempty"`
-	Command           []string               `json:"command"`
-	WorkDir           string                 `json:"workdir"`
-	Env               map[string]string      `json:"env"`
-	Inputs            []string               `json:"inputs"`
-	Timeout           time.Duration          `json:"timeout_ns"`
-	SecretNames       []string               `json:"secret_names"`
-	DockerSocket      bool                   `json:"docker_socket,omitempty"`
-	Type              string                 `json:"type"` // "task" | "generator"
-	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
-	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
+	Env map[string]string `json:"env"`
+	// PipelineRef is populated when Type == "pipeline".
+	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
+	// Release is populated when Type == "release".
+	Release *ReleaseConfig `json:"release,omitempty"`
+	JobID   string         `json:"job_id"`
+	RunID   string         `json:"run_id"`
+	LeaseID string         `json:"lease_id"`
+	StepID  string         `json:"step_id"`
+	Image   string         `json:"image"`
+	WorkDir string         `json:"workdir"`
+	Type    string         `json:"type"` // "task" | "generator"
 	// OrgID and ProjectID are used by the agent for scoped secret resolution.
 	// Secret lookup order: project → org → global → legacy.
 	OrgID     string `json:"org_id,omitempty"`
@@ -52,21 +48,25 @@ type JobSpec struct {
 	// WorkspaceDir is the path to the shared workspace for the run.
 	// (added for Bug 3: child pipelines sharing parent workspace)
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
-	// AppliedStepIDs is a list of step IDs already present in the run hierarchy,
-	// used to avoid duplicate step injection by policies.
-	AppliedStepIDs []string `json:"applied_step_ids,omitempty"`
-	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
-	// log it clearly (the scheduler already acted on it via unlockDownstream).
-	AlwaysRun bool `json:"always_run,omitempty"`
 	// RepoURL is the source repository for the run.
 	RepoURL string `json:"repo_url,omitempty"`
 	// OIDCToken is a short-lived identity token issued by the scheduler for this job.
-	OIDCToken string `json:"oidc_token,omitempty"`
-	// PipelineRef is populated when Type == "pipeline".
-	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
-	// Release is populated when Type == "release".
-	Release *ReleaseConfig `json:"release,omitempty"`
-	Status  JobStatus      `json:"status,omitempty"`
+	OIDCToken         string                 `json:"oidc_token,omitempty"`
+	Status            JobStatus              `json:"status,omitempty"`
+	Entrypoint        []string               `json:"entrypoint,omitempty"`
+	Command           []string               `json:"command"`
+	Inputs            []string               `json:"inputs"`
+	SecretNames       []string               `json:"secret_names"`
+	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
+	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
+	// AppliedStepIDs is a list of step IDs already present in the run hierarchy,
+	// used to avoid duplicate step injection by policies.
+	AppliedStepIDs []string      `json:"applied_step_ids,omitempty"`
+	Timeout        time.Duration `json:"timeout_ns"`
+	DockerSocket   bool          `json:"docker_socket,omitempty"`
+	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
+	// log it clearly (the scheduler already acted on it via unlockDownstream).
+	AlwaysRun bool `json:"always_run,omitempty"`
 }
 
 // SubmitRunRequest is sent by the CLI to submit a pipeline for execution.
@@ -86,32 +86,32 @@ type SubmitRunRequest struct {
 
 // StepDef carries a step's definition inside a SubmitRunRequest.
 type StepDef struct {
-	ID           string            `json:"id"`
-	Image        string            `json:"image"`
-	Entrypoint   []string          `json:"entrypoint,omitempty"`
-	Command      []string          `json:"command,omitempty"`
-	Run          string            `json:"run,omitempty"`
-	WorkDir      string            `json:"workdir"`
-	Env          map[string]string `json:"env"`
-	DependsOn    []string          `json:"depends_on"`
-	Inputs       []string          `json:"inputs"`
-	Timeout      time.Duration     `json:"timeout_ns"`
-	SecretNames  []string          `json:"secret_names"`
-	DockerSocket bool              `json:"docker_socket,omitempty"`
-	Condition    string            `json:"condition,omitempty"`
-	AlwaysRun    bool              `json:"always_run,omitempty"`
-	Type         string            `json:"type"`
-	Uses         string            `json:"uses,omitempty"`
-	With         map[string]string `json:"with,omitempty"`
-	PolicySource string            `json:"policy_source,omitempty"`
-	// Artifact specs — carried through to the agent via the jobs table.
-	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
-	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
+	Env  map[string]string `json:"env"`
+	With map[string]string `json:"with,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 	// Release is populated when Type == "release".
-	Release *ReleaseConfig `json:"release,omitempty"`
-	Status  JobStatus      `json:"status,omitempty"`
+	Release      *ReleaseConfig `json:"release,omitempty"`
+	ID           string         `json:"id"`
+	Image        string         `json:"image"`
+	Run          string         `json:"run,omitempty"`
+	WorkDir      string         `json:"workdir"`
+	Condition    string         `json:"condition,omitempty"`
+	Type         string         `json:"type"`
+	Uses         string         `json:"uses,omitempty"`
+	PolicySource string         `json:"policy_source,omitempty"`
+	Status       JobStatus      `json:"status,omitempty"`
+	Entrypoint   []string       `json:"entrypoint,omitempty"`
+	Command      []string       `json:"command,omitempty"`
+	DependsOn    []string       `json:"depends_on"`
+	Inputs       []string       `json:"inputs"`
+	SecretNames  []string       `json:"secret_names"`
+	// Artifact specs — carried through to the agent via the jobs table.
+	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
+	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
+	Timeout           time.Duration          `json:"timeout_ns"`
+	DockerSocket      bool                   `json:"docker_socket,omitempty"`
+	AlwaysRun         bool                   `json:"always_run,omitempty"`
 }
 
 // SubmitRunResponse is returned after a successful pipeline submission.

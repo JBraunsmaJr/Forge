@@ -54,8 +54,8 @@ func newTestVault(t *testing.T) (*Client, *httptest.Server) {
 			prefix = strings.TrimSuffix(prefix, "/")
 			var keys []string
 			for k := range store {
-				if strings.HasPrefix(k, prefix+"/") {
-					keys = append(keys, strings.TrimPrefix(k, prefix+"/"))
+				if after, ok := strings.CutPrefix(k, prefix+"/"); ok {
+					keys = append(keys, after)
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")

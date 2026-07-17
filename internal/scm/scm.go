@@ -74,8 +74,8 @@ func postGitLabStatus(repoURL, sha, token, state, targetURL, description, contex
 	baseURL := "https://gitlab.com"
 	if idx := strings.Index(repoURL, "://"); idx != -1 {
 		rest := repoURL[idx+3:]
-		if slashIdx := strings.Index(rest, "/"); slashIdx != -1 {
-			baseURL = repoURL[:idx+3] + rest[:slashIdx]
+		if before, _, ok := strings.Cut(rest, "/"); ok {
+			baseURL = repoURL[:idx+3] + before
 		}
 	}
 
@@ -96,18 +96,18 @@ func getRepoPath(repoURL string) string {
 	repoURL = strings.TrimSuffix(repoURL, "/")
 
 	// Handle http(s)://
-	if idx := strings.Index(repoURL, "://"); idx != -1 {
-		path := repoURL[idx+3:]
-		if slashIdx := strings.Index(path, "/"); slashIdx != -1 {
-			return path[slashIdx+1:]
+	if _, after, ok := strings.Cut(repoURL, "://"); ok {
+		path := after
+		if _, after0, ok0 := strings.Cut(path, "/"); ok0 {
+			return after0
 		}
 	}
 
 	// Handle git@host:path
-	if idx := strings.Index(repoURL, ":"); idx != -1 {
+	if before, after, ok := strings.Cut(repoURL, ":"); ok {
 		// Ensure we don't pick up the protocol colon
-		if !strings.Contains(repoURL[:idx], "://") {
-			return repoURL[idx+1:]
+		if !strings.Contains(before, "://") {
+			return after
 		}
 	}
 
@@ -169,8 +169,8 @@ func createGitLabRelease(repoURL, token, tag, name, body string) (string, string
 	baseURL := "https://gitlab.com"
 	if idx := strings.Index(repoURL, "://"); idx != -1 {
 		rest := repoURL[idx+3:]
-		if slashIdx := strings.Index(rest, "/"); slashIdx != -1 {
-			baseURL = repoURL[:idx+3] + rest[:slashIdx]
+		if before, _, ok := strings.Cut(rest, "/"); ok {
+			baseURL = repoURL[:idx+3] + before
 		}
 	}
 
@@ -249,8 +249,8 @@ func uploadGitLabAsset(repoURL, token, tag, filename, contentType string, size i
 	baseURL := "https://gitlab.com"
 	if idx := strings.Index(repoURL, "://"); idx != -1 {
 		rest := repoURL[idx+3:]
-		if slashIdx := strings.Index(rest, "/"); slashIdx != -1 {
-			baseURL = repoURL[:idx+3] + rest[:slashIdx]
+		if before, _, ok := strings.Cut(rest, "/"); ok {
+			baseURL = repoURL[:idx+3] + before
 		}
 	}
 

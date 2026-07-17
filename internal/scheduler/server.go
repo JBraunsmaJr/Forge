@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1236,13 +1237,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 
 	// Collect all step IDs that will be part of this run to propagate them to children.
 	for _, s := range steps {
-		found := false
-		for _, id := range appliedStepIDs {
-			if id == s.ID {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(appliedStepIDs, s.ID)
 		if !found {
 			appliedStepIDs = append(appliedStepIDs, s.ID)
 		}

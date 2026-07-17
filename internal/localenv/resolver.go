@@ -3,6 +3,7 @@ package localenv
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 )
@@ -55,9 +56,7 @@ func WithEnvFile(path string) Option {
 		if err != nil {
 			return fmt.Errorf("--env-file %s: %w", path, err)
 		}
-		for k, v := range values {
-			r.envFileSecrets[k] = v
-		}
+		maps.Copy(r.envFileSecrets, values)
 		r.sources = append(r.sources, fmt.Sprintf("env file %s (%d value(s))", path, len(values)))
 		return nil
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -361,9 +362,7 @@ func (s *Server) triggerWebhookRun(
 	steps := make([]api.StepDef, len(pipeline.Steps))
 	for i, s := range pipeline.Steps {
 		env := make(map[string]string)
-		for k, v := range s.Env {
-			env[k] = v
-		}
+		maps.Copy(env, s.Env)
 
 		injectSCMMetadata(env, meta)
 
@@ -558,14 +557,14 @@ func matchesBranchFilter(branch string, filters []string) bool {
 		if f == branch {
 			return true
 		}
-		if strings.HasSuffix(f, "/*") {
-			prefix := strings.TrimSuffix(f, "/*")
+		if before, ok := strings.CutSuffix(f, "/*"); ok {
+			prefix := before
 			if strings.HasPrefix(branch, prefix+"/") {
 				return true
 			}
 		}
-		if strings.HasSuffix(f, "*") {
-			prefix := strings.TrimSuffix(f, "*")
+		if before, ok := strings.CutSuffix(f, "*"); ok {
+			prefix := before
 			if strings.HasPrefix(branch, prefix) {
 				return true
 			}
@@ -581,8 +580,8 @@ func injectSCMMetadata(env map[string]string, meta api.WebhookRunMeta) {
 	env["FORGE_REF"] = meta.Ref
 	env["FORGE_COMMIT_SHA"] = meta.CommitSHA
 	env["FORGE_EVENT"] = meta.Event
-	if strings.HasPrefix(meta.Ref, "refs/tags/") {
-		env["FORGE_COMMIT_TAG"] = strings.TrimPrefix(meta.Ref, "refs/tags/")
+	if after, ok := strings.CutPrefix(meta.Ref, "refs/tags/"); ok {
+		env["FORGE_COMMIT_TAG"] = after
 	}
 	if meta.PRNumber > 0 {
 		env["FORGE_PR_NUMBER"] = fmt.Sprintf("%d", meta.PRNumber)

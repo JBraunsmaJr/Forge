@@ -271,7 +271,7 @@ func TestReclaimStaleJobs(t *testing.T) {
 func TestListRunsPagination(t *testing.T) {
 	s := openTestDB(t)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := s.SubmitRun(fmt.Sprintf("page-run-%d", i), "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
 		if err != nil {
 			t.Fatalf("SubmitRun %d: %v", i, err)

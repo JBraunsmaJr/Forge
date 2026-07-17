@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -445,8 +446,8 @@ func (a *Agent) getDockerUsageGB() (float64, error) {
 	}
 
 	var total float64
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(strings.TrimSpace(string(out)), "\n")
+	for line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -495,8 +496,8 @@ func (a *Agent) evictLRUImages(targetGB float64) {
 		gb      float64
 	}
 	var images []imgInfo
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(strings.TrimSpace(string(out)), "\n")
+	for line := range lines {
 		parts := strings.Split(line, "|")
 		if len(parts) < 3 {
 			continue
@@ -1106,14 +1107,14 @@ func evalRuntimeCondition(expr string, env map[string]string) bool {
 	}
 	resolved := resolveEnvRefs(expr, env)
 
-	if idx := strings.Index(resolved, "=="); idx >= 0 {
-		left := strings.TrimSpace(resolved[:idx])
-		right := strings.Trim(strings.TrimSpace(resolved[idx+2:]), "'\"")
+	if before, after, ok := strings.Cut(resolved, "=="); ok {
+		left := strings.TrimSpace(before)
+		right := strings.Trim(strings.TrimSpace(after), "'\"")
 		return left == right
 	}
-	if idx := strings.Index(resolved, "!="); idx >= 0 {
-		left := strings.TrimSpace(resolved[:idx])
-		right := strings.Trim(strings.TrimSpace(resolved[idx+2:]), "'\"")
+	if before, after, ok := strings.Cut(resolved, "!="); ok {
+		left := strings.TrimSpace(before)
+		right := strings.Trim(strings.TrimSpace(after), "'\"")
 		return left != right
 	}
 	if strings.HasPrefix(resolved, "!") {
@@ -1208,7 +1209,7 @@ func readLogFile(path string) []api.LogEvent {
 	}
 
 	var events []api.LogEvent
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -2203,14 +2204,10 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	steps := make([]api.StepDef, 0, len(childPipeline.Steps))
 	for _, s := range childPipeline.Steps {
 		env := make(map[string]string, len(s.Env)+len(ref.Variables))
-		for k, v := range s.Env {
-			env[k] = v
-		}
+		maps.Copy(env, s.Env)
 
 		// Variables override the step's own env vars.
-		for k, v := range ref.Variables {
-			env[k] = v
-		}
+		maps.Copy(env, ref.Variables)
 		var uploads []api.ArtifactUploadSpec
 		for _, u := range s.ArtifactUploads {
 			uploads = append(uploads, api.ArtifactUploadSpec{
