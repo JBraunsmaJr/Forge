@@ -309,10 +309,7 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 	w := 58
 	bar := strings.Repeat("─", w)
 	pad := func(s string) string {
-		sp := w - len(s) - 1
-		if sp < 0 {
-			sp = 0
-		}
+		sp := max(w-len(s)-1, 0)
 		return "│ " + s + strings.Repeat(" ", sp) + "│"
 	}
 	fmt.Printf("\n┌%s┐\n", bar)

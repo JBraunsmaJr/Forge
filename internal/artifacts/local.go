@@ -158,7 +158,7 @@ func (s *LocalStore) DeleteRunArtifacts(_ context.Context, runID string) error {
 	return nil
 }
 
-// ServerUpload handles the actual PUT request for a local upload.
+// ServeUpload handles the actual PUT request for a local upload.
 // Called by the scheduler's /api/v1/artifacts/{id}/upload handler.
 func (s *LocalStore) ServeUpload(_ context.Context, artifactID, uploadToken string, r io.Reader) error {
 	// Verify the one-time upload token.
@@ -238,7 +238,7 @@ var _ interface {
 	ServeDownload(context.Context, string) (io.ReadCloser, *ArtifactMeta, error)
 } = (*LocalStore)(nil)
 
-// cleanup runs periodically to remove unconfirmed artifacts older than 1 hour.
+// Cleanup runs periodically to remove unconfirmed artifacts older than 1 hour.
 func (s *LocalStore) Cleanup() {
 	cutoff := time.Now().Add(-1 * time.Hour)
 	rows, err := s.db.Query(`

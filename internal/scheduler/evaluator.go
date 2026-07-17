@@ -33,8 +33,7 @@ func evaluateCondition(condition string, runPassed bool, ref string) bool {
 		branch := strings.TrimPrefix(ref, "refs/heads/")
 		// Extract arguments from original condition to preserve case
 		args := condition[len("branch(") : len(condition)-1]
-		patterns := strings.Split(args, ",")
-		for _, p := range patterns {
+		for p := range strings.SplitSeq(args, ",") {
 			p = strings.TrimSpace(p)
 			matched, _ := path.Match(p, branch)
 			if matched {

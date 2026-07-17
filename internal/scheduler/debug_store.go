@@ -13,17 +13,18 @@ const debugSessionTTL = 15 * time.Minute
 
 // debugSession holds state for one interactive debug container
 type debugSession struct {
-	id           string
-	runID        string
-	jobID        string
-	image        string
-	workDir      string
-	env          map[string]string
-	workspaceDir string
-	projectID    string
-	commitSHA    string
-	dockerSocket bool
-
+	createdAt     time.Time
+	expiresAt     time.Time
+	env           map[string]string
+	subscribers   map[chan string]struct{}
+	id            string
+	runID         string
+	jobID         string
+	image         string
+	workDir       string
+	workspaceDir  string
+	projectID     string
+	commitSHA     string
 	status        string
 	agentID       string
 	containerID   string
@@ -31,15 +32,11 @@ type debugSession struct {
 	// wsToken is a short-lived one-time token issued when the session is
 	// created.  The browser sends it as ?ws_token= on the terminal WS URL
 	// so the long-lived API token never appears in server access logs.
-	wsToken string
-
+	wsToken         string
 	pendingCmds     []api.DebugCommand
 	outputs         []api.DebugOutput
-	subscribers     map[chan string]struct{}
+	dockerSocket    bool
 	cancelRequested bool
-
-	createdAt time.Time
-	expiresAt time.Time
 }
 
 // DebugStore manages all active debug sessions.
@@ -383,10 +380,7 @@ func (d *DebugStore) broadcast(s *debugSession, event string) {
 }
 
 func (d *DebugStore) info(s *debugSession) *api.DebugSessionInfo {
-	remaining := int(time.Until(s.expiresAt).Seconds())
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(int(time.Until(s.expiresAt).Seconds()), 0)
 	return &api.DebugSessionInfo{
 		SessionID:     s.id,
 		Status:        s.status,

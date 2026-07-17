@@ -16,76 +16,57 @@ type Pipeline struct {
 
 // Step is a single unit of work in a pipeline.
 type Step struct {
-	ID         string   // unique within the pipeline, e.g. "lint"
-	Name       string   // human label, e.g. "Run linter"
-	Image      string   // container image, e.g. "node:20"
-	Entrypoint []string // optional entrypoint override
-	Command    []string // command + args, e.g. ["npm", "run", "lint"]
-
+	// With holds parameters for the template.
+	With map[string]string
+	// Env holds environment variables for this step.
+	Env map[string]string
+	// Release holds configuration for SCM releases (GitHub/GitLab).
+	// Only used if Type == "release".
+	Release *ReleaseConfig
+	// PipelineRef is non-nil when Type == "pipeline".
+	PipelineRef *PipelineRef
+	ID          string // unique within the pipeline, e.g. "lint"
+	Name        string // human label, e.g. "Run linter"
+	Image       string // container image, e.g. "node:20"
 	// Type is "task" (default) or "generator".
 	// A generator step's stdout is parsed as a JSON array of new step
 	// definitions which are added to the live DAG at runtime (R11).
 	Type string
-
 	// Uses is a reference to a remote template.
 	Uses string
-	// With holds parameters for the template.
-	With map[string]string
-
 	// WorkDir is the working directory inside the container.
 	WorkDir string
-
-	// Env holds environment variables for this step.
-	Env map[string]string
-
-	// DependsOn lists IDs of steps that must complete before this one.
-	DependsOn []string
-
-	// Inputs is a list of glob patterns that affect this step's cache key.
-	Inputs []string
-
 	// CacheKey is computed by the compiler from Inputs file hashes.
 	CacheKey string
-
+	// Condition is a CEL expression that must evaluate to true for the step to run.
+	Condition string
+	// RunID and JobID are used for Docker label scoping.
+	RunID string
+	JobID string
+	// OIDCToken is a short-lived identity token issued by the scheduler.
+	OIDCToken  string
+	Entrypoint []string // optional entrypoint override
+	Command    []string // command + args, e.g. ["npm", "run", "lint"]
+	// DependsOn lists IDs of steps that must complete before this one.
+	DependsOn []string
+	// Inputs is a list of glob patterns that affect this step's cache key.
+	Inputs []string
 	// Secrets is a list of secret names to fetch from Vault before running.
 	Secrets []string
-
 	// RedactValues holds the actual secret values fetched at runtime.
 	RedactValues []string
-
-	// Release holds configuration for SCM releases (GitHub/GitLab).
-	// Only used if Type == "release".
-	Release *ReleaseConfig
-
+	// ArtifactUploads declares files this step produces that should be stored
+	ArtifactUploads []ArtifactUploadSpec
+	// ArtifactDownloads declares artifacts from prior steps needed before running
+	ArtifactDownloads []ArtifactDownloadSpec
+	// Timeout is how long this step may run before being killed.
+	Timeout time.Duration
 	// DockerSocket mounts the host Docker daemon socket (/var/run/docker.sock)
 	// into the step container. Use for steps that need to run docker commands
 	// themselves (Docker-outside-Docker pattern). Requires docker-cli in the image.
 	DockerSocket bool
-
-	// ArtifactUploads declares files this step produces that should be stored
-	ArtifactUploads []ArtifactUploadSpec
-
-	// ArtifactDownloads declares artifacts from prior steps needed before running
-	ArtifactDownloads []ArtifactDownloadSpec
-
-	// PipelineRef is non-nil when Type == "pipeline".
-	PipelineRef *PipelineRef
-
-	// Timeout is how long this step may run before being killed.
-	Timeout time.Duration
-
-	// Condition is a CEL expression that must evaluate to true for the step to run.
-	Condition string
-
 	// AlwaysRun ensures the step runs even if dependencies fail.
 	AlwaysRun bool
-
-	// RunID and JobID are used for Docker label scoping.
-	RunID string
-	JobID string
-
-	// OIDCToken is a short-lived identity token issued by the scheduler.
-	OIDCToken string
 }
 
 // PipelineRef holds chaining configuration for pipeline steps.

@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"runtime"
+
 	"github.com/JBraunsmaJr/forge/internal/agent"
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
@@ -31,7 +33,6 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/store"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
 	"github.com/fsnotify/fsnotify"
-	"runtime"
 )
 
 var version = "dev"
@@ -257,8 +258,8 @@ func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, r
 		}
 		step.Env["FORGE_REF"] = ref
 		step.Env["FORGE_COMMIT_SHA"] = commitSHA
-		if strings.HasPrefix(ref, "refs/tags/") {
-			step.Env["FORGE_COMMIT_TAG"] = strings.TrimPrefix(ref, "refs/tags/")
+		if after, ok := strings.CutPrefix(ref, "refs/tags/"); ok {
+			step.Env["FORGE_COMMIT_TAG"] = after
 		}
 
 		if len(step.Secrets) == 0 {
@@ -902,8 +903,8 @@ func artifactsCommand() {
 
 		filename := artifactID
 		if cd := resp.Header.Get("Content-Disposition"); cd != "" {
-			if idx := strings.Index(cd, "filename="); idx >= 0 {
-				filename = strings.Trim(cd[idx+9:], "\"")
+			if _, after, ok := strings.Cut(cd, "filename="); ok {
+				filename = strings.Trim(after, "\"")
 			}
 		}
 		if dest == "" {

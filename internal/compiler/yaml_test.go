@@ -42,8 +42,8 @@ steps:
 
 func TestParseScalar_Comments(t *testing.T) {
 	tests := []struct {
-		input    string
-		expected interface{}
+		input    string `json:"input,omitempty"`
+		expected any    `json:"expected,omitempty"`
 	}{
 		{"true", true},
 		{"true # comment", true},
@@ -53,7 +53,7 @@ func TestParseScalar_Comments(t *testing.T) {
 		{"123 # comment", "123"}, // it stays string for now as per current impl
 		{"\"quoted # string\"", "quoted # string"},
 		{"'single # quoted'", "single # quoted"},
-		{"[a, b] # comment", []interface{}{"a", "b"}},
+		{"[a, b] # comment", []any{"a", "b"}},
 	}
 
 	for _, tt := range tests {

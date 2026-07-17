@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,17 +39,17 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 	}
 	defer tx.Rollback()
 
-	var orgIDParam interface{}
+	var orgIDParam any
 	if orgID != "" {
 		orgIDParam = orgID
 	}
 
-	var parentRunParam interface{}
+	var parentRunParam any
 	if parentRunID != "" {
 		parentRunParam = parentRunID
 	}
 
-	var preferredAgentParam interface{}
+	var preferredAgentParam any
 	if preferredAgentID != "" {
 		preferredAgentParam = preferredAgentID
 	}
@@ -497,13 +498,7 @@ func (s *Store) insertEmittedSteps(tx *sql.Tx, runID, generatorJobID, generatorS
 
 		// Ensure the emitted step depends on the generator.
 		deps := step.DependsOn
-		hasGen := false
-		for _, d := range deps {
-			if d == generatorStepID {
-				hasGen = true
-				break
-			}
-		}
+		hasGen := slices.Contains(deps, generatorStepID)
 		if !hasGen {
 			deps = append(deps, generatorStepID)
 		}
@@ -1369,7 +1364,7 @@ func (s *Store) FlakySteps(windowDays, minRuns int, minFlakeRate float64) ([]api
 func (s *Store) ListAuditLogs(orgID, eventType string, from, to *time.Time) ([]api.AuditEntry, error) {
 	query := `SELECT id, timestamp, actor_id, actor_name, action, target_type, target_id, details, ip_address, org_id
 	          FROM audit_logs WHERE 1=1`
-	var args []interface{}
+	var args []any
 	argCount := 1
 
 	if orgID != "" {
