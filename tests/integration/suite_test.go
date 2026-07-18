@@ -107,8 +107,18 @@ func stopStack(repoRoot string) {
 	out, _ := exec.Command("docker", "ps", "-a", "-q", "--filter", "label=forge.managed=true").Output()
 	ids := strings.Fields(string(out))
 	if len(ids) > 0 {
-		args := append([]string{"rm", "-f"}, ids...)
-		exec.Command("docker", args...).Run()
+		self, _ := os.Hostname()
+		var toRemove []string
+		for _, id := range ids {
+			if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
+				continue
+			}
+			toRemove = append(toRemove, id)
+		}
+		if len(toRemove) > 0 {
+			args := append([]string{"rm", "-f"}, toRemove...)
+			exec.Command("docker", args...).Run()
+		}
 	}
 
 	args := composeArgs("down", "-v", "--remove-orphans")
