@@ -1,14 +1,8 @@
-
-
-
-
-
-
-
-
-
 services:
   scheduler:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
     environment:
       FORGE_ROOT_TOKEN: it-admin-token-forge
       FORGE_RUN_RETENTION_DAYS: "1"
@@ -18,14 +12,76 @@ services:
       FORGE_VAULT_TOKEN: forge-dev-token
 
   agent:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
     environment:
       FORGE_API_TOKEN: it-admin-token-forge
-
-
       FORGE_DOCKER_NETWORK: forge-it_forge
     deploy:
       replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
 
+  postgres:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
+  vault:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
+  minio:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
+  proxy:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
+  minio-init:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
   init:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
     profiles:
       - disabled
+
+  ui:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
+volumes:
+  postgres_data:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+  git_cache:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+  cache_data:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+  minio_data:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+  forge_sockets:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
+
+networks:
+  forge:
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_AGENT_ID}"
