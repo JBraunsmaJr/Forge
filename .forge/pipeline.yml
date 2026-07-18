@@ -25,12 +25,14 @@ steps:
   - id: unit-tests
     name: Unit Tests
     image: golang:1.26.5-alpine
+    docker_socket: true
     depends_on: [build-ui]
     artifacts:
       download:
         - name: ui-dist.tar.gz
     timeout: 5m
     run: |
+      apk add --no-cache docker-cli docker-cli-compose
       # Debug: check if artifact was downloaded
       ls -la
       mkdir -p internal/scheduler/web
