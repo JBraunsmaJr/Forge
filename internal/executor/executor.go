@@ -382,6 +382,11 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 	for k, v := range step.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
+
+	// Always inject the current agent's ID so steps (like integration tests)
+	// can label their own Docker resources correctly for the proxy.
+	args = append(args, "-e", "FORGE_AGENT_ID="+e.AgentID)
+
 	args = append(args, step.Image)
 	args = append(args, step.Command...)
 	return args

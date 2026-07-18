@@ -112,7 +112,12 @@ func stopStack(repoRoot string) {
 	// We do this BEFORE compose down so that job containers are removed before
 	// compose tries to remove the network they might be attached to.
 	fmt.Println("[integration] cleaning up dangling job containers...")
-	out, _ := exec.Command("docker", "ps", "-a", "-q", "--filter", "label=forge.managed=true").Output()
+	agentID := os.Getenv("FORGE_AGENT_ID")
+	args := []string{"ps", "-a", "-q", "--filter", "label=forge.managed=true"}
+	if agentID != "" {
+		args = append(args, "--filter", "label=forge.agent_id="+agentID)
+	}
+	out, _ := exec.Command("docker", args...).Output()
 	ids := strings.Fields(string(out))
 	if len(ids) > 0 {
 		self, _ := os.Hostname()
@@ -129,7 +134,7 @@ func stopStack(repoRoot string) {
 		}
 	}
 
-	args := composeArgs("down", "-v", "--remove-orphans")
+	args = composeArgs("down", "-v", "--remove-orphans")
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stderr
@@ -145,11 +150,13 @@ var composeProjectName string
 
 func initProjectName() {
 	composeProjectName = "forge-it"
-	if os.Getenv("FORGE_AGENT_ID") != "" && os.Getenv("FORGE_AGENT_ID") != "local" {
-		// On agent, use a more unique project name to avoid collisions and "poisoned" volumes.
-		// We include a timestamp to ensure uniqueness even if an agent restarts and gets the same ID.
-		composeProjectName = fmt.Sprintf("forge-it-%s-%d", os.Getenv("FORGE_AGENT_ID"), time.Now().Unix()%10000)
+	// Always use a unique project name to avoid collisions and "poisoned" volumes from previous runs.
+	// We include the agent ID and a timestamp to ensure uniqueness.
+	agentID := os.Getenv("FORGE_AGENT_ID")
+	if agentID == "" {
+		agentID = "local"
 	}
+	composeProjectName = fmt.Sprintf("forge-it-%s-%d", agentID, time.Now().UnixNano()%1000000)
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
 }
 
