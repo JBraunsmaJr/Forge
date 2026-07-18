@@ -37,6 +37,10 @@ func TestMain(m *testing.M) {
 	if os.Getenv("FORGE_AGENT_ID") == "" {
 		os.Setenv("FORGE_AGENT_ID", "local")
 	}
+	fmt.Printf("[integration] FORGE_AGENT_ID: %s\n", os.Getenv("FORGE_AGENT_ID"))
+
+	initProjectName()
+	fmt.Printf("[integration] COMPOSE_PROJECT_NAME: %s\n", composeProjectName)
 
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Println("[integration] skipped (docker not found)")
@@ -139,17 +143,18 @@ func stopStack(repoRoot string) {
 // in compose.test.yml so job containers can always reach the stack.
 var composeProjectName string
 
-func init() {
+func initProjectName() {
 	composeProjectName = "forge-it"
-	if os.Getenv("FORGE_AGENT_ID") != "" {
-		// On agent, use a more unique project name to avoid collisions and "poisoned" volumes
+	if os.Getenv("FORGE_AGENT_ID") != "" && os.Getenv("FORGE_AGENT_ID") != "local" {
+		// On agent, use a more unique project name to avoid collisions and "poisoned" volumes.
+		// We include a timestamp to ensure uniqueness even if an agent restarts and gets the same ID.
 		composeProjectName = fmt.Sprintf("forge-it-%s-%d", os.Getenv("FORGE_AGENT_ID"), time.Now().Unix()%10000)
 	}
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
 }
 
 func composeArgs(sub ...string) []string {
-	args := []string{"compose"}
+	args := []string{"compose", "-p", composeProjectName}
 	for _, f := range composeFiles {
 		args = append(args, "-f", f)
 	}
