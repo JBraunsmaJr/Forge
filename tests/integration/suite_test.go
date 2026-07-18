@@ -137,10 +137,19 @@ func stopStack(repoRoot string) {
 // integration tests. This makes the Docker network name deterministic:
 // the agent's FORGE_DOCKER_NETWORK is set to composeProjectName+"_forge"
 // in compose.test.yml so job containers can always reach the stack.
-const composeProjectName = "forge-it"
+var composeProjectName string
+
+func init() {
+	composeProjectName = "forge-it"
+	if os.Getenv("FORGE_AGENT_ID") != "" {
+		// On agent, use a more unique project name to avoid collisions and "poisoned" volumes
+		composeProjectName = fmt.Sprintf("forge-it-%s-%d", os.Getenv("FORGE_AGENT_ID"), time.Now().Unix()%10000)
+	}
+	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
+}
 
 func composeArgs(sub ...string) []string {
-	args := []string{"compose", "-p", composeProjectName}
+	args := []string{"compose"}
 	for _, f := range composeFiles {
 		args = append(args, "-f", f)
 	}
