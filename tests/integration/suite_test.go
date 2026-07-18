@@ -34,6 +34,10 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
+	if os.Getenv("FORGE_AGENT_ID") == "" {
+		os.Setenv("FORGE_AGENT_ID", "local")
+	}
+
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Println("[integration] skipped (docker not found)")
 		os.Exit(0)
