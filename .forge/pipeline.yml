@@ -30,7 +30,7 @@ steps:
     artifacts:
       download:
         - name: ui-dist.tar.gz
-    timeout: 5m
+    timeout: 10m
     run: |
       apk add --no-cache docker-cli docker-cli-compose
       # Debug: check if artifact was downloaded
