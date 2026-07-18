@@ -26,6 +26,7 @@ steps:
     name: Unit Tests
     image: golang:1.26.5-alpine
     depends_on: [build-ui]
+    docker_socket: true
     artifacts:
       download:
         - name: ui-dist.tar.gz
