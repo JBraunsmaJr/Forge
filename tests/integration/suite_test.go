@@ -90,7 +90,9 @@ func startStack(repoRoot string) error {
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
 	fmt.Println("[integration] pre-building forge image...")
-	buildCmd := exec.Command("docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer buildCancel()
+	buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
 	buildCmd.Dir = repoRoot
 	buildCmd.Stdout = os.Stderr
 	buildCmd.Stderr = os.Stderr
@@ -154,6 +156,7 @@ func startStack(repoRoot string) error {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
 				fmt.Println("[integration] scheduler is ready")
+				waitForInit(repoRoot)
 				return nil
 			}
 			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
@@ -191,28 +194,28 @@ func dumpStatus(repoRoot string) {
 	cmd.Stdout = os.Stderr
 	cmd.Run()
 
-	dumpLogs := func(service string, tail int) {
-		fmt.Printf("--- %s logs ---\n", service)
-		args := composeArgs("logs", "--tail", fmt.Sprintf("%d", tail), service)
-		cmd := exec.Command("docker", args...)
-		cmd.Dir = repoRoot
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-		if err := cmd.Run(); err != nil {
-			if strings.Contains(out.String(), "does not support reading") {
-				fmt.Printf("[dumpStatus] skipping %s logs: logging driver does not support reading\n", service)
-			} else {
-				fmt.Printf("[dumpStatus] failed to get %s logs: %v\n%s\n", service, err, out.String())
-			}
-			return
-		}
-		fmt.Println(out.String())
-	}
+	dumpLogs(repoRoot, "scheduler", 50)
+	dumpLogs(repoRoot, "proxy", 50)
+	dumpLogs(repoRoot, "agent", 100)
+}
 
-	dumpLogs("scheduler", 50)
-	dumpLogs("proxy", 50)
-	dumpLogs("agent", 100)
+func dumpLogs(repoRoot, service string, tail int) {
+	fmt.Printf("--- %s logs ---\n", service)
+	args := composeArgs("logs", "--tail", fmt.Sprintf("%d", tail), service)
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(out.String(), "does not support reading") {
+			fmt.Printf("[dumpLogs] skipping %s logs: logging driver does not support reading\n", service)
+		} else {
+			fmt.Printf("[dumpLogs] failed to get %s logs: %v\n%s\n", service, err, out.String())
+		}
+		return
+	}
+	fmt.Println(out.String())
 }
 
 func stopStack(repoRoot string) {
@@ -557,6 +560,31 @@ func setVaultSecret(t *testing.T, name, value string) {
 // stripPrefix removes a leading common prefix for cleaner test output.
 func stripPrefix(s, prefix string) string {
 	return strings.TrimPrefix(s, prefix)
+}
+
+func waitForInit(repoRoot string) {
+	fmt.Println("[integration] waiting for init service to complete...")
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		args := composeArgs("ps", "init", "--format", "json")
+		cmd := exec.Command("docker", args...)
+		cmd.Dir = repoRoot
+		out, _ := cmd.Output()
+		s := string(out)
+		if s == "" {
+			// Possibly still creating
+		} else if strings.Contains(s, `"State":"exited"`) {
+			if strings.Contains(s, `"ExitCode":0`) {
+				fmt.Println("[integration] init service completed")
+				return
+			}
+			fmt.Println("[integration] init service failed, check logs if tests fail")
+			dumpLogs(repoRoot, "init", 50)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	fmt.Println("[integration] init service wait timed out")
 }
 
 func dockerHostAddr() string {

@@ -101,8 +101,6 @@ services:
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
       SCHEDULER_URL: http://scheduler:8080
-    volumes:
-      - ./scripts:/scripts:ro
     depends_on:
       scheduler:
         condition: service_started

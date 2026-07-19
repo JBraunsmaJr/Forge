@@ -32,7 +32,7 @@ steps:
         - name: ui-dist.tar.gz
     timeout: 10m
     run: |
-      apk add --no-cache docker-cli docker-cli-compose
+      apk add --no-cache docker-cli docker-cli-compose iproute2
       # Debug: check if artifact was downloaded
       ls -la
       mkdir -p internal/scheduler/web
