@@ -32,6 +32,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/glob"
 	"github.com/JBraunsmaJr/forge/internal/pb"
@@ -1320,7 +1321,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 
 		// If running in a container, use --volumes-from to inherit the proxied socket mount.
 		// This avoids issues with host paths not matching container paths for named volumes.
-		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+		if hostname, _ := os.Hostname(); hostname != "" && dockerutil.IsRunningInContainer() {
 			args = append(args, "--volumes-from", hostname)
 			args = append(args, "-e", "DOCKER_HOST=unix://"+hostSocket)
 		} else {
@@ -1335,7 +1336,9 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 
 	fmt.Printf("[agent %s] creating debug container for session %s with workdir %s\n",
 		a.id[:8], spec.SessionID[:8], workDir)
-	containerID, err := a.runDockerCreate(ctx, args)
+	containerID, err := dockerutil.RunDockerCreate(ctx, func(line string) {
+		fmt.Printf("[agent %s] [docker] %s\n", a.id[:8], line)
+	}, args[1:])
 	if err != nil {
 		fmt.Printf("[agent %s] debug container failed to create: %v\n", a.id[:8], err)
 		return
@@ -1347,7 +1350,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	// Copy workspace into debug container
 	// We copy the host's "workspace" directory into the container's root.
 	src := filepath.Clean(workspaceDir)
-	if err := a.dockerCp(ctx, src, containerID+":/"); err != nil {
+	if err := dockerutil.DockerCp(ctx, src, containerID+":/"); err != nil {
 		fmt.Printf("[agent %s] failed to copy workspace into debug container: %v\n", a.id[:8], err)
 		return
 	}
@@ -1360,8 +1363,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	defer func() {
-		exec.Command("docker", "stop", containerID).Run()
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		dockerutil.DockerStopAndRm(ctx, containerID)
 		a.debugConts.Delete(spec.SessionID)
 		fmt.Printf("[agent %s] debug container %s stopped\n", a.id[:8], containerID[:12])
 	}()
@@ -2419,8 +2421,7 @@ func (a *Agent) cleanupJobContainers(runID, jobID string) {
 		"--filter", "label!=forge.debug=true").Output()
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		exec.Command("docker", "stop", "-t", "5", id).Run()
-		exec.Command("docker", "rm", "-f", id).Run()
+		dockerutil.DockerStopAndRm(context.Background(), id)
 	}
 
 	// For networks and volumes, we only clean them up if this is the last active job
@@ -2487,70 +2488,4 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 	}
 
 	return res.SocketPath, nil
-}
-
-func isRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
-}
-
-func parseContainerID(out []byte) string {
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	// The container ID is always the last line of output.
-	// If Docker pulled the image, there will be pull logs before it.
-	return strings.TrimSpace(lines[len(lines)-1])
-}
-
-func (a *Agent) runDockerCreate(ctx context.Context, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	var outBuf bytes.Buffer
-
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
-
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-
-	done := make(chan struct{})
-	go func() {
-		scanner := bufio.NewScanner(pr)
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Printf("[agent %s] [docker] %s\n", a.id[:8], line)
-			outBuf.WriteString(line + "\n")
-		}
-		close(done)
-	}()
-
-	err := cmd.Wait()
-	pw.Close()
-	<-done
-
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(outBuf.String()))
-	}
-
-	return parseContainerID(outBuf.Bytes()), nil
-}
-
-func (a *Agent) dockerCp(ctx context.Context, src, dst string) error {
-	var lastErr error
-	for i := range 3 {
-		cmd := exec.CommandContext(ctx, "docker", "cp", src, dst)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-			if i < 2 {
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			return lastErr
-		}
-		return nil
-	}
-	return lastErr
 }
