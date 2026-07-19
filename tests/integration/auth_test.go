@@ -3,6 +3,7 @@ package integration
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestUnauthenticated verifies all protected endpoints return 401 without a token.
@@ -35,7 +36,8 @@ func TestUnauthenticated(t *testing.T) {
 
 // TestWebUIIsPublic verifies the web UI loads without authentication.
 func TestWebUIIsPublic(t *testing.T) {
-	resp, err := http.Get(schedulerURL + "/")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(schedulerURL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}

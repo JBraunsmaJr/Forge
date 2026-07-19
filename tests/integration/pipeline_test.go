@@ -8,7 +8,8 @@ import (
 )
 
 func TestHealthCheck(t *testing.T) {
-	resp, err := http.Get(schedulerURL + "/")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(schedulerURL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}

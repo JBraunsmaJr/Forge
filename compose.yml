@@ -136,6 +136,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    scale: 2
     image: ghcr.io/jbraunsmajr/forge/forge:latest
     command: [ "agent", "${FORGE_SCHEDULER_URL:-http://scheduler:8080}" ]
     environment:

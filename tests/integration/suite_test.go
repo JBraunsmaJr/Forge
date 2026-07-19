@@ -17,9 +17,9 @@ import (
 )
 
 var (
-	schedulerURL = "http://localhost:8080"
+	schedulerURL = "http://127.0.0.1:8080"
 	adminToken   = "it-admin-token-forge"
-	vaultURL     = "http://localhost:8200"
+	vaultURL     = "http://127.0.0.1:8200"
 	vaultToken   = "forge-dev-token"
 	startTimeout = 5 * time.Minute
 	runTimeout   = 3 * time.Minute
@@ -114,23 +114,26 @@ func startStack(repoRoot string) error {
 	if err != nil {
 		return fmt.Errorf("getting scheduler port: %w", err)
 	}
-	schedulerURL = "http://localhost:" + sPort
+	schedulerURL = "http://127.0.0.1:" + sPort
 	fmt.Printf("[integration] scheduler discovered at %s\n", schedulerURL)
 
 	vPort, err := getMappedPort(repoRoot, "vault", 8200)
 	if err != nil {
 		return fmt.Errorf("getting vault port: %w", err)
 	}
-	vaultURL = "http://localhost:" + vPort
+	vaultURL = "http://127.0.0.1:" + vPort
 	fmt.Printf("[integration] vault discovered at %s\n", vaultURL)
 
-	fmt.Printf("[integration] waiting for scheduler at %s", schedulerURL)
+	fmt.Printf("[integration] waiting for scheduler at %s\n", schedulerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	tick := time.NewTicker(2 * time.Second)
-	dot := time.NewTicker(5 * time.Second)
+	dot := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	defer dot.Stop()
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -139,17 +142,19 @@ func startStack(repoRoot string) error {
 			dumpStatus(repoRoot)
 			return fmt.Errorf("scheduler did not become ready within %s", startTimeout)
 		case <-dot.C:
-			fmt.Print(".")
+			fmt.Println("[integration] still waiting for scheduler...")
 		case <-tick.C:
-			resp, err := http.Get(schedulerURL + "/")
+			resp, err := httpClient.Get(schedulerURL + "/")
 			if err != nil {
+				// Don't log every connection error to avoid spam, but we could log it occasionally.
 				continue
 			}
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
-				fmt.Println(" ready")
+				fmt.Println("[integration] scheduler is ready")
 				return nil
 			}
+			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
 		}
 	}
 }
