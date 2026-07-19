@@ -364,7 +364,17 @@ func waitForRun(t *testing.T, c *client, runID string) runStatus {
 func assertPassed(t *testing.T, s runStatus) {
 	t.Helper()
 	if s.Status != "passed" {
-		t.Errorf("expected run to pass, got status %q", s.Status)
+		for _, j := range s.Jobs {
+			if j.Status == "failed" {
+				resp, err := adminClient.get("/api/v1/jobs/" + j.JobID + "/logs")
+				if err == nil {
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					t.Errorf("Job %s (%s) failed logs:\n%s", j.JobID, j.StepID, body)
+				}
+			}
+		}
+		t.Fatalf("expected run to pass, got status %q", s.Status)
 	}
 }
 

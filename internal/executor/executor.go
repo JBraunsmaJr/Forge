@@ -157,8 +157,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// Since the host directory is named "workspace", it will become "/workspace" in the container.
 		src := filepath.Clean(e.WorkspaceDir)
 		cpIn := exec.CommandContext(ctx, "docker", "cp", src+"/.", containerID+":/workspace")
-		if err := cpIn.Run(); err != nil {
-			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
+		if out, err := cpIn.CombinedOutput(); err != nil {
+			logger.Error(fmt.Sprintf("failed to copy workspace into container: %v: %s", err, string(out)), map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
