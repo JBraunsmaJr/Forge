@@ -89,6 +89,7 @@ type Agent struct {
 	pruneSchedule    string
 	activeJobs       sync.Map // map[string]activeJobInfo
 	cleanupMu        sync.Mutex
+	lastCleanup      time.Time
 }
 
 type activeJobInfo struct {
@@ -388,6 +389,12 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 func (a *Agent) checkDiskUsageAndCleanup() {
 	a.cleanupMu.Lock()
 	defer a.cleanupMu.Unlock()
+
+	// Only run cleanup once every 5 minutes to reduce Docker daemon load
+	if !a.lastCleanup.IsZero() && time.Since(a.lastCleanup) < 5*time.Minute {
+		return
+	}
+	a.lastCleanup = time.Now()
 
 	// 1. Check Docker disk usage (GB)
 	usageGB, err := a.getDockerUsageGB()
@@ -1341,10 +1348,8 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	// Copy workspace into debug container
 	// We copy the host's "workspace" directory into the container's root.
 	src := filepath.Clean(workspaceDir)
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
-	if err := cpCmd.Run(); err != nil {
+	if err := a.dockerCp(ctx, src, containerID+":/"); err != nil {
 		fmt.Printf("[agent %s] failed to copy workspace into debug container: %v\n", a.id[:8], err)
-		exec.Command("docker", "rm", "-f", containerID).Run()
 		return
 	}
 
@@ -2488,4 +2493,21 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 func isRunningInContainer() bool {
 	_, err := os.Stat("/.dockerenv")
 	return err == nil
+}
+
+func (a *Agent) dockerCp(ctx context.Context, src, dst string) error {
+	var lastErr error
+	for i := range 3 {
+		cmd := exec.CommandContext(ctx, "docker", "cp", src, dst)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			if i < 2 {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			return lastErr
+		}
+		return nil
+	}
+	return lastErr
 }
