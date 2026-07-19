@@ -109,19 +109,21 @@ func startStack(repoRoot string) error {
 		return fmt.Errorf("docker compose up: %w", err)
 	}
 
+	host := dockerHostAddr()
+
 	// Discover mapped ports
 	sPort, err := getMappedPort(repoRoot, "scheduler", 8080)
 	if err != nil {
 		return fmt.Errorf("getting scheduler port: %w", err)
 	}
-	schedulerURL = "http://127.0.0.1:" + sPort
+	schedulerURL = "http://" + host + ":" + sPort
 	fmt.Printf("[integration] scheduler discovered at %s\n", schedulerURL)
 
 	vPort, err := getMappedPort(repoRoot, "vault", 8200)
 	if err != nil {
 		return fmt.Errorf("getting vault port: %w", err)
 	}
-	vaultURL = "http://127.0.0.1:" + vPort
+	vaultURL = "http://" + host + ":" + vPort
 	fmt.Printf("[integration] vault discovered at %s\n", vaultURL)
 
 	fmt.Printf("[integration] waiting for scheduler at %s\n", schedulerURL)
@@ -358,7 +360,7 @@ type stepDef struct {
 	Type              string            `json:"type,omitempty"`
 	ArtifactUploads   []uploadSpec      `json:"artifact_uploads,omitempty"`
 	ArtifactDownloads []downloadSpec    `json:"artifact_downloads,omitempty"`
-	Timeout           string            `json:"timeout,omitempty"`
+	Timeout           time.Duration     `json:"timeout_ns,omitempty"`
 	DockerSocket      bool              `json:"docker_socket,omitempty"`
 	AlwaysRun         bool              `json:"always_run,omitempty"`
 	Condition         string            `json:"condition,omitempty"`
@@ -467,7 +469,7 @@ func echoStep(id, msg string, deps ...string) stepDef {
 		Image:     "alpine:latest",
 		Run:       fmt.Sprintf("echo '%s'", msg),
 		DependsOn: deps,
-		Timeout:   "2m",
+		Timeout:   time.Minute * 2,
 	}
 }
 
@@ -478,7 +480,7 @@ func failStep(id string, deps ...string) stepDef {
 		Image:     "alpine:latest",
 		Run:       "exit 1",
 		DependsOn: deps,
-		Timeout:   "1m",
+		Timeout:   time.Minute * 1,
 	}
 }
 
@@ -553,4 +555,24 @@ func setVaultSecret(t *testing.T, name, value string) {
 // stripPrefix removes a leading common prefix for cleaner test output.
 func stripPrefix(s, prefix string) string {
 	return strings.TrimPrefix(s, prefix)
+}
+
+func dockerHostAddr() string {
+	if _, err := os.Stat("/.dockerenv"); err != nil {
+		return "127.0.0.1"
+	}
+
+	/*
+		Inside a container talking to a sibling Docker daemon (DooD):
+		127.0.0.1 is our own loopback, not the real host's use the default
+		gateway instead which routes back to the host
+	*/
+	out, err := exec.Command("sh", "-c", "ip route show default | awk '{print $3}'").Output()
+	if err == nil {
+		if gw := strings.TrimSpace(string(out)); gw != "" {
+			return gw
+		}
+	}
+
+	return "127.0.0.1" // last resort fallback
 }
