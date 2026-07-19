@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/cache"
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
@@ -139,7 +139,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy {
 		// 1. Create container
 		args := e.buildDockerArgs(step, "", true)
-		containerID, err = e.runDockerCreate(ctx, logger, args)
+		containerID, err = dockerutil.RunDockerCreate(ctx, logger.Output, args)
 		if err != nil {
 			logger.Error(fmt.Sprintf("failed to create container: %v", err), map[string]any{"error": err.Error()})
 			forgelog.StepFooter(step.ID, false, time.Since(start))
@@ -156,7 +156,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy the host's "workspace" directory into the container's root.
 		// Since the host directory is named "workspace", it will become "/workspace" in the container.
 		src := filepath.Clean(e.WorkspaceDir)
-		if err := e.dockerCp(ctx, src+"/.", containerID+":/workspace"); err != nil {
+		if err := dockerutil.DockerCp(ctx, src+"/.", containerID+":/workspace"); err != nil {
 			logger.Error(fmt.Sprintf("failed to copy workspace into container: %v", err), map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			forgelog.StepFooter(step.ID, false, time.Since(start))
@@ -219,7 +219,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy "/workspace" from the container back to the host's job directory.
 		src := containerID + ":/workspace/."
 		dst := e.WorkspaceDir
-		if err := e.dockerCp(ctx, src, dst); err != nil {
+		if err := dockerutil.DockerCp(ctx, src, dst); err != nil {
 			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v", err), map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
 
@@ -362,7 +362,7 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 
 		// If running in a container, use --volumes-from to inherit the proxied socket mount.
 		// This avoids issues with host paths not matching container paths for named volumes.
-		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+		if hostname, _ := os.Hostname(); hostname != "" && dockerutil.IsRunningInContainer() {
 			args = append(args, "--volumes-from", hostname)
 			args = append(args, "-e", "DOCKER_HOST=unix://"+hostSocket)
 		} else {
@@ -426,13 +426,13 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	if e.UseCopy {
 		args := e.buildDockerArgs(step, "", true)
-		containerID, err = e.runDockerCreate(context.Background(), logger, args)
+		containerID, err = dockerutil.RunDockerCreate(context.Background(), logger.Output, args)
 		if err != nil {
 			return nil, fmt.Errorf("creating generator container: %w", err)
 		}
 
 		src := filepath.Clean(e.WorkspaceDir)
-		if err := e.dockerCp(context.Background(), src+"/.", containerID+":/workspace"); err != nil {
+		if err := dockerutil.DockerCp(context.Background(), src+"/.", containerID+":/workspace"); err != nil {
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
 		}
@@ -562,79 +562,8 @@ func Cleanup(agentID string) error {
 	}
 
 	for _, id := range toRemove {
-		exec.Command("docker", "stop", "-t", "2", id).Run()
-		exec.Command("docker", "rm", "-f", id).Run()
+		dockerutil.DockerStopAndRm(context.Background(), id)
 	}
 
 	return nil
-}
-
-func (e *Executor) dockerCp(ctx context.Context, src, dst string) error {
-	var lastErr error
-	for i := 0; i < 3; i++ {
-		cmd := exec.CommandContext(ctx, "docker", "cp", src, dst)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-			// Retry on transient errors (unexpected EOF, connection refused, etc.)
-			// or if it just feels like a flaky Docker daemon.
-			if i < 2 {
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			return lastErr
-		}
-		return nil
-	}
-	return lastErr
-}
-
-func isRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
-}
-
-func parseContainerID(out []byte) string {
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	// The container ID is always the last line of output.
-	// If Docker pulled the image, there will be pull logs before it.
-	return strings.TrimSpace(lines[len(lines)-1])
-}
-
-func (e *Executor) runDockerCreate(ctx context.Context, logger *forgelog.Logger, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...)
-	var outBuf bytes.Buffer
-
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
-
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-
-	done := make(chan struct{})
-	go func() {
-		scanner := bufio.NewScanner(pr)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if logger != nil {
-				logger.Output(line)
-			}
-			outBuf.WriteString(line + "\n")
-		}
-		close(done)
-	}()
-
-	err := cmd.Wait()
-	pw.Close()
-	<-done
-
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(outBuf.String()))
-	}
-
-	return parseContainerID(outBuf.Bytes()), nil
 }
