@@ -297,7 +297,11 @@ func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, r
 		}
 	}
 
-	exec, err := executor.New(workspaceDir, logDir, "local", cas)
+	agentID := os.Getenv("FORGE_AGENT_ID")
+	if agentID == "" {
+		agentID = "local"
+	}
+	exec, err := executor.New(workspaceDir, logDir, agentID, cas)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ executor setup: %v\n", err)
 		return false
@@ -455,7 +459,10 @@ func agentCommand() {
 
 	proxyURL := os.Getenv("FORGE_PROXY_URL")
 
-	agentID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	agentID := os.Getenv("FORGE_AGENT_ID")
+	if agentID == "" {
+		agentID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	}
 
 	// Cleanup configuration
 	maxGB, _ := strconv.ParseFloat(os.Getenv("FORGE_DOCKER_MAX_GB"), 64)
