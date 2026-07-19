@@ -1,5 +1,6 @@
 services:
   scheduler:
+    image: "${FORGE_IMAGE}"
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -12,12 +13,14 @@ services:
       FORGE_VAULT_TOKEN: forge-dev-token
 
   agent:
+    image: "${FORGE_IMAGE}"
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
     environment:
       FORGE_API_TOKEN: it-admin-token-forge
       FORGE_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME}_forge"
+      FORGE_PROXY_AGENT_ID: "${FORGE_AGENT_ID}"
     deploy:
       replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
 
@@ -37,6 +40,7 @@ services:
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   proxy:
+    image: "${FORGE_IMAGE}"
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -47,16 +51,19 @@ services:
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   init:
+    image: "${FORGE_IMAGE}"
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
-    profiles:
-      - disabled
+    volumes: []
 
   ui:
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
+    volumes: []
+    profiles:
+      - disabled
 
 volumes:
   postgres_data:

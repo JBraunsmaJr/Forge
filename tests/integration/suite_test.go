@@ -70,12 +70,29 @@ func TestMain(m *testing.M) {
 }
 
 func startStack(repoRoot string) error {
-	args := composeArgs("up", "--build", "-d")
+	fmt.Printf("[integration] FORGE_IMAGE: %s\n", os.Getenv("FORGE_IMAGE"))
+	fmt.Printf("[integration] FORGE_AGENT_ID: %s\n", os.Getenv("FORGE_AGENT_ID"))
+	fmt.Printf("[integration] FORGE_PROXY_AGENT_ID: %s\n", os.Getenv("FORGE_PROXY_AGENT_ID"))
+
+	// Build the image once to avoid race conditions in Docker Compose when multiple
+	// services share the same image and build context.
+	fmt.Println("[integration] pre-building forge image...")
+	buildCmd := exec.Command("docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
+	buildCmd.Dir = repoRoot
+	buildCmd.Stdout = os.Stderr
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("pre-building forge image: %w", err)
+	}
+
+	args := composeArgs("up", "-d")
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		fmt.Println("[integration] docker compose up failed. Dumping stack status:")
+		dumpStatus(repoRoot)
 		return fmt.Errorf("docker compose up: %w", err)
 	}
 
@@ -90,7 +107,9 @@ func startStack(repoRoot string) error {
 		select {
 		case <-ctx.Done():
 			fmt.Println()
-			return fmt.Errorf("scheduler did not become ready within %s — check: docker compose logs scheduler", startTimeout)
+			fmt.Println("[integration] TIMEOUT: Scheduler did not become ready. Dumping stack status:")
+			dumpStatus(repoRoot)
+			return fmt.Errorf("scheduler did not become ready within %s", startTimeout)
 		case <-dot.C:
 			fmt.Print(".")
 		case <-tick.C:
@@ -107,35 +126,63 @@ func startStack(repoRoot string) error {
 	}
 }
 
+func dumpStatus(repoRoot string) {
+	fmt.Println("--- docker ps ---")
+	cmd := exec.Command("docker", "ps", "-a")
+	cmd.Stdout = os.Stderr
+	cmd.Run()
+
+	fmt.Println("--- docker compose ps ---")
+	args := composeArgs("ps", "-a")
+	cmd = exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stderr
+	cmd.Run()
+
+	fmt.Println("--- scheduler logs ---")
+	args = composeArgs("logs", "--tail", "50", "scheduler")
+	cmd = exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stderr
+	cmd.Run()
+}
+
 func stopStack(repoRoot string) {
 	// Clean up any sibling job containers that weren't part of the compose project.
 	// We do this BEFORE compose down so that job containers are removed before
 	// compose tries to remove the network they might be attached to.
 	fmt.Println("[integration] cleaning up dangling job containers...")
-	agentID := os.Getenv("FORGE_AGENT_ID")
-	args := []string{"ps", "-a", "-q", "--filter", "label=forge.managed=true"}
-	if agentID != "" {
-		args = append(args, "--filter", "label=forge.agent_id="+agentID)
-	}
-	out, _ := exec.Command("docker", args...).Output()
-	ids := strings.Fields(string(out))
-	if len(ids) > 0 {
+	// We use --format to get labels for filtering.
+	out, _ := exec.Command("docker", "ps", "-a", "--filter", "label=forge.managed=true", "--format", "{{.ID}}|{{.Labels}}").Output()
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > 0 && lines[0] != "" {
 		self, _ := os.Hostname()
 		var toRemove []string
-		for _, id := range ids {
+		for _, line := range lines {
+			parts := strings.Split(line, "|")
+			if len(parts) < 2 {
+				continue
+			}
+			id := parts[0]
+			labels := parts[1]
+
 			if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
+				continue
+			}
+			// Only clean up job containers or policies, not the stack itself.
+			if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
 				continue
 			}
 			toRemove = append(toRemove, id)
 		}
 		if len(toRemove) > 0 {
-			args := append([]string{"rm", "-f"}, toRemove...)
-			exec.Command("docker", args...).Run()
+			rmArgs := append([]string{"rm", "-f"}, toRemove...)
+			exec.Command("docker", rmArgs...).Run()
 		}
 	}
 
-	args = composeArgs("down", "-v", "--remove-orphans")
-	cmd := exec.Command("docker", args...)
+	downArgs := composeArgs("down", "-v", "--remove-orphans")
+	cmd := exec.Command("docker", downArgs...)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -156,8 +203,16 @@ func initProjectName() {
 	if agentID == "" {
 		agentID = "local"
 	}
-	composeProjectName = fmt.Sprintf("forge-it-%s-%d", agentID, time.Now().UnixNano()%1000000)
+	// Use a more robust unique ID (timestamp in seconds + microsecond part)
+	now := time.Now()
+	composeProjectName = fmt.Sprintf("forge-it-%s-%d-%06d", agentID, now.Unix()%10000, now.UnixNano()%1000000)
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
+	// Use a unique image name for this test run to avoid build collisions on shared hosts.
+	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
+	// Ensure FORGE_PROXY_AGENT_ID is set for the internal stack to use for labels.
+	if os.Getenv("FORGE_PROXY_AGENT_ID") == "" {
+		os.Setenv("FORGE_PROXY_AGENT_ID", agentID)
+	}
 }
 
 func composeArgs(sub ...string) []string {

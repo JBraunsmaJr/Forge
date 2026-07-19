@@ -39,7 +39,7 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test ./...
+      go test -v ./...
 
   - id: main-pipeline
     condition: branch(main)

@@ -37,6 +37,10 @@ type Executor struct {
 
 	// AgentID is used for Docker label scoping.
 	AgentID string
+
+	// ProxyAgentID is used for the forge.agent_id label to satisfy the security proxy.
+	// If empty, AgentID is used.
+	ProxyAgentID string
 }
 
 // New creates an Executor. cas may be nil to disable caching.
@@ -49,8 +53,16 @@ func New(workspaceDir, logDir, agentID string, cas cache.Storer) (*Executor, err
 		WorkspaceDir: workspaceDir,
 		LogDir:       logDir,
 		AgentID:      agentID,
+		ProxyAgentID: os.Getenv("FORGE_PROXY_AGENT_ID"),
 		Cache:        cas,
 	}, nil
+}
+
+func (e *Executor) getLabelAgentID() string {
+	if e.ProxyAgentID != "" {
+		return e.ProxyAgentID
+	}
+	return e.AgentID
 }
 
 // RunStep executes a single pipeline step, checking the CAS first.
@@ -324,7 +336,7 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 
 	args := []string{
 		"--label", "forge.managed=true",
-		"--label", "forge.agent_id=" + e.AgentID,
+		"--label", "forge.agent_id=" + e.getLabelAgentID(),
 		"--label", "forge.run_id=" + step.RunID,
 		"--label", "forge.job_id=" + step.JobID,
 		"--workdir", workDir,
@@ -385,7 +397,9 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 
 	// Always inject the current agent's ID so steps (like integration tests)
 	// can label their own Docker resources correctly for the proxy.
+	// We also inject FORGE_PROXY_AGENT_ID so child agents know what label to use.
 	args = append(args, "-e", "FORGE_AGENT_ID="+e.AgentID)
+	args = append(args, "-e", "FORGE_PROXY_AGENT_ID="+e.getLabelAgentID())
 
 	args = append(args, step.Image)
 	args = append(args, step.Command...)
@@ -495,25 +509,62 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 // Cleanup removes all dangling Docker containers started by Forge.
 func Cleanup() error {
 	// Find all containers with the forge.managed label.
-	out, err := exec.Command("docker", "ps", "-a", "-q", "--filter", "label=forge.managed=true").Output()
+	// We use --format to get labels for filtering in Go.
+	out, err := exec.Command("docker", "ps", "-a", "--filter", "label=forge.managed=true", "--format", "{{.ID}}|{{.Labels}}").Output()
 	if err != nil {
 		return fmt.Errorf("listing forge containers: %w", err)
 	}
 
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
 		return nil
 	}
 
-	fmt.Printf("Cleaning up %d dangling Forge containers...\n", len(ids))
+	// Exclude ourselves and only target temporary containers (jobs/policies).
+	var toRemove []string
+	self := ""
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		self, _ = os.Hostname()
+	}
+
+	for _, line := range lines {
+		parts := strings.Split(line, "|")
+		if len(parts) < 2 {
+			continue
+		}
+		id := parts[0]
+		labels := parts[1]
+
+		// Docker IDs can be short or long. os.Hostname() in a container is usually the short ID.
+		if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
+			continue
+		}
+
+		// We only want to clean up temporary containers:
+		// - Job containers (have forge.run_id)
+		// - Policy transformers (have forge.policy=true)
+		// We EXCLUDE stack services like scheduler, agent, postgres, etc.
+		// These typically have com.docker.compose.project label, or just lack the run_id/policy label.
+		if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
+			continue
+		}
+
+		toRemove = append(toRemove, id)
+	}
+
+	if len(toRemove) == 0 {
+		return nil
+	}
+
+	fmt.Printf("Cleaning up %d dangling Forge containers...\n", len(toRemove))
 
 	// Stop them first (gracefully).
-	args := append([]string{"stop"}, ids...)
-	exec.Command("docker", args...).Run()
+	stopArgs := append([]string{"stop"}, toRemove...)
+	exec.Command("docker", stopArgs...).Run()
 
 	// Remove them.
-	args = append([]string{"rm", "-f"}, ids...)
-	if err := exec.Command("docker", args...).Run(); err != nil {
+	rmArgs := append([]string{"rm", "-f"}, toRemove...)
+	if err := exec.Command("docker", rmArgs...).Run(); err != nil {
 		return fmt.Errorf("removing forge containers: %w", err)
 	}
 

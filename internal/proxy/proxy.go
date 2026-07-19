@@ -93,7 +93,8 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 			if err == nil {
 				if labels["forge.managed"] != "true" || labels["forge.agent_id"] != agentID {
 					// We return a generic forbidden message for security (don't reveal too much)
-					http.Error(w, fmt.Sprintf("forbidden: access to %s %s denied", resource, id), http.StatusForbidden)
+					// But for now, let's include more info for debugging.
+					http.Error(w, fmt.Sprintf("forbidden: access to %s %s denied (proxy agentID: %s, resource agent_id: %s)", resource, id, agentID, labels["forge.agent_id"]), http.StatusForbidden)
 					return
 				}
 			}
