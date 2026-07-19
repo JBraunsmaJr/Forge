@@ -32,6 +32,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/glob"
 	"github.com/JBraunsmaJr/forge/internal/pb"
@@ -72,6 +73,7 @@ type Agent struct {
 	client       *http.Client
 	apiToken     string // FORGE_API_TOKEN — sent with every scheduler request
 	proxyURL     string // FORGE_PROXY_URL — management endpoint
+	proxyID      string // FORGE_PROXY_AGENT_ID — used for proxy registration and container labels
 	debugConts   sync.Map
 
 	// Concurrency control
@@ -86,8 +88,14 @@ type Agent struct {
 	maxDockerGB      float64
 	maxDockerPercent float64
 	pruneSchedule    string
-	activeJobs       sync.Map // map[string]context.CancelFunc
+	activeJobs       sync.Map // map[string]activeJobInfo
 	cleanupMu        sync.Mutex
+	lastCleanup      time.Time
+}
+
+type activeJobInfo struct {
+	Cancel context.CancelFunc
+	RunID  string
 }
 
 // New creates an agent that connects to schedulerURL.
@@ -99,6 +107,12 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 	if concurrency < 1 {
 		concurrency = 1
 	}
+
+	proxyID := id
+	if p := os.Getenv("FORGE_PROXY_AGENT_ID"); p != "" {
+		proxyID = p
+	}
+
 	return &Agent{
 		id:               id,
 		schedulerURL:     schedulerURL,
@@ -108,6 +122,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		vault:            vault,
 		apiToken:         apiToken,
 		proxyURL:         proxyURL,
+		proxyID:          proxyID,
 		client:           &http.Client{Timeout: 10 * time.Second},
 		maxDockerGB:      maxGB,
 		maxDockerPercent: maxPercent,
@@ -213,10 +228,6 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to register: %w", err)
 	}
 
-	// Clean up any dangling containers from previous runs.
-	executor.Cleanup()
-	defer executor.Cleanup()
-
 	go a.debugLoop(ctx)
 	go a.pruneLoop(ctx)
 	go a.statusLoop(ctx)
@@ -268,9 +279,9 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		if ack := msg.GetHeartbeatAck(); ack != nil {
 			if ack.Stop {
-				if cancel, ok := a.activeJobs.Load(ack.JobId); ok {
+				if info, ok := a.activeJobs.Load(ack.JobId); ok {
 					fmt.Printf("[agent %s] stopping job %s as requested by scheduler\n", a.id[:8], ack.JobId[:8])
-					cancel.(context.CancelFunc)()
+					info.(activeJobInfo).Cancel()
 				}
 			}
 		}
@@ -336,7 +347,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				}()
 
 				jobCtx, cancel := context.WithCancel(ctx)
-				a.activeJobs.Store(s.JobID, cancel)
+				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID})
 				defer a.activeJobs.Delete(s.JobID)
 				defer cancel()
 
@@ -368,8 +379,8 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			fmt.Printf("[agent %s] running scheduled docker container prune...\n", a.id[:8])
-			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.id).Run()
-			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.id).Run()
+			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
 			// Also clean up any old workspace directories
 			a.cleanupWorkspaces()
 		}
@@ -379,6 +390,12 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 func (a *Agent) checkDiskUsageAndCleanup() {
 	a.cleanupMu.Lock()
 	defer a.cleanupMu.Unlock()
+
+	// Only run cleanup once every 5 minutes to reduce Docker daemon load
+	if !a.lastCleanup.IsZero() && time.Since(a.lastCleanup) < 5*time.Minute {
+		return
+	}
+	a.lastCleanup = time.Now()
 
 	// 1. Check Docker disk usage (GB)
 	usageGB, err := a.getDockerUsageGB()
@@ -440,9 +457,10 @@ func getDiskUsagePercent(path string) float64 {
 }
 
 func (a *Agent) getDockerUsageGB() (float64, error) {
-	out, err := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}").Output()
+	cmd := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %s", err, string(out))
 	}
 
 	var total float64
@@ -580,7 +598,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	go a.heartbeatLoop(spec.JobID, spec.LeaseID, done)
 
 	// Ensure cleanup of any stray containers/networks/volumes created by this run
-	defer a.cleanupJobContainers(spec.RunID)
+	defer a.cleanupJobContainers(spec.RunID, spec.JobID)
 
 	/*
 		Runtime Condition Evaluation
@@ -727,6 +745,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 	step.Env["FORGE_API_TOKEN"] = a.apiToken
 	step.Env["FORGE_SCHEDULER_URL"] = a.schedulerURL
+	step.Env["FORGE_AGENT_ID"] = a.id
 
 	/*
 		Fetch secrets from Vault
@@ -1286,7 +1305,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		"--label", "forge.debug=true",
 		"--label", "forge.run_id=" + spec.RunID,
 		"--label", "forge.job_id=" + spec.JobID,
-		"--label", "forge.agent_id=" + a.id,
+		"--label", "forge.agent_id=" + a.proxyID,
 		"--workdir", workDir,
 	}
 	if net := os.Getenv("FORGE_DOCKER_NETWORK"); net != "" {
@@ -1302,7 +1321,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 
 		// If running in a container, use --volumes-from to inherit the proxied socket mount.
 		// This avoids issues with host paths not matching container paths for named volumes.
-		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+		if hostname, _ := os.Hostname(); hostname != "" && dockerutil.IsRunningInContainer() {
 			args = append(args, "--volumes-from", hostname)
 			args = append(args, "-e", "DOCKER_HOST=unix://"+hostSocket)
 		} else {
@@ -1317,12 +1336,13 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 
 	fmt.Printf("[agent %s] creating debug container for session %s with workdir %s\n",
 		a.id[:8], spec.SessionID[:8], workDir)
-	out, err := exec.CommandContext(ctx, "docker", args...).Output()
+	containerID, err := dockerutil.RunDockerCreate(ctx, func(line string) {
+		fmt.Printf("[agent %s] [docker] %s\n", a.id[:8], line)
+	}, args[1:])
 	if err != nil {
 		fmt.Printf("[agent %s] debug container failed to create: %v\n", a.id[:8], err)
 		return
 	}
-	containerID := strings.TrimSpace(string(out))
 	if containerID == "" {
 		return
 	}
@@ -1330,10 +1350,8 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	// Copy workspace into debug container
 	// We copy the host's "workspace" directory into the container's root.
 	src := filepath.Clean(workspaceDir)
-	cpCmd := exec.CommandContext(ctx, "docker", "cp", src, containerID+":/")
-	if err := cpCmd.Run(); err != nil {
+	if err := dockerutil.DockerCp(ctx, src, containerID+":/"); err != nil {
 		fmt.Printf("[agent %s] failed to copy workspace into debug container: %v\n", a.id[:8], err)
-		exec.Command("docker", "rm", "-f", containerID).Run()
 		return
 	}
 
@@ -1345,8 +1363,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	defer func() {
-		exec.Command("docker", "stop", containerID).Run()
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		dockerutil.DockerStopAndRm(ctx, containerID)
 		a.debugConts.Delete(spec.SessionID)
 		fmt.Printf("[agent %s] debug container %s stopped\n", a.id[:8], containerID[:12])
 	}()
@@ -2395,22 +2412,29 @@ func pipelineLog(level, msg string) []api.LogEvent {
 	return []api.LogEvent{{Timestamp: time.Now(), Level: level, Message: "[pipeline] " + msg}}
 }
 
-func (a *Agent) cleanupJobContainers(runID string) {
-	// Stop and remove all containers created by this run
+func (a *Agent) cleanupJobContainers(runID, jobID string) {
+	// Stop and remove all containers created by this job
 	out, _ := exec.Command("docker", "ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id,
+		"--filter", "label=forge.job_id="+jobID,
+		"--filter", "label=forge.agent_id="+a.proxyID,
 		"--filter", "label!=forge.debug=true").Output()
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		exec.Command("docker", "stop", "-t", "5", id).Run()
-		exec.Command("docker", "rm", "-f", id).Run()
+		dockerutil.DockerStopAndRm(context.Background(), id)
+	}
+
+	// For networks and volumes, we only clean them up if this is the last active job
+	// for this RunID on this agent. This prevents Job A from breaking Job B which
+	// might be sharing the same network.
+	if a.countActiveJobsForRun(runID) > 1 {
+		return
 	}
 
 	// Remove networks created by this run
 	out, _ = exec.Command("docker", "network", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id).Output()
+		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
 		exec.Command("docker", "network", "rm", id).Run()
@@ -2419,15 +2443,27 @@ func (a *Agent) cleanupJobContainers(runID string) {
 	// Remove volumes created by this run
 	out, _ = exec.Command("docker", "volume", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id).Output()
+		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
 		exec.Command("docker", "volume", "rm", id).Run()
 	}
 }
 
+func (a *Agent) countActiveJobsForRun(runID string) int {
+	count := 0
+	a.activeJobs.Range(func(key, value any) bool {
+		info := value.(activeJobInfo)
+		if info.RunID == runID {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
 func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
-	body, _ := json.Marshal(map[string]string{"agent_id": a.id})
+	body, _ := json.Marshal(map[string]string{"agent_id": a.proxyID})
 	req, err := http.NewRequestWithContext(ctx, "POST", a.proxyURL+"/register", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -2452,9 +2488,4 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 	}
 
 	return res.SocketPath, nil
-}
-
-func isRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
 }

@@ -1,7 +1,10 @@
 # Build outputs
 *.exe
 dist/
+!internal/scheduler/web/dist/
 .forge/
+node_modules/
+**/node_modules/
 
 # Version control
 .git/

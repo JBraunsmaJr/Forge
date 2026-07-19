@@ -26,7 +26,6 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
-	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
@@ -250,10 +249,6 @@ func (r *AgentRegistry) List() []api.AgentInfo {
 
 // Start registers all routes and begins serving.
 func (s *Server) Start(ctx context.Context) error {
-	// Clean up any dangling policy transformer containers from previous runs.
-	executor.Cleanup()
-	defer executor.Cleanup()
-
 	s.tokens.bootstrapIfEmpty()
 
 	mux := http.NewServeMux()

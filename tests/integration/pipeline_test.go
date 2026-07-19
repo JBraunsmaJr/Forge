@@ -7,10 +7,9 @@ import (
 	"time"
 )
 
-var adminClient = newClient(adminToken)
-
 func TestHealthCheck(t *testing.T) {
-	resp, err := http.Get(schedulerURL + "/")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(schedulerURL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
@@ -120,7 +119,7 @@ func TestJobLogs(t *testing.T) {
 			ID:      "log-step",
 			Image:   "alpine:latest",
 			Run:     fmt.Sprintf("echo '%s'", marker),
-			Timeout: "1m",
+			Timeout: 1 * time.Minute,
 		},
 	})
 	status := waitForRun(t, adminClient, runID)
@@ -162,7 +161,7 @@ func TestCancelPipeline(t *testing.T) {
 			ID:      "long-sleep",
 			Image:   "alpine:latest",
 			Run:     "sleep 600",
-			Timeout: "20m",
+			Timeout: 20 * time.Minute,
 		},
 	})
 
