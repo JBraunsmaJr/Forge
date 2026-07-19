@@ -15,7 +15,7 @@ func TestArtifactUploadAndDownload(t *testing.T) {
 			ID:              "producer",
 			Image:           "alpine:latest",
 			Run:             fmt.Sprintf("echo '%s' > /workspace/out.txt", marker),
-			Timeout:         "2m",
+			Timeout:         2 * time.Minute,
 			ArtifactUploads: []uploadSpec{{Path: "out.txt", Name: "test-output"}},
 		},
 		{
@@ -26,7 +26,7 @@ func TestArtifactUploadAndDownload(t *testing.T) {
 				marker,
 			),
 			DependsOn:         []string{"producer"},
-			Timeout:           "2m",
+			Timeout:           2 * time.Minute,
 			ArtifactDownloads: []downloadSpec{{Name: "test-output", Dest: "received.txt"}},
 		},
 	})
@@ -70,7 +70,7 @@ func TestGeneratorStep(t *testing.T) {
 			ID:      "gen",
 			Image:   "python:3.12-slim",
 			Type:    "generator",
-			Timeout: "3m",
+			Timeout: 3 * time.Minute,
 			Command: []string{"python3", "-c", pyScript},
 		},
 		{
@@ -78,7 +78,7 @@ func TestGeneratorStep(t *testing.T) {
 			Image:     "alpine:latest",
 			Run:       "echo all children done",
 			DependsOn: []string{"gen"},
-			Timeout:   "2m",
+			Timeout:   2 * time.Minute,
 		},
 	})
 	status := waitForRun(t, adminClient, runID)
@@ -236,7 +236,7 @@ func TestSecretScoping(t *testing.T) {
 			ID:      "read-secret",
 			Image:   "alpine:latest",
 			Run:     `[ -n "$IT_GLOBAL_SECRET" ] && echo "secret present" || exit 1`,
-			Timeout: "2m",
+			Timeout: 2 * time.Minute,
 			Env:     map[string]string{},
 		},
 	})

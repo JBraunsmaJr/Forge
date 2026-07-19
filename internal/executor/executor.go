@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/cache"
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
@@ -37,6 +38,10 @@ type Executor struct {
 
 	// AgentID is used for Docker label scoping.
 	AgentID string
+
+	// ProxyAgentID is used for the forge.agent_id label to satisfy the security proxy.
+	// If empty, AgentID is used.
+	ProxyAgentID string
 }
 
 // New creates an Executor. cas may be nil to disable caching.
@@ -49,8 +54,16 @@ func New(workspaceDir, logDir, agentID string, cas cache.Storer) (*Executor, err
 		WorkspaceDir: workspaceDir,
 		LogDir:       logDir,
 		AgentID:      agentID,
+		ProxyAgentID: os.Getenv("FORGE_PROXY_AGENT_ID"),
 		Cache:        cas,
 	}, nil
+}
+
+func (e *Executor) getLabelAgentID() string {
+	if e.ProxyAgentID != "" {
+		return e.ProxyAgentID
+	}
+	return e.AgentID
 }
 
 // RunStep executes a single pipeline step, checking the CAS first.
@@ -126,9 +139,9 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy {
 		// 1. Create container
 		args := e.buildDockerArgs(step, "", true)
-		out, err := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...).Output()
+		containerID, err = dockerutil.RunDockerCreate(ctx, logger.Output, args)
 		if err != nil {
-			logger.Error("failed to create container", map[string]any{"error": err.Error()})
+			logger.Error(fmt.Sprintf("failed to create container: %v", err), map[string]any{"error": err.Error()})
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
 				Step:     step,
@@ -138,15 +151,13 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 				LogFile:  logPath,
 			}, nil
 		}
-		containerID = strings.TrimSpace(string(out))
 
 		// 2. Copy workspace IN
 		// We copy the host's "workspace" directory into the container's root.
 		// Since the host directory is named "workspace", it will become "/workspace" in the container.
 		src := filepath.Clean(e.WorkspaceDir)
-		cpIn := exec.CommandContext(ctx, "docker", "cp", src+"/.", containerID+":/workspace")
-		if err := cpIn.Run(); err != nil {
-			logger.Error("failed to copy workspace into container", map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
+		if err := dockerutil.DockerCp(ctx, src+"/.", containerID+":/workspace"); err != nil {
+			logger.Error(fmt.Sprintf("failed to copy workspace into container: %v", err), map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
@@ -208,9 +219,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy "/workspace" from the container back to the host's job directory.
 		src := containerID + ":/workspace/."
 		dst := e.WorkspaceDir
-		cpOut := exec.CommandContext(ctx, "docker", "cp", src, dst)
-		if err := cpOut.Run(); err != nil {
-			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error(), "src": src, "dst": dst})
+		if err := dockerutil.DockerCp(ctx, src, dst); err != nil {
+			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v", err), map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
 
 		// 5. Cleanup container
@@ -324,7 +334,7 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 
 	args := []string{
 		"--label", "forge.managed=true",
-		"--label", "forge.agent_id=" + e.AgentID,
+		"--label", "forge.agent_id=" + e.getLabelAgentID(),
 		"--label", "forge.run_id=" + step.RunID,
 		"--label", "forge.job_id=" + step.JobID,
 		"--workdir", workDir,
@@ -352,7 +362,7 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 
 		// If running in a container, use --volumes-from to inherit the proxied socket mount.
 		// This avoids issues with host paths not matching container paths for named volumes.
-		if hostname, _ := os.Hostname(); hostname != "" && isRunningInContainer() {
+		if hostname, _ := os.Hostname(); hostname != "" && dockerutil.IsRunningInContainer() {
 			args = append(args, "--volumes-from", hostname)
 			args = append(args, "-e", "DOCKER_HOST=unix://"+hostSocket)
 		} else {
@@ -385,7 +395,9 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 
 	// Always inject the current agent's ID so steps (like integration tests)
 	// can label their own Docker resources correctly for the proxy.
+	// We also inject FORGE_PROXY_AGENT_ID so child agents know what label to use.
 	args = append(args, "-e", "FORGE_AGENT_ID="+e.AgentID)
+	args = append(args, "-e", "FORGE_PROXY_AGENT_ID="+e.getLabelAgentID())
 
 	args = append(args, step.Image)
 	args = append(args, step.Command...)
@@ -414,15 +426,13 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	if e.UseCopy {
 		args := e.buildDockerArgs(step, "", true)
-		out, err := exec.Command("docker", append([]string{"create"}, args...)...).Output()
+		containerID, err = dockerutil.RunDockerCreate(context.Background(), logger.Output, args)
 		if err != nil {
 			return nil, fmt.Errorf("creating generator container: %w", err)
 		}
-		containerID = strings.TrimSpace(string(out))
 
 		src := filepath.Clean(e.WorkspaceDir)
-		cpIn := exec.Command("docker", "cp", src+"/.", containerID+":/workspace")
-		if err := cpIn.Run(); err != nil {
+		if err := dockerutil.DockerCp(context.Background(), src+"/.", containerID+":/workspace"); err != nil {
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
 		}
@@ -492,35 +502,68 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	}, nil
 }
 
-// Cleanup removes all dangling Docker containers started by Forge.
-func Cleanup() error {
+// Cleanup removes dangling Docker containers started by Forge.
+// If agentID is provided, only containers for that agent are removed.
+// Otherwise, all Forge-managed temporary containers (jobs, policies) are removed.
+func Cleanup(agentID string) error {
 	// Find all containers with the forge.managed label.
-	out, err := exec.Command("docker", "ps", "-a", "-q", "--filter", "label=forge.managed=true").Output()
+	args := []string{"ps", "-a", "--filter", "label=forge.managed=true"}
+	if agentID != "" {
+		args = append(args, "--filter", "label=forge.agent_id="+agentID)
+	}
+	args = append(args, "--format", "{{.ID}}|{{.Labels}}")
+
+	cmd := exec.Command("docker", args...)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("listing forge containers: %w", err)
+		return fmt.Errorf("listing forge containers: %v: %s", err, string(out))
 	}
 
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
 		return nil
 	}
 
-	fmt.Printf("Cleaning up %d dangling Forge containers...\n", len(ids))
+	// Exclude ourselves and only target temporary containers (jobs/policies).
+	var toRemove []string
+	self := ""
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		self, _ = os.Hostname()
+	}
 
-	// Stop them first (gracefully).
-	args := append([]string{"stop"}, ids...)
-	exec.Command("docker", args...).Run()
+	for _, line := range lines {
+		parts := strings.Split(line, "|")
+		if len(parts) < 2 {
+			continue
+		}
+		id := parts[0]
+		labels := parts[1]
 
-	// Remove them.
-	args = append([]string{"rm", "-f"}, ids...)
-	if err := exec.Command("docker", args...).Run(); err != nil {
-		return fmt.Errorf("removing forge containers: %w", err)
+		// Docker IDs can be short or long. os.Hostname() in a container is usually the short ID.
+		if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
+			continue
+		}
+
+		// If no agentID specified, we perform a broad cleanup but still restrict to
+		// temporary job/policy containers to avoid stopping the scheduler/agent themselves
+		// if they are running in the same Docker daemon (e.g. during dev).
+		if agentID == "" {
+			// We only want to clean up containers that have either a run_id or a policy label.
+			if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
+				continue
+			}
+		}
+
+		toRemove = append(toRemove, id)
+	}
+
+	if len(toRemove) == 0 {
+		return nil
+	}
+
+	for _, id := range toRemove {
+		dockerutil.DockerStopAndRm(context.Background(), id)
 	}
 
 	return nil
-}
-
-func isRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
 }

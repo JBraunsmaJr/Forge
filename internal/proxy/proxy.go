@@ -78,7 +78,7 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 		path := resp.Request.URL.Path
 		resource, id := s.parsePath(path)
 
-		if resp.Request.Method == "GET" && resource == "containers" && (id == "json" || id == "") {
+		if resp.StatusCode == http.StatusOK && resp.Request.Method == "GET" && resource == "containers" && (id == "json" || id == "") {
 			return s.filterContainerList(agentID, resp)
 		}
 		return nil
@@ -88,12 +88,13 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 		resource, id := s.parsePath(r.URL.Path)
 
 		// Destructive or info-leaking actions on specific resources
-		if id != "" && id != "json" && id != "create" && id != "prune" {
+		if id != "" && id != "json" && id != "create" && id != "prune" && id != "df" && id != "info" {
 			labels, err := s.getResourceLabels(resource, id)
 			if err == nil {
 				if labels["forge.managed"] != "true" || labels["forge.agent_id"] != agentID {
 					// We return a generic forbidden message for security (don't reveal too much)
-					http.Error(w, fmt.Sprintf("forbidden: access to %s %s denied", resource, id), http.StatusForbidden)
+					// But for now, let's include more info for debugging.
+					http.Error(w, fmt.Sprintf("forbidden: access to %s %s denied (proxy agentID: %s, resource agent_id: %s)", resource, id, agentID, labels["forge.agent_id"]), http.StatusForbidden)
 					return
 				}
 			}
@@ -231,6 +232,9 @@ func (s *ProxyServer) getNetworkLabels(id string) (map[string]string, error) {
 }
 
 func (s *ProxyServer) filterContainerList(agentID string, resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err

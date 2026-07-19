@@ -16,13 +16,15 @@ import (
 	"time"
 )
 
-const (
-	schedulerURL = "http://localhost:8080"
+var (
+	schedulerURL = "http://127.0.0.1:8080"
 	adminToken   = "it-admin-token-forge"
-	vaultURL     = "http://localhost:8200"
+	vaultURL     = "http://127.0.0.1:8200"
 	vaultToken   = "forge-dev-token"
 	startTimeout = 5 * time.Minute
 	runTimeout   = 3 * time.Minute
+
+	adminClient *client
 )
 
 var composeFiles []string
@@ -57,10 +59,13 @@ func TestMain(m *testing.M) {
 	fmt.Println("[integration] starting Forge stack...")
 	if err := startStack(repoRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "[integration] failed to start stack: %v\n", err)
-		stopStack(repoRoot)
+		dumpStatus(repoRoot)
 		os.Exit(1)
 	}
 	fmt.Println("[integration] stack ready")
+
+	// Initialize the admin client after the stack is ready and ports are discovered.
+	adminClient = newClient(adminToken)
 
 	code := m.Run()
 
@@ -70,41 +75,147 @@ func TestMain(m *testing.M) {
 }
 
 func startStack(repoRoot string) error {
-	args := composeArgs("up", "--build", "-d")
+	fmt.Printf("[integration] FORGE_IMAGE: %s\n", os.Getenv("FORGE_IMAGE"))
+	fmt.Printf("[integration] FORGE_AGENT_ID: %s\n", os.Getenv("FORGE_AGENT_ID"))
+	fmt.Printf("[integration] FORGE_PROXY_AGENT_ID: %s\n", os.Getenv("FORGE_PROXY_AGENT_ID"))
+
+	// Use dynamic ports for all services to avoid collisions on shared hosts.
+	os.Setenv("FORGE_SCHEDULER_PORT", "0")
+	os.Setenv("FORGE_SCHEDULER_GRPC_PORT", "0")
+	os.Setenv("FORGE_VAULT_PORT", "0")
+	os.Setenv("FORGE_MINIO_PORT", "0")
+	os.Setenv("FORGE_MINIO_CONSOLE_PORT", "0")
+	os.Setenv("FORGE_UI_PORT", "0")
+
+	// Build the image once to avoid race conditions in Docker Compose when multiple
+	// services share the same image and build context.
+	fmt.Println("[integration] pre-building forge image...")
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer buildCancel()
+	buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
+	buildCmd.Dir = repoRoot
+	buildCmd.Stdout = os.Stderr
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("pre-building forge image: %w", err)
+	}
+
+	args := composeArgs("up", "-d")
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		fmt.Println("[integration] docker compose up failed. Dumping stack status:")
+		dumpStatus(repoRoot)
 		return fmt.Errorf("docker compose up: %w", err)
 	}
 
-	fmt.Printf("[integration] waiting for scheduler at %s", schedulerURL)
+	host := dockerHostAddr()
+
+	// Discover mapped ports
+	sPort, err := getMappedPort(repoRoot, "scheduler", 8080)
+	if err != nil {
+		return fmt.Errorf("getting scheduler port: %w", err)
+	}
+	schedulerURL = "http://" + host + ":" + sPort
+	fmt.Printf("[integration] scheduler discovered at %s\n", schedulerURL)
+
+	vPort, err := getMappedPort(repoRoot, "vault", 8200)
+	if err != nil {
+		return fmt.Errorf("getting vault port: %w", err)
+	}
+	vaultURL = "http://" + host + ":" + vPort
+	fmt.Printf("[integration] vault discovered at %s\n", vaultURL)
+
+	fmt.Printf("[integration] waiting for scheduler at %s\n", schedulerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	tick := time.NewTicker(2 * time.Second)
-	dot := time.NewTicker(5 * time.Second)
+	dot := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	defer dot.Stop()
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Println()
-			return fmt.Errorf("scheduler did not become ready within %s — check: docker compose logs scheduler", startTimeout)
+			fmt.Println("[integration] TIMEOUT: Scheduler did not become ready. Dumping stack status:")
+			dumpStatus(repoRoot)
+			return fmt.Errorf("scheduler did not become ready within %s", startTimeout)
 		case <-dot.C:
-			fmt.Print(".")
+			fmt.Println("[integration] still waiting for scheduler...")
 		case <-tick.C:
-			resp, err := http.Get(schedulerURL + "/")
+			resp, err := httpClient.Get(schedulerURL + "/")
 			if err != nil {
+				// Don't log every connection error to avoid spam, but we could log it occasionally.
 				continue
 			}
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
-				fmt.Println(" ready")
+				fmt.Println("[integration] scheduler is ready")
+				waitForInit(repoRoot)
 				return nil
 			}
+			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
 		}
 	}
+}
+
+func getMappedPort(repoRoot, service string, port int) (string, error) {
+	args := composeArgs("port", service, fmt.Sprintf("%d", port))
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimSpace(string(out))
+	// Output format: 0.0.0.0:PORT or [::]:PORT
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("unexpected output from docker compose port: %q", s)
+	}
+	return parts[len(parts)-1], nil
+}
+
+func dumpStatus(repoRoot string) {
+	fmt.Println("--- docker ps ---")
+	cmd := exec.Command("docker", "ps", "-a")
+	cmd.Stdout = os.Stderr
+	cmd.Run()
+
+	fmt.Println("--- docker compose ps ---")
+	args := composeArgs("ps", "-a")
+	cmd = exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stderr
+	cmd.Run()
+
+	dumpLogs(repoRoot, "scheduler", 50)
+	dumpLogs(repoRoot, "proxy", 50)
+	dumpLogs(repoRoot, "agent", 100)
+}
+
+func dumpLogs(repoRoot, service string, tail int) {
+	fmt.Printf("--- %s logs ---\n", service)
+	args := composeArgs("logs", "--tail", fmt.Sprintf("%d", tail), service)
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(out.String(), "does not support reading") {
+			fmt.Printf("[dumpLogs] skipping %s logs: logging driver does not support reading\n", service)
+		} else {
+			fmt.Printf("[dumpLogs] failed to get %s logs: %v\n%s\n", service, err, out.String())
+		}
+		return
+	}
+	fmt.Println(out.String())
 }
 
 func stopStack(repoRoot string) {
@@ -112,30 +223,37 @@ func stopStack(repoRoot string) {
 	// We do this BEFORE compose down so that job containers are removed before
 	// compose tries to remove the network they might be attached to.
 	fmt.Println("[integration] cleaning up dangling job containers...")
-	agentID := os.Getenv("FORGE_AGENT_ID")
-	args := []string{"ps", "-a", "-q", "--filter", "label=forge.managed=true"}
-	if agentID != "" {
-		args = append(args, "--filter", "label=forge.agent_id="+agentID)
-	}
-	out, _ := exec.Command("docker", args...).Output()
-	ids := strings.Fields(string(out))
-	if len(ids) > 0 {
+	// We use --format to get labels for filtering.
+	out, _ := exec.Command("docker", "ps", "-a", "--filter", "label=forge.managed=true", "--format", "{{.ID}}|{{.Labels}}").Output()
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > 0 && lines[0] != "" {
 		self, _ := os.Hostname()
 		var toRemove []string
-		for _, id := range ids {
+		for _, line := range lines {
+			parts := strings.Split(line, "|")
+			if len(parts) < 2 {
+				continue
+			}
+			id := parts[0]
+			labels := parts[1]
+
 			if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
+				continue
+			}
+			// Only clean up job containers or policies, not the stack itself.
+			if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
 				continue
 			}
 			toRemove = append(toRemove, id)
 		}
 		if len(toRemove) > 0 {
-			args := append([]string{"rm", "-f"}, toRemove...)
-			exec.Command("docker", args...).Run()
+			rmArgs := append([]string{"rm", "-f"}, toRemove...)
+			exec.Command("docker", rmArgs...).Run()
 		}
 	}
 
-	args = composeArgs("down", "-v", "--remove-orphans")
-	cmd := exec.Command("docker", args...)
+	downArgs := composeArgs("down", "-v", "--remove-orphans")
+	cmd := exec.Command("docker", downArgs...)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -156,8 +274,16 @@ func initProjectName() {
 	if agentID == "" {
 		agentID = "local"
 	}
-	composeProjectName = fmt.Sprintf("forge-it-%s-%d", agentID, time.Now().UnixNano()%1000000)
+	// Use a more robust unique ID (timestamp in seconds + microsecond part)
+	now := time.Now()
+	composeProjectName = fmt.Sprintf("forge-it-%s-%d-%06d", agentID, now.Unix()%10000, now.UnixNano()%1000000)
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
+	// Use a unique image name for this test run to avoid build collisions on shared hosts.
+	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
+	// Ensure FORGE_PROXY_AGENT_ID is set for the internal stack to use for labels.
+	if os.Getenv("FORGE_PROXY_AGENT_ID") == "" {
+		os.Setenv("FORGE_PROXY_AGENT_ID", agentID)
+	}
 }
 
 func composeArgs(sub ...string) []string {
@@ -239,7 +365,7 @@ type stepDef struct {
 	Type              string            `json:"type,omitempty"`
 	ArtifactUploads   []uploadSpec      `json:"artifact_uploads,omitempty"`
 	ArtifactDownloads []downloadSpec    `json:"artifact_downloads,omitempty"`
-	Timeout           string            `json:"timeout,omitempty"`
+	Timeout           time.Duration     `json:"timeout_ns,omitempty"`
 	DockerSocket      bool              `json:"docker_socket,omitempty"`
 	AlwaysRun         bool              `json:"always_run,omitempty"`
 	Condition         string            `json:"condition,omitempty"`
@@ -309,7 +435,17 @@ func waitForRun(t *testing.T, c *client, runID string) runStatus {
 func assertPassed(t *testing.T, s runStatus) {
 	t.Helper()
 	if s.Status != "passed" {
-		t.Errorf("expected run to pass, got status %q", s.Status)
+		for _, j := range s.Jobs {
+			if j.Status == "failed" {
+				resp, err := adminClient.get("/api/v1/jobs/" + j.JobID + "/logs")
+				if err == nil {
+					body, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+					t.Errorf("Job %s (%s) failed logs:\n%s", j.JobID, j.StepID, body)
+				}
+			}
+		}
+		t.Fatalf("expected run to pass, got status %q", s.Status)
 	}
 }
 
@@ -338,7 +474,7 @@ func echoStep(id, msg string, deps ...string) stepDef {
 		Image:     "alpine:latest",
 		Run:       fmt.Sprintf("echo '%s'", msg),
 		DependsOn: deps,
-		Timeout:   "2m",
+		Timeout:   time.Minute * 2,
 	}
 }
 
@@ -349,7 +485,7 @@ func failStep(id string, deps ...string) stepDef {
 		Image:     "alpine:latest",
 		Run:       "exit 1",
 		DependsOn: deps,
-		Timeout:   "1m",
+		Timeout:   time.Minute * 1,
 	}
 }
 
@@ -424,4 +560,49 @@ func setVaultSecret(t *testing.T, name, value string) {
 // stripPrefix removes a leading common prefix for cleaner test output.
 func stripPrefix(s, prefix string) string {
 	return strings.TrimPrefix(s, prefix)
+}
+
+func waitForInit(repoRoot string) {
+	fmt.Println("[integration] waiting for init service to complete...")
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		args := composeArgs("ps", "init", "--format", "json")
+		cmd := exec.Command("docker", args...)
+		cmd.Dir = repoRoot
+		out, _ := cmd.Output()
+		s := string(out)
+		if s == "" {
+			// Possibly still creating
+		} else if strings.Contains(s, `"State":"exited"`) {
+			if strings.Contains(s, `"ExitCode":0`) {
+				fmt.Println("[integration] init service completed")
+				return
+			}
+			fmt.Println("[integration] init service failed, check logs if tests fail")
+			dumpLogs(repoRoot, "init", 50)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	fmt.Println("[integration] init service wait timed out")
+}
+
+func dockerHostAddr() string {
+	if _, err := os.Stat("/.dockerenv"); err != nil {
+		return "127.0.0.1"
+	}
+
+	/*
+		Inside a container talking to a sibling Docker daemon (DooD):
+		127.0.0.1 is our own loopback, not the real host's use the default
+		gateway instead which routes back to the host
+	*/
+	out, err := exec.Command("sh", "-c", "ip route show default | awk '{print $3}'").Output()
+	if err == nil {
+		if gw := strings.TrimSpace(string(out)); gw != "" {
+			return gw
+		}
+	}
+
+	return "127.0.0.1" // last resort fallback
 }

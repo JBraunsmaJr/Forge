@@ -26,24 +26,43 @@ steps:
     name: Unit Tests
     image: golang:1.26.5-alpine
     docker_socket: true
-    depends_on: [build-ui]
+    depends_on: [ build-ui ]
     artifacts:
       download:
         - name: ui-dist.tar.gz
     timeout: 10m
     run: |
-      apk add --no-cache docker-cli docker-cli-compose
+      apk add --no-cache docker-cli docker-cli-compose iproute2
       # Debug: check if artifact was downloaded
       ls -la
       mkdir -p internal/scheduler/web
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test ./...
+      INTEGRATION_SKIP=1 go test -v ./...
+
+  - id: integration-tests
+    name: Integration Tests
+    image: golang:1.26.5-alpine
+    docker_socket: true
+    depends_on: [ build-ui ]
+    artifacts:
+      download:
+        - name: ui-dist.tar.gz
+    timeout: 10m
+    run: |
+      apk add --no-cache docker-cli docker-cli-compose iproute2
+      # Debug: check if artifact was downloaded
+      ls -la
+      mkdir -p internal/scheduler/web
+      tar -xzf ui-dist.tar.gz -C internal/scheduler/web
+      # Debug: verify extraction
+      ls -la internal/scheduler/web/dist
+      go test -v ./tests/integration/...
 
   - id: main-pipeline
     condition: branch(main)
     type: pipeline
     pipeline: .forge/main.yml
-    depends_on: [ unit-tests ]
+    depends_on: [ unit-tests, integration-tests ]
     artifacts_send: [ui-dist.tar.gz]

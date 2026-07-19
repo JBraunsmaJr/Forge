@@ -1,10 +1,13 @@
 # ── Stage 1: Build UI ──────────────────────────────────────────────────────────
 FROM node:22-alpine AS ui-builder
-WORKDIR /ui
-COPY ui/package*.json ./
-RUN npm install
-COPY ui/ .
-RUN npm run build
+WORKDIR /app
+COPY . .
+# Skip UI build if assets are already present in the context
+RUN if [ ! -d "internal/scheduler/web/dist" ] || [ -z "$(ls -A internal/scheduler/web/dist 2>/dev/null)" ]; then \
+      cd ui && npm install && npm run build; \
+    else \
+      echo "Using pre-built UI assets from context"; \
+    fi
 
 # ── Stage 2: Build Go ─────────────────────────────────────────────────────────
 FROM golang:1.26.5-alpine AS builder
@@ -23,8 +26,8 @@ ENV GOINSECURE=*
 RUN go mod download
 
 COPY . .
-# Copy the built UI assets from the ui-builder stage
-COPY --from=ui-builder /internal/scheduler/web/dist ./internal/scheduler/web/dist
+# Copy the built UI assets (either from the context or from the build above)
+COPY --from=ui-builder /app/internal/scheduler/web/dist ./internal/scheduler/web/dist
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o /forge ./cmd/forge
 
@@ -50,7 +53,8 @@ RUN apk add --no-cache \
         python3
 
 COPY --from=builder /forge /forge
+COPY scripts/ /scripts/
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh /scripts/*.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

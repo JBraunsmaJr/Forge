@@ -1,5 +1,14 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   scheduler:
+    image: "${FORGE_IMAGE}"
+    command: ["scheduler"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -10,53 +19,99 @@ services:
       FORGE_ARTIFACT_DIR: /data/artifacts
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
+      FORGE_UI_DEV_URL: ""
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_started
+      vault:
+        condition: service_started
 
   agent:
+    image: "${FORGE_IMAGE}"
+    command: ["agent", "http://scheduler:8080"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
     environment:
       FORGE_API_TOKEN: it-admin-token-forge
       FORGE_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME}_forge"
+      FORGE_PROXY_AGENT_ID: "${FORGE_AGENT_ID}"
+      FORGE_PROXY_URL: http://proxy:9090
+      FORGE_SCHEDULER_URL: http://scheduler:8080
+    volumes:
+      - forge_sockets:/run/forge-sockets
+    depends_on:
+      scheduler:
+        condition: service_started
+      proxy:
+        condition: service_started
     deploy:
       replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
 
   postgres:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   vault:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   minio:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   proxy:
+    image: "${FORGE_IMAGE}"
+    command: ["proxy"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
+    environment:
+      FORGE_AGENT_ID: "${FORGE_AGENT_ID}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - forge_sockets:/run/forge-sockets
 
   minio-init:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   init:
+    image: "${FORGE_IMAGE}"
+    entrypoint: ["/bin/bash"]
+    command: ["/scripts/init.sh"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
-    profiles:
-      - disabled
+    environment:
+      FORGE_API_TOKEN: it-admin-token-forge
+      FORGE_VAULT_ADDR: http://vault:8200
+      FORGE_VAULT_TOKEN: forge-dev-token
+      SCHEDULER_URL: http://scheduler:8080
+    depends_on:
+      scheduler:
+        condition: service_started
 
   ui:
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
+    volumes: []
+    profiles:
+      - disabled
 
 volumes:
   postgres_data:
