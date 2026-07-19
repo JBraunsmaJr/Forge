@@ -58,11 +58,11 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test -v ./tests/integration/..
+      go test -v ./tests/integration/...
 
   - id: main-pipeline
     condition: branch(main)
     type: pipeline
     pipeline: .forge/main.yml
-    depends_on: [ unit-tests ]
+    depends_on: [ unit-tests, integration-tests ]
     artifacts_send: [ui-dist.tar.gz]
