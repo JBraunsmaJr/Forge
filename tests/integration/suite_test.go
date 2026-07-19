@@ -191,26 +191,28 @@ func dumpStatus(repoRoot string) {
 	cmd.Stdout = os.Stderr
 	cmd.Run()
 
-	fmt.Println("--- scheduler logs ---")
-	args = composeArgs("logs", "--tail", "50", "scheduler")
-	cmd = exec.Command("docker", args...)
-	cmd.Dir = repoRoot
-	cmd.Stdout = os.Stderr
-	cmd.Run()
+	dumpLogs := func(service string, tail int) {
+		fmt.Printf("--- %s logs ---\n", service)
+		args := composeArgs("logs", "--tail", fmt.Sprintf("%d", tail), service)
+		cmd := exec.Command("docker", args...)
+		cmd.Dir = repoRoot
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		if err := cmd.Run(); err != nil {
+			if strings.Contains(out.String(), "does not support reading") {
+				fmt.Printf("[dumpStatus] skipping %s logs: logging driver does not support reading\n", service)
+			} else {
+				fmt.Printf("[dumpStatus] failed to get %s logs: %v\n%s\n", service, err, out.String())
+			}
+			return
+		}
+		fmt.Println(out.String())
+	}
 
-	fmt.Println("--- proxy logs ---")
-	args = composeArgs("logs", "--tail", "50", "proxy")
-	cmd = exec.Command("docker", args...)
-	cmd.Dir = repoRoot
-	cmd.Stdout = os.Stderr
-	cmd.Run()
-
-	fmt.Println("--- agent logs ---")
-	args = composeArgs("logs", "--tail", "100", "agent")
-	cmd = exec.Command("docker", args...)
-	cmd.Dir = repoRoot
-	cmd.Stdout = os.Stderr
-	cmd.Run()
+	dumpLogs("scheduler", 50)
+	dumpLogs("proxy", 50)
+	dumpLogs("agent", 100)
 }
 
 func stopStack(repoRoot string) {
