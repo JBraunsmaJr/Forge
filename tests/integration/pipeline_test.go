@@ -119,7 +119,7 @@ func TestJobLogs(t *testing.T) {
 			ID:      "log-step",
 			Image:   "alpine:latest",
 			Run:     fmt.Sprintf("echo '%s'", marker),
-			Timeout: "1m",
+			Timeout: 1 * time.Minute,
 		},
 	})
 	status := waitForRun(t, adminClient, runID)
@@ -161,7 +161,7 @@ func TestCancelPipeline(t *testing.T) {
 			ID:      "long-sleep",
 			Image:   "alpine:latest",
 			Run:     "sleep 600",
-			Timeout: "20m",
+			Timeout: 20 * time.Minute,
 		},
 	})
 

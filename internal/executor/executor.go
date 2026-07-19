@@ -156,9 +156,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy the host's "workspace" directory into the container's root.
 		// Since the host directory is named "workspace", it will become "/workspace" in the container.
 		src := filepath.Clean(e.WorkspaceDir)
-		cpIn := exec.CommandContext(ctx, "docker", "cp", src+"/.", containerID+":/workspace")
-		if out, err := cpIn.CombinedOutput(); err != nil {
-			logger.Error(fmt.Sprintf("failed to copy workspace into container: %v: %s", err, string(out)), map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
+		if err := e.dockerCp(ctx, src+"/.", containerID+":/workspace"); err != nil {
+			logger.Error(fmt.Sprintf("failed to copy workspace into container: %v", err), map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
@@ -220,9 +219,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		// We copy "/workspace" from the container back to the host's job directory.
 		src := containerID + ":/workspace/."
 		dst := e.WorkspaceDir
-		cpOut := exec.CommandContext(ctx, "docker", "cp", src, dst)
-		if out, err := cpOut.CombinedOutput(); err != nil {
-			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v: %s", err, string(out)), map[string]any{"error": err.Error(), "src": src, "dst": dst})
+		if err := e.dockerCp(ctx, src, dst); err != nil {
+			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v", err), map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
 
 		// 5. Cleanup container
@@ -435,8 +433,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		containerID = strings.TrimSpace(string(out))
 
 		src := filepath.Clean(e.WorkspaceDir)
-		cpIn := exec.Command("docker", "cp", src+"/.", containerID+":/workspace")
-		if err := cpIn.Run(); err != nil {
+		if err := e.dockerCp(context.Background(), src+"/.", containerID+":/workspace"); err != nil {
 			exec.Command("docker", "rm", "-f", containerID).Run()
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
 		}
@@ -571,6 +568,25 @@ func Cleanup(agentID string) error {
 	}
 
 	return nil
+}
+
+func (e *Executor) dockerCp(ctx context.Context, src, dst string) error {
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		cmd := exec.CommandContext(ctx, "docker", "cp", src, dst)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			// Retry on transient errors (unexpected EOF, connection refused, etc.)
+			// or if it just feels like a flaky Docker daemon.
+			if i < 2 {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			return lastErr
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func isRunningInContainer() bool {
