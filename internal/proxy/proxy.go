@@ -88,7 +88,7 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 		resource, id := s.parsePath(r.URL.Path)
 
 		// Destructive or info-leaking actions on specific resources
-		if id != "" && id != "json" && id != "create" && id != "prune" {
+		if id != "" && id != "json" && id != "create" && id != "prune" && id != "df" && id != "info" {
 			labels, err := s.getResourceLabels(resource, id)
 			if err == nil {
 				if labels["forge.managed"] != "true" || labels["forge.agent_id"] != agentID {

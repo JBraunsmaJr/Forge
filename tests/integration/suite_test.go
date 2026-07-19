@@ -190,6 +190,20 @@ func dumpStatus(repoRoot string) {
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stderr
 	cmd.Run()
+
+	fmt.Println("--- proxy logs ---")
+	args = composeArgs("logs", "--tail", "50", "proxy")
+	cmd = exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stderr
+	cmd.Run()
+
+	fmt.Println("--- agent logs ---")
+	args = composeArgs("logs", "--tail", "100", "agent")
+	cmd = exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	cmd.Stdout = os.Stderr
+	cmd.Run()
 }
 
 func stopStack(repoRoot string) {

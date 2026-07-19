@@ -138,9 +138,9 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy {
 		// 1. Create container
 		args := e.buildDockerArgs(step, "", true)
-		out, err := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...).Output()
+		out, err := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...).CombinedOutput()
 		if err != nil {
-			logger.Error("failed to create container", map[string]any{"error": err.Error()})
+			logger.Error(fmt.Sprintf("failed to create container: %v: %s", err, string(out)), map[string]any{"error": err.Error()})
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
 				Step:     step,
@@ -221,8 +221,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		src := containerID + ":/workspace/."
 		dst := e.WorkspaceDir
 		cpOut := exec.CommandContext(ctx, "docker", "cp", src, dst)
-		if err := cpOut.Run(); err != nil {
-			logger.Error("failed to copy workspace out of container", map[string]any{"error": err.Error(), "src": src, "dst": dst})
+		if out, err := cpOut.CombinedOutput(); err != nil {
+			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v: %s", err, string(out)), map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
 
 		// 5. Cleanup container
@@ -506,13 +506,21 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	}, nil
 }
 
-// Cleanup removes all dangling Docker containers started by Forge.
-func Cleanup() error {
+// Cleanup removes dangling Docker containers started by Forge.
+// If agentID is provided, only containers for that agent are removed.
+// Otherwise, all Forge-managed temporary containers (jobs, policies) are removed.
+func Cleanup(agentID string) error {
 	// Find all containers with the forge.managed label.
-	// We use --format to get labels for filtering in Go.
-	out, err := exec.Command("docker", "ps", "-a", "--filter", "label=forge.managed=true", "--format", "{{.ID}}|{{.Labels}}").Output()
+	args := []string{"ps", "-a", "--filter", "label=forge.managed=true"}
+	if agentID != "" {
+		args = append(args, "--filter", "label=forge.agent_id="+agentID)
+	}
+	args = append(args, "--format", "{{.ID}}|{{.Labels}}")
+
+	cmd := exec.Command("docker", args...)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("listing forge containers: %w", err)
+		return fmt.Errorf("listing forge containers: %v: %s", err, string(out))
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -540,13 +548,14 @@ func Cleanup() error {
 			continue
 		}
 
-		// We only want to clean up temporary containers:
-		// - Job containers (have forge.run_id)
-		// - Policy transformers (have forge.policy=true)
-		// We EXCLUDE stack services like scheduler, agent, postgres, etc.
-		// These typically have com.docker.compose.project label, or just lack the run_id/policy label.
-		if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
-			continue
+		// If no agentID specified, we perform a broad cleanup but still restrict to
+		// temporary job/policy containers to avoid stopping the scheduler/agent themselves
+		// if they are running in the same Docker daemon (e.g. during dev).
+		if agentID == "" {
+			// We only want to clean up containers that have either a run_id or a policy label.
+			if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
+				continue
+			}
 		}
 
 		toRemove = append(toRemove, id)
@@ -556,16 +565,9 @@ func Cleanup() error {
 		return nil
 	}
 
-	fmt.Printf("Cleaning up %d dangling Forge containers...\n", len(toRemove))
-
-	// Stop them first (gracefully).
-	stopArgs := append([]string{"stop"}, toRemove...)
-	exec.Command("docker", stopArgs...).Run()
-
-	// Remove them.
-	rmArgs := append([]string{"rm", "-f"}, toRemove...)
-	if err := exec.Command("docker", rmArgs...).Run(); err != nil {
-		return fmt.Errorf("removing forge containers: %w", err)
+	for _, id := range toRemove {
+		exec.Command("docker", "stop", "-t", "2", id).Run()
+		exec.Command("docker", "rm", "-f", id).Run()
 	}
 
 	return nil

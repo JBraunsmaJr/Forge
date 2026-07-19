@@ -102,10 +102,6 @@ func runCommand() {
 	ref := currentGitRef()
 	commitSHA := currentGitCommit()
 
-	// Clean up any dangling containers from previous runs.
-	executor.Cleanup()
-	defer executor.Cleanup()
-
 	pipelinePath := ""
 	var secretFlags []string
 	var envFile string
@@ -199,7 +195,6 @@ func runCommand() {
 			}
 		case <-debounceTimer.C:
 			fmt.Printf("\n🔄 Change detected, re-running...\n")
-			executor.Cleanup()
 			// Re-detect ref/commit on change
 			ref = currentGitRef()
 			commitSHA = currentGitCommit()
