@@ -1,7 +1,14 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   scheduler:
     image: "${FORGE_IMAGE}"
     command: ["scheduler"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -24,6 +31,7 @@ services:
   agent:
     image: "${FORGE_IMAGE}"
     command: ["agent", "http://scheduler:8080"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -44,16 +52,19 @@ services:
       replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
 
   postgres:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   vault:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
 
   minio:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -61,6 +72,7 @@ services:
   proxy:
     image: "${FORGE_IMAGE}"
     command: ["proxy"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -71,6 +83,7 @@ services:
       - forge_sockets:/run/forge-sockets
 
   minio-init:
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
@@ -79,6 +92,7 @@ services:
     image: "${FORGE_IMAGE}"
     entrypoint: ["/bin/bash"]
     command: ["/scripts/init.sh"]
+    logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_AGENT_ID}"
