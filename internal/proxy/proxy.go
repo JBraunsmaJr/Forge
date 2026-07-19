@@ -78,7 +78,7 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 		path := resp.Request.URL.Path
 		resource, id := s.parsePath(path)
 
-		if resp.Request.Method == "GET" && resource == "containers" && (id == "json" || id == "") {
+		if resp.StatusCode == http.StatusOK && resp.Request.Method == "GET" && resource == "containers" && (id == "json" || id == "") {
 			return s.filterContainerList(agentID, resp)
 		}
 		return nil
@@ -232,6 +232,9 @@ func (s *ProxyServer) getNetworkLabels(id string) (map[string]string, error) {
 }
 
 func (s *ProxyServer) filterContainerList(agentID string, resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
