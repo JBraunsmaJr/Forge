@@ -58,7 +58,7 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test -v ./integration/..
+      go test -v ./tests/integration/..
 
   - id: main-pipeline
     condition: branch(main)
