@@ -87,8 +87,13 @@ type Agent struct {
 	maxDockerGB      float64
 	maxDockerPercent float64
 	pruneSchedule    string
-	activeJobs       sync.Map // map[string]context.CancelFunc
+	activeJobs       sync.Map // map[string]activeJobInfo
 	cleanupMu        sync.Mutex
+}
+
+type activeJobInfo struct {
+	Cancel context.CancelFunc
+	RunID  string
 }
 
 // New creates an agent that connects to schedulerURL.
@@ -221,10 +226,6 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to register: %w", err)
 	}
 
-	// Clean up any dangling containers from previous runs.
-	executor.Cleanup()
-	defer executor.Cleanup()
-
 	go a.debugLoop(ctx)
 	go a.pruneLoop(ctx)
 	go a.statusLoop(ctx)
@@ -276,9 +277,9 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		if ack := msg.GetHeartbeatAck(); ack != nil {
 			if ack.Stop {
-				if cancel, ok := a.activeJobs.Load(ack.JobId); ok {
+				if info, ok := a.activeJobs.Load(ack.JobId); ok {
 					fmt.Printf("[agent %s] stopping job %s as requested by scheduler\n", a.id[:8], ack.JobId[:8])
-					cancel.(context.CancelFunc)()
+					info.(activeJobInfo).Cancel()
 				}
 			}
 		}
@@ -344,7 +345,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				}()
 
 				jobCtx, cancel := context.WithCancel(ctx)
-				a.activeJobs.Store(s.JobID, cancel)
+				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID})
 				defer a.activeJobs.Delete(s.JobID)
 				defer cancel()
 
@@ -448,9 +449,10 @@ func getDiskUsagePercent(path string) float64 {
 }
 
 func (a *Agent) getDockerUsageGB() (float64, error) {
-	out, err := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}").Output()
+	cmd := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %s", err, string(out))
 	}
 
 	var total float64
@@ -588,7 +590,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	go a.heartbeatLoop(spec.JobID, spec.LeaseID, done)
 
 	// Ensure cleanup of any stray containers/networks/volumes created by this run
-	defer a.cleanupJobContainers(spec.RunID)
+	defer a.cleanupJobContainers(spec.RunID, spec.JobID)
 
 	/*
 		Runtime Condition Evaluation
@@ -2404,16 +2406,24 @@ func pipelineLog(level, msg string) []api.LogEvent {
 	return []api.LogEvent{{Timestamp: time.Now(), Level: level, Message: "[pipeline] " + msg}}
 }
 
-func (a *Agent) cleanupJobContainers(runID string) {
-	// Stop and remove all containers created by this run
+func (a *Agent) cleanupJobContainers(runID, jobID string) {
+	// Stop and remove all containers created by this job
 	out, _ := exec.Command("docker", "ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
+		"--filter", "label=forge.job_id="+jobID,
 		"--filter", "label=forge.agent_id="+a.proxyID,
 		"--filter", "label!=forge.debug=true").Output()
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
 		exec.Command("docker", "stop", "-t", "5", id).Run()
 		exec.Command("docker", "rm", "-f", id).Run()
+	}
+
+	// For networks and volumes, we only clean them up if this is the last active job
+	// for this RunID on this agent. This prevents Job A from breaking Job B which
+	// might be sharing the same network.
+	if a.countActiveJobsForRun(runID) > 1 {
+		return
 	}
 
 	// Remove networks created by this run
@@ -2433,6 +2443,18 @@ func (a *Agent) cleanupJobContainers(runID string) {
 	for _, id := range ids {
 		exec.Command("docker", "volume", "rm", id).Run()
 	}
+}
+
+func (a *Agent) countActiveJobsForRun(runID string) int {
+	count := 0
+	a.activeJobs.Range(func(key, value any) bool {
+		info := value.(activeJobInfo)
+		if info.RunID == runID {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
