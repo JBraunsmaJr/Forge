@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,9 +139,9 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy {
 		// 1. Create container
 		args := e.buildDockerArgs(step, "", true)
-		out, err := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...).CombinedOutput()
+		containerID, err = e.runDockerCreate(ctx, logger, args)
 		if err != nil {
-			logger.Error(fmt.Sprintf("failed to create container: %v: %s", err, string(out)), map[string]any{"error": err.Error()})
+			logger.Error(fmt.Sprintf("failed to create container: %v", err), map[string]any{"error": err.Error()})
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
 				Step:     step,
@@ -150,7 +151,6 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 				LogFile:  logPath,
 			}, nil
 		}
-		containerID = strings.TrimSpace(string(out))
 
 		// 2. Copy workspace IN
 		// We copy the host's "workspace" directory into the container's root.
@@ -426,11 +426,10 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	if e.UseCopy {
 		args := e.buildDockerArgs(step, "", true)
-		out, err := exec.Command("docker", append([]string{"create"}, args...)...).Output()
+		containerID, err = e.runDockerCreate(context.Background(), logger, args)
 		if err != nil {
 			return nil, fmt.Errorf("creating generator container: %w", err)
 		}
-		containerID = strings.TrimSpace(string(out))
 
 		src := filepath.Clean(e.WorkspaceDir)
 		if err := e.dockerCp(context.Background(), src+"/.", containerID+":/workspace"); err != nil {
@@ -592,4 +591,50 @@ func (e *Executor) dockerCp(ctx context.Context, src, dst string) error {
 func isRunningInContainer() bool {
 	_, err := os.Stat("/.dockerenv")
 	return err == nil
+}
+
+func parseContainerID(out []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	// The container ID is always the last line of output.
+	// If Docker pulled the image, there will be pull logs before it.
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func (e *Executor) runDockerCreate(ctx context.Context, logger *forgelog.Logger, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...)
+	var outBuf bytes.Buffer
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if logger != nil {
+				logger.Output(line)
+			}
+			outBuf.WriteString(line + "\n")
+		}
+		close(done)
+	}()
+
+	err := cmd.Wait()
+	pw.Close()
+	<-done
+
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(outBuf.String()))
+	}
+
+	return parseContainerID(outBuf.Bytes()), nil
 }

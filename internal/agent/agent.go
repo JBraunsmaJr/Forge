@@ -1335,12 +1335,11 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 
 	fmt.Printf("[agent %s] creating debug container for session %s with workdir %s\n",
 		a.id[:8], spec.SessionID[:8], workDir)
-	out, err := exec.CommandContext(ctx, "docker", args...).Output()
+	containerID, err := a.runDockerCreate(ctx, args)
 	if err != nil {
 		fmt.Printf("[agent %s] debug container failed to create: %v\n", a.id[:8], err)
 		return
 	}
-	containerID := strings.TrimSpace(string(out))
 	if containerID == "" {
 		return
 	}
@@ -2493,6 +2492,50 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 func isRunningInContainer() bool {
 	_, err := os.Stat("/.dockerenv")
 	return err == nil
+}
+
+func parseContainerID(out []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	// The container ID is always the last line of output.
+	// If Docker pulled the image, there will be pull logs before it.
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func (a *Agent) runDockerCreate(ctx context.Context, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var outBuf bytes.Buffer
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Printf("[agent %s] [docker] %s\n", a.id[:8], line)
+			outBuf.WriteString(line + "\n")
+		}
+		close(done)
+	}()
+
+	err := cmd.Wait()
+	pw.Close()
+	<-done
+
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(outBuf.String()))
+	}
+
+	return parseContainerID(outBuf.Bytes()), nil
 }
 
 func (a *Agent) dockerCp(ctx context.Context, src, dst string) error {
