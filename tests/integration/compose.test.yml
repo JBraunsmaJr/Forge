@@ -11,6 +11,7 @@ services:
       FORGE_ARTIFACT_DIR: /data/artifacts
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
+      FORGE_UI_DEV_URL: ""
 
   agent:
     image: "${FORGE_IMAGE}"

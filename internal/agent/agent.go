@@ -72,6 +72,7 @@ type Agent struct {
 	client       *http.Client
 	apiToken     string // FORGE_API_TOKEN — sent with every scheduler request
 	proxyURL     string // FORGE_PROXY_URL — management endpoint
+	proxyID      string // FORGE_PROXY_AGENT_ID — used for proxy registration and container labels
 	debugConts   sync.Map
 
 	// Concurrency control
@@ -99,6 +100,12 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 	if concurrency < 1 {
 		concurrency = 1
 	}
+
+	proxyID := id
+	if p := os.Getenv("FORGE_PROXY_AGENT_ID"); p != "" {
+		proxyID = p
+	}
+
 	return &Agent{
 		id:               id,
 		schedulerURL:     schedulerURL,
@@ -108,6 +115,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		vault:            vault,
 		apiToken:         apiToken,
 		proxyURL:         proxyURL,
+		proxyID:          proxyID,
 		client:           &http.Client{Timeout: 10 * time.Second},
 		maxDockerGB:      maxGB,
 		maxDockerPercent: maxPercent,
@@ -368,8 +376,8 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			fmt.Printf("[agent %s] running scheduled docker container prune...\n", a.id[:8])
-			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.id).Run()
-			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.id).Run()
+			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
 			// Also clean up any old workspace directories
 			a.cleanupWorkspaces()
 		}
@@ -1287,7 +1295,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		"--label", "forge.debug=true",
 		"--label", "forge.run_id=" + spec.RunID,
 		"--label", "forge.job_id=" + spec.JobID,
-		"--label", "forge.agent_id=" + a.id,
+		"--label", "forge.agent_id=" + a.proxyID,
 		"--workdir", workDir,
 	}
 	if net := os.Getenv("FORGE_DOCKER_NETWORK"); net != "" {
@@ -2400,7 +2408,7 @@ func (a *Agent) cleanupJobContainers(runID string) {
 	// Stop and remove all containers created by this run
 	out, _ := exec.Command("docker", "ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id,
+		"--filter", "label=forge.agent_id="+a.proxyID,
 		"--filter", "label!=forge.debug=true").Output()
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
@@ -2411,7 +2419,7 @@ func (a *Agent) cleanupJobContainers(runID string) {
 	// Remove networks created by this run
 	out, _ = exec.Command("docker", "network", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id).Output()
+		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
 		exec.Command("docker", "network", "rm", id).Run()
@@ -2420,7 +2428,7 @@ func (a *Agent) cleanupJobContainers(runID string) {
 	// Remove volumes created by this run
 	out, _ = exec.Command("docker", "volume", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
-		"--filter", "label=forge.agent_id="+a.id).Output()
+		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
 		exec.Command("docker", "volume", "rm", id).Run()
@@ -2428,7 +2436,7 @@ func (a *Agent) cleanupJobContainers(runID string) {
 }
 
 func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
-	body, _ := json.Marshal(map[string]string{"agent_id": a.id})
+	body, _ := json.Marshal(map[string]string{"agent_id": a.proxyID})
 	req, err := http.NewRequestWithContext(ctx, "POST", a.proxyURL+"/register", bytes.NewReader(body))
 	if err != nil {
 		return "", err
