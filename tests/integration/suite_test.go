@@ -16,13 +16,15 @@ import (
 	"time"
 )
 
-const (
+var (
 	schedulerURL = "http://localhost:8080"
 	adminToken   = "it-admin-token-forge"
 	vaultURL     = "http://localhost:8200"
 	vaultToken   = "forge-dev-token"
 	startTimeout = 5 * time.Minute
 	runTimeout   = 3 * time.Minute
+
+	adminClient *client
 )
 
 var composeFiles []string
@@ -62,6 +64,9 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Println("[integration] stack ready")
 
+	// Initialize the admin client after the stack is ready and ports are discovered.
+	adminClient = newClient(adminToken)
+
 	code := m.Run()
 
 	fmt.Println("[integration] tearing down stack...")
@@ -73,6 +78,14 @@ func startStack(repoRoot string) error {
 	fmt.Printf("[integration] FORGE_IMAGE: %s\n", os.Getenv("FORGE_IMAGE"))
 	fmt.Printf("[integration] FORGE_AGENT_ID: %s\n", os.Getenv("FORGE_AGENT_ID"))
 	fmt.Printf("[integration] FORGE_PROXY_AGENT_ID: %s\n", os.Getenv("FORGE_PROXY_AGENT_ID"))
+
+	// Use dynamic ports for all services to avoid collisions on shared hosts.
+	os.Setenv("FORGE_SCHEDULER_PORT", "0")
+	os.Setenv("FORGE_SCHEDULER_GRPC_PORT", "0")
+	os.Setenv("FORGE_VAULT_PORT", "0")
+	os.Setenv("FORGE_MINIO_PORT", "0")
+	os.Setenv("FORGE_MINIO_CONSOLE_PORT", "0")
+	os.Setenv("FORGE_UI_PORT", "0")
 
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
@@ -95,6 +108,21 @@ func startStack(repoRoot string) error {
 		dumpStatus(repoRoot)
 		return fmt.Errorf("docker compose up: %w", err)
 	}
+
+	// Discover mapped ports
+	sPort, err := getMappedPort(repoRoot, "scheduler", 8080)
+	if err != nil {
+		return fmt.Errorf("getting scheduler port: %w", err)
+	}
+	schedulerURL = "http://localhost:" + sPort
+	fmt.Printf("[integration] scheduler discovered at %s\n", schedulerURL)
+
+	vPort, err := getMappedPort(repoRoot, "vault", 8200)
+	if err != nil {
+		return fmt.Errorf("getting vault port: %w", err)
+	}
+	vaultURL = "http://localhost:" + vPort
+	fmt.Printf("[integration] vault discovered at %s\n", vaultURL)
 
 	fmt.Printf("[integration] waiting for scheduler at %s", schedulerURL)
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
@@ -124,6 +152,23 @@ func startStack(repoRoot string) error {
 			}
 		}
 	}
+}
+
+func getMappedPort(repoRoot, service string, port int) (string, error) {
+	args := composeArgs("port", service, fmt.Sprintf("%d", port))
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimSpace(string(out))
+	// Output format: 0.0.0.0:PORT or [::]:PORT
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("unexpected output from docker compose port: %q", s)
+	}
+	return parts[len(parts)-1], nil
 }
 
 func dumpStatus(repoRoot string) {

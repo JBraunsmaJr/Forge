@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-var adminClient = newClient(adminToken)
-
 func TestHealthCheck(t *testing.T) {
 	resp, err := http.Get(schedulerURL + "/")
 	if err != nil {
