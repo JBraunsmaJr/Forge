@@ -59,7 +59,7 @@ func TestMain(m *testing.M) {
 	fmt.Println("[integration] starting Forge stack...")
 	if err := startStack(repoRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "[integration] failed to start stack: %v\n", err)
-		stopStack(repoRoot)
+		dumpStatus(repoRoot)
 		os.Exit(1)
 	}
 	fmt.Println("[integration] stack ready")
