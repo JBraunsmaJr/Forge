@@ -13,4 +13,7 @@ steps:
 
   - id: verify-node
     image: node:26.5.0-alpine
-    run: npm test ./examples
+    workdir: ui
+    run: |
+      npm install
+      npm test ../examples
