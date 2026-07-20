@@ -68,6 +68,9 @@ func TestMain(m *testing.M) {
 	adminClient = newClient(adminToken)
 
 	code := m.Run()
+	if code != 0 {
+		dumpStatus(repoRoot)
+	}
 
 	fmt.Println("[integration] tearing down stack...")
 	stopStack(repoRoot)
