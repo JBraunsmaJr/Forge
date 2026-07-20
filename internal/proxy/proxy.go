@@ -112,6 +112,27 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 	})
 }
 
+func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/register" && r.Method == "POST" {
+		var req struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		socketPath, err := s.Register(req.AgentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"socket_path": socketPath})
+		return
+	}
+	http.NotFound(w, r)
+}
+
 func (s *ProxyServer) parsePath(path string) (resource, id string) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) > 0 && strings.HasPrefix(parts[0], "v") {
