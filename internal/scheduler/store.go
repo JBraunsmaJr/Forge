@@ -310,14 +310,14 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	json.Unmarshal([]byte(artifactUploadsJSON), &artifactUploads)
 	json.Unmarshal([]byte(artifactDownloadsJSON), &artifactDownloads)
 
-	// Fetch org_id, project_id and ref from the parent run for secret scoping and conditions.
-	var orgID, projectID, ref, commitSHA, repoURL string
+	// Fetch org_id, project_id, ref and pipeline name from the parent run for secret scoping and conditions.
+	var orgID, projectID, ref, commitSHA, repoURL, pipelineName string
 	s.db.QueryRow(`
-		SELECT COALESCE(r.org_id, ''), COALESCE(r.project_id, ''), COALESCE(r.ref, ''), COALESCE(r.commit_sha, ''), COALESCE(p.repo_url, '')
+		SELECT COALESCE(r.org_id, ''), COALESCE(r.project_id, ''), COALESCE(r.ref, ''), COALESCE(r.commit_sha, ''), COALESCE(p.repo_url, ''), r.name
 		FROM runs r
 		LEFT JOIN projects p ON r.project_id = p.id
 		WHERE r.id=$1`, runID).
-		Scan(&orgID, &projectID, &ref, &commitSHA, &repoURL)
+		Scan(&orgID, &projectID, &ref, &commitSHA, &repoURL, &pipelineName)
 
 	return &api.JobSpec{
 		JobID:             jobID,
@@ -342,6 +342,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		ProjectID:         projectID,
 		Ref:               ref,
 		CommitSHA:         commitSHA,
+		PipelineName:      pipelineName,
 		RepoURL:           repoURL,
 		PipelineRef:       pipelineRef,
 		Release:           releaseConfig,

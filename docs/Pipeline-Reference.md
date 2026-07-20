@@ -64,7 +64,7 @@ The `script:` field runs an external file from the workspace. The interpreter is
 - id: generate-matrix
   type: generator
   image: python:3.12-slim
-  script: scripts/ci/generate-matrix.py   # runs python3 /workspace/scripts/ci/generate-matrix.py
+  script: scripts/ci/generate_matrix.py   # runs python3 /workspace/scripts/ci/generate_matrix.py
 ```
 
 Paths are relative to the workspace root. The script runs inside the container with the workspace mounted at `/workspace`.
@@ -251,7 +251,7 @@ A standard step that runs a command in a Docker container.
 
 ```yaml
 - id: test
-  image: golang:1.24-alpine
+  image: golang:1.26-alpine
   run: go test ./... -race
 ```
 
@@ -263,7 +263,7 @@ A generator step runs code that **emits new step definitions** as a JSON array t
 - id: matrix-generator
   type: generator
   image: python:3.12-slim
-  script: scripts/ci/generate-matrix.py
+  script: scripts/ci/generate_matrix.py
 ```
 
 The script's stdout must be a valid JSON array of step definition objects. Stderr is captured as log output. Any subsequent step with `depends_on: [matrix-generator]` will wait for the generator AND all of its emitted children.
@@ -274,7 +274,7 @@ The script's stdout must be a valid JSON array of step definition objects. Stder
 [
   {
     "id": "build-linux-amd64",
-    "image": "golang:1.24-alpine",
+    "image": "golang:1.26-alpine",
     "depends_on": ["matrix-generator"],
     "env": {"GOOS": "linux", "GOARCH": "amd64"},
     "run": "go build -o dist/myapp-linux-amd64 ./cmd/myapp",
@@ -358,7 +358,7 @@ name: build-test-deploy
 steps:
   # Parallel: test and lint run simultaneously
   - id: test
-    image: golang:1.24-alpine
+    image: golang:1.26-alpine
     timeout: 10m
     run: go test ./... -race -coverprofile=coverage.out
 
@@ -369,7 +369,7 @@ steps:
 
   # Build waits for both test AND lint
   - id: build
-    image: golang:1.24-alpine
+    image: golang:1.26-alpine
     depends_on: [test, lint]
     timeout: 10m
     env:

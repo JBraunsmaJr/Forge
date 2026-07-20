@@ -37,10 +37,11 @@ type JobSpec struct {
 	Type    string         `json:"type"` // "task" | "generator"
 	// OrgID and ProjectID are used by the agent for scoped secret resolution.
 	// Secret lookup order: project → org → global → legacy.
-	OrgID     string `json:"org_id,omitempty"`
-	ProjectID string `json:"project_id,omitempty"`
-	Ref       string `json:"ref,omitempty"`
-	CommitSHA string `json:"commit_sha,omitempty"`
+	OrgID        string `json:"org_id,omitempty"`
+	ProjectID    string `json:"project_id,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	CommitSHA    string `json:"commit_sha,omitempty"`
+	PipelineName string `json:"pipeline_name,omitempty"`
 	// Condition is a step-level expression evaluated by the agent at runtime.
 	// Scheduler-level keywords (success()/failure()/always()/tag()/branch(...)) are handled by
 	// unlockDownstream; env-var expressions ($BRANCH == 'main') are handled here.
@@ -375,6 +376,18 @@ type TransformerInput struct {
 	WorkspaceDir   string    `json:"workspace_dir"`
 	OrgID          string    `json:"org_id"`
 	AppliedStepIDs []string  `json:"applied_step_ids,omitempty"`
+}
+
+// GeneratorInput is what the executor writes to a generator step's stdin.
+type GeneratorInput struct {
+	PipelineName string            `json:"pipeline_name"`
+	WorkspaceDir string            `json:"workspace_dir"`
+	OrgID        string            `json:"org_id,omitempty"`
+	ProjectID    string            `json:"project_id,omitempty"`
+	Ref          string            `json:"ref,omitempty"`
+	CommitSHA    string            `json:"commit_sha,omitempty"`
+	Env          map[string]string `json:"env"`
+	With         map[string]string `json:"with,omitempty"`
 }
 
 // ProjectInfo represents a source repo registered with Forge.
