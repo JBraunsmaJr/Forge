@@ -16,4 +16,4 @@ steps:
     workdir: /workspace/ui
     run: |
       npm install
-      npm test ../examples
+      npm test -- ../examples
