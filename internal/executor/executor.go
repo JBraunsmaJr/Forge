@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
@@ -42,6 +44,13 @@ type Executor struct {
 	// ProxyAgentID is used for the forge.agent_id label to satisfy the security proxy.
 	// If empty, AgentID is used.
 	ProxyAgentID string
+
+	// Run-level context for generators and policies
+	PipelineName string
+	OrgID        string
+	ProjectID    string
+	Ref          string
+	CommitSHA    string
 }
 
 // New creates an Executor. cas may be nil to disable caching.
@@ -421,11 +430,27 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
 	logger.Info("generator step starting", map[string]any{"image": step.Image})
 
+	// Prepare generator input for stdin
+	input := api.GeneratorInput{
+		PipelineName: e.PipelineName,
+		WorkspaceDir: e.WorkspaceDir,
+		OrgID:        e.OrgID,
+		ProjectID:    e.ProjectID,
+		Ref:          e.Ref,
+		CommitSHA:    e.CommitSHA,
+		Env:          step.Env,
+		With:         step.With,
+	}
+	inputJSON, _ := json.Marshal(input)
+
 	var cmdGen *exec.Cmd
 	var containerID string
 
 	if e.UseCopy {
 		args := e.buildDockerArgs(step, "", true)
+		// Add --interactive so we can pipe stdin to the container
+		args = append([]string{"--interactive"}, args...)
+
 		containerID, err = dockerutil.RunDockerCreate(context.Background(), logger.Output, args)
 		if err != nil {
 			return nil, fmt.Errorf("creating generator container: %w", err)
@@ -437,11 +462,13 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
 		}
 
-		cmdGen = exec.Command("docker", "start", "-a", containerID)
+		cmdGen = exec.Command("docker", "start", "-a", "-i", containerID)
 	} else {
 		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
-		cmdGen = exec.Command("docker", append([]string{"run", "--rm"}, args...)...)
+		cmdGen = exec.Command("docker", append([]string{"run", "--rm", "-i", "-a", "stdin", "-a", "stdout", "-a", "stderr"}, args...)...)
 	}
+
+	cmdGen.Stdin = bytes.NewReader(inputJSON)
 
 	// Capture stdout (the generated step JSON) into a buffer.
 	// Stream stderr to the logger so errors are visible.

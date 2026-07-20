@@ -695,6 +695,11 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 	exec.UseCopy = true
 	exec.DisableCacheStore = true
+	exec.PipelineName = spec.PipelineName
+	exec.OrgID = spec.OrgID
+	exec.ProjectID = spec.ProjectID
+	exec.Ref = spec.Ref
+	exec.CommitSHA = spec.CommitSHA
 
 	// Convert API Spec -> pipeline.Step
 	step := &pipeline.Step{

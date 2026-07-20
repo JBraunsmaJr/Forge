@@ -2,6 +2,10 @@ name: Forge-Testing
 
 steps:
 
+  - id: verify-examples
+    type: pipeline
+    pipeline: .forge/examples.yml
+
   - id: build-ui
     name: Build UI
     image: node:22-alpine
@@ -58,7 +62,7 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test -v ./tests/integration/...
+      go test -v ./tests/integration/...    
 
   - id: main-pipeline
     condition: branch(main)

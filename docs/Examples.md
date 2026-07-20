@@ -9,7 +9,7 @@ All examples are in `examples/.forge/`. The CI scripts they reference are in `ex
 ## Example 1: Dynamic Matrix Build
 
 **File:** `examples/.forge/dynamic-matrix.yml`  
-**Script:** `examples/scripts/ci/generate-matrix.py`
+**Script:** `examples/scripts/ci/generate_matrix.py`
 
 ### What it does
 
@@ -36,14 +36,17 @@ In Forge, the generator script reads `platforms.json` at runtime:
 - id: matrix-generator
   type: generator
   image: python:3.12-slim
-  script: examples/scripts/ci/generate-matrix.py
+  script: examples/scripts/ci/generate_matrix.py
 ```
 
 Add a new platform to `platforms.json` → pipeline adapts. Set `SKIP_WINDOWS=1` → Windows builds are skipped for that run. Neither requires editing YAML.
 
+!!! tip "Testing your CI logic"
+    Notice how `generate_matrix.py` is structured as a module? This makes it easy to unit test. See [Testing CI Logic](Testing-CI-Logic.md) for conventions and examples in other languages.
+
 ### The generator script
 
-`generate-matrix.py` reads `platforms.json` (or uses defaults), then emits one build step + one test step per platform:
+`generate_matrix.py` reads `platforms.json` (or uses defaults), then emits one build step + one test step per platform:
 
 ```python
 def steps_for_platform(p: dict) -> list[dict]:
@@ -65,11 +68,11 @@ The fan-in point — `depends_on: [matrix-generator]` on the release step — me
 
 ```json
 [
-  {"os": "linux",   "arch": "amd64",  "image": "golang:1.24-alpine"},
-  {"os": "linux",   "arch": "arm64",  "image": "golang:1.24-alpine"},
-  {"os": "windows", "arch": "amd64",  "image": "golang:1.24-alpine"},
-  {"os": "darwin",  "arch": "amd64",  "image": "golang:1.24-alpine"},
-  {"os": "darwin",  "arch": "arm64",  "image": "golang:1.24-alpine"}
+  {"os": "linux",   "arch": "amd64",  "image": "golang:1.26-alpine"},
+  {"os": "linux",   "arch": "arm64",  "image": "golang:1.26-alpine"},
+  {"os": "windows", "arch": "amd64",  "image": "golang:1.26-alpine"},
+  {"os": "darwin",  "arch": "amd64",  "image": "golang:1.26-alpine"},
+  {"os": "darwin",  "arch": "arm64",  "image": "golang:1.26-alpine"}
 ]
 ```
 
@@ -114,7 +117,7 @@ Demonstrates how to extract common step definitions into reusable template files
 
 **templates/go-build.yml:**
 ```yaml
-image: golang:1.24-alpine
+image: golang:1.26-alpine
 env:
   CGO_ENABLED: "0"
 run: go build -o dist/${{ env.BINARY_NAME }} ./cmd/${{ env.BINARY_NAME }}
@@ -143,7 +146,7 @@ Templates reduce duplication and ensure consistency across multiple projects. If
 ## Example 4: Monorepo Smart CI
 
 **File:** `examples/.forge/monorepo-smart-ci.yml`  
-**Script:** `examples/scripts/ci/detect-changes.py`
+**Script:** `examples/scripts/ci/detect_changes.py`
 
 ### What it does
 
@@ -162,7 +165,7 @@ Forge approach — one generator step, one script:
 - id: change-detector
   type: generator
   image: python:3.12-slim
-  script: examples/scripts/ci/detect-changes.py
+  script: examples/scripts/ci/detect_changes.py
   env:
     REGISTRY: registry.example.com
     BASE_REF: "${BASE_REF:-HEAD~1}"
@@ -273,7 +276,7 @@ This pattern requires:
 ## Example 6: Cross-Team Library Release
 
 **File:** `examples/.forge/library-release.yml`  
-**Script:** `examples/scripts/ci/discover-consumers.py`
+**Script:** `examples/scripts/ci/discover_consumers.py`
 
 ### What it does
 
@@ -298,7 +301,7 @@ In Forge, Team A's pipeline owns the whole flow:
 - id: discover-consumers
   type: generator
   image: python:3.12-slim
-  script: examples/scripts/ci/discover-consumers.py
+  script: examples/scripts/ci/discover_consumers.py
 
 - id: publish
   depends_on: [discover-consumers]   # waits for ALL consumer tests
@@ -306,7 +309,7 @@ In Forge, Team A's pipeline owns the whole flow:
 
 ### The consumer registry
 
-`discover-consumers.py` reads `.forge/consumer-registry.json`:
+`discover_consumers.py` reads `.forge/consumer-registry.json`:
 
 ```json
 [
@@ -405,7 +408,7 @@ $env:FORGE_ORG       = '<org-id>'
 
 Generator scripts follow a simple protocol:
 
-1. **stdin:** nothing (the workspace is mounted at `/workspace`)
+1. **stdin:** A JSON object containing the current run context (`pipeline_name`, `ref`, `env`, etc.)
 2. **stdout:** a JSON array of step definition objects
 3. **stderr:** log output — captured and shown in the Web UI
 4. **exit code:** non-zero = generator step failed, no child steps are created

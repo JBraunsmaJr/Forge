@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-detect-changes.py — Monorepo change detector for Forge CI.
+detect_changes.py — Monorepo change detector for Forge CI.
 
 Reads the git diff between the current commit and a base ref, identifies which
 services under services/ have changed, and emits a Forge step list as JSON.
@@ -32,11 +32,11 @@ BASE_REF = os.environ.get("BASE_REF", "HEAD~1")
 SERVICES_DIR = "/workspace/services"
 
 
-def git_changed_paths(base: str) -> list[str]:
+def git_changed_paths(base: str, cwd: str = "/workspace") -> list[str]:
     """Return the list of paths changed between base and HEAD."""
     result = subprocess.run(
         ["git", "diff", "--name-only", base, "HEAD"],
-        capture_output=True, text=True, cwd="/workspace"
+        capture_output=True, text=True, cwd=cwd
     )
     if result.returncode != 0:
         # If git diff fails (e.g. shallow clone), rebuild everything.
@@ -45,19 +45,19 @@ def git_changed_paths(base: str) -> list[str]:
     return result.stdout.strip().splitlines()
 
 
-def discover_services() -> list[str]:
+def discover_services(services_dir: str) -> list[str]:
     """Find all service directories in the workspace."""
-    if not os.path.isdir(SERVICES_DIR):
+    if not os.path.isdir(services_dir):
         return []
     return [
-        d for d in os.listdir(SERVICES_DIR)
-        if os.path.isdir(os.path.join(SERVICES_DIR, d))
+        d for d in os.listdir(services_dir)
+        if os.path.isdir(os.path.join(services_dir, d))
     ]
 
 
-def build_steps_for_service(svc: str) -> list[dict]:
+def build_steps_for_service(svc: str, registry: str, git_sha: str) -> list[dict]:
     """Return the four CI steps for a single service."""
-    image_ref = f"{REGISTRY}/{svc}:{GIT_SHA}"
+    image_ref = f"{registry}/{svc}:{git_sha}"
     return [
         {
             "id":    f"lint-{svc}",
@@ -69,7 +69,7 @@ def build_steps_for_service(svc: str) -> list[dict]:
         },
         {
             "id":    f"test-{svc}",
-            "image": "golang:1.24-alpine",
+            "image": "golang:1.26-alpine",
             "workdir": f"/workspace/services/{svc}",
             "depends_on": ["change-detector"],
             "timeout": "10m",
@@ -95,25 +95,43 @@ def build_steps_for_service(svc: str) -> list[dict]:
     ]
 
 
+def detect_affected_services(all_services: list[str], changed_paths: list[str]) -> list[str]:
+    """Pure logic: determine which services are affected by changes."""
+    # If shared/ changed, treat every service as affected.
+    shared_changed = any(p.startswith("shared/") for p in changed_paths)
+    if shared_changed:
+        return all_services
+    
+    return [
+        svc for svc in all_services
+        if any(p.startswith(f"services/{svc}/") for p in changed_paths)
+    ]
+
+
 def main():
-    all_services = discover_services()
+    # 1. Collect inputs (stdin, env and git)
+    try:
+        if not sys.stdin.isatty():
+            input_data = json.load(sys.stdin)
+            print(f"[info] Read generator context from stdin (ref: {input_data.get('ref')})", file=sys.stderr)
+        else:
+            input_data = {}
+    except Exception:
+        input_data = {}
+
+    all_services = discover_services(SERVICES_DIR)
     if not all_services:
         print("[]")
         return
 
-    changed_paths = git_changed_paths(BASE_REF)
+    # Use ref from stdin if available, else fallback to BASE_REF env.
+    base_ref = input_data.get("ref") or BASE_REF
+    changed_paths = git_changed_paths(base_ref)
 
-    # If shared/ changed, treat every service as affected.
-    shared_changed = any(p.startswith("shared/") for p in changed_paths)
-    if shared_changed:
-        print(f"[info] shared/ changed — rebuilding all {len(all_services)} services", file=sys.stderr)
-        affected = all_services
-    else:
-        affected = [
-            svc for svc in all_services
-            if any(p.startswith(f"services/{svc}/") for p in changed_paths)
-        ]
+    # 2. Run core logic
+    affected = detect_affected_services(all_services, changed_paths)
 
+    # 3. Handle output
     if not affected:
         print("[info] No services changed — nothing to build", file=sys.stderr)
         print("[]")
@@ -121,9 +139,13 @@ def main():
 
     print(f"[info] Affected services: {', '.join(affected)}", file=sys.stderr)
 
+    # Use registry/sha from stdin if available.
+    registry = input_data.get("env", {}).get("REGISTRY") or REGISTRY
+    git_sha = input_data.get("commit_sha") or GIT_SHA
+
     steps = []
     for svc in affected:
-        steps.extend(build_steps_for_service(svc))
+        steps.extend(build_steps_for_service(svc, registry, git_sha))
 
     print(json.dumps(steps, indent=2))
 
