@@ -189,7 +189,8 @@ func runProxy(cmd *cobra.Command, args []string) {
 	p := proxy.NewProxyServer(dockerSocket, socketDir)
 	defer p.Shutdown()
 
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	fmt.Printf("✓ Docker proxy management server starting on :%s\n", port)
+	if err := http.ListenAndServe(":"+port, p); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ proxy server: %v\n", err)
 		os.Exit(1)
 	}
