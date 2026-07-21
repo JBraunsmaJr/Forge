@@ -139,5 +139,6 @@
     .status-failed { background: #ef4444; }
     .status-timed_out { background: #ef4444; }
     .status-running { background: #3b82f6; }
+    .status-waiting { background: #3b82f6; border: 1px dashed rgba(255,255,255,0.5); }
     .status-queued { background: #6b7280; }
 </style>

@@ -18,6 +18,7 @@ const (
 	JobStatusSkipped  JobStatus = "skipped"   // condition evaluated to false or cache hit
 	JobStatusCanceled JobStatus = "canceled"  // canceled before it ran
 	JobStatusRelease  JobStatus = "release"   // queued for SCM release (handled by scheduler)
+	JobStatusWaiting  JobStatus = "waiting"   // waiting for child run, slot released
 )
 
 // JobSpec is what the scheduler sends to an agent when it leases a job.

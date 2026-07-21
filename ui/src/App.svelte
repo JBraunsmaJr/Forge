@@ -53,7 +53,7 @@
             
             // Auto-open log streaming for running jobs
             for (const job of (updated.jobs || [])) {
-                if (job.status === 'running') {
+                if (job.status === 'running' || job.status === 'waiting') {
                     if (!$selectedJob || $selectedJob.job_id === job.job_id) {
                         selectedJob.set(job);
                     }
