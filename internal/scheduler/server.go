@@ -1749,11 +1749,20 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"run_id": runID})
 }
 
-// handleAppendJobLogs receives a batch of log events from the agent and
-// broadcasts to any browser matching this job's log stream.
-// We do NOT write to the database here - Complete() already stores the full canonical log
-// set when the job finishes. Writing here AND in Complete was
-// causing each event to appear twice in GetJobLogs.
+// handleAppendJobLogs receives a batch of log events from the agent,
+// persists them, and broadcasts to any browser following this job's log
+// stream.
+//
+// Logs are intentionally written twice over the job's lifetime:
+//   - here, incrementally, so viewers connecting mid-run get catch-up from
+//     the DB and logs survive an agent crash; and
+//   - in Complete(), which DELETEs and re-inserts the canonical set read
+//     from the log file (streaming is fire-and-forget over gRPC, so this
+//     is the delivery guarantee).
+//
+// The final stored state is therefore never duplicated. The one remaining
+// overlap — an SSE client receiving an event both from DB catch-up and from
+// the broker buffer — is deduplicated in handleJobLogStream.
 func (s *Server) handleAppendJobLogs(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("id")
 
@@ -1798,16 +1807,27 @@ func (s *Server) handleJobLogStream(w http.ResponseWriter, r *http.Request) {
 
 	/*
 		Subscribe first, THEN send existing logs.
-		This order pevents a race condition where a new event arrives between
-		"fetch existing" and "subscribe" and get silently dropped.
+		This order prevents a race condition where a new event arrives between
+		"fetch existing" and "subscribe" and gets silently dropped.
+
+		The flip side of that ordering: any batch persisted between Subscribe
+		and GetJobLogs is delivered twice — once from the DB catch-up and once
+		from the broker buffer. We track the newest timestamp sent during
+		catch-up and skip buffered events at or before it. Timestamps come
+		from a single agent per job with nanosecond precision and arrive in
+		order, so this boundary is safe.
 	*/
 	ch := s.broker.Subscribe("log:" + jobID)
 	defer s.broker.Unsubscribe("log:"+jobID, ch)
 
+	var lastSent time.Time
 	if logs, ok := s.store.GetJobLogs(jobID); ok {
 		for i, e := range logs {
 			data, _ := json.Marshal(e)
 			fmt.Fprintf(w, "data: %s\n\n", data)
+			if e.Timestamp.After(lastSent) {
+				lastSent = e.Timestamp
+			}
 			if (i+1)%100 == 0 {
 				flusher.Flush()
 			}
@@ -1815,12 +1835,21 @@ func (s *Server) handleJobLogStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Stream new events as they arrive from the agent.
+	// Stream new events as they arrive from the agent, dropping any that the
+	// catch-up above already delivered.
+	caughtUp := lastSent.IsZero()
 	for {
 		select {
 		case event, open := <-ch:
 			if !open {
 				return
+			}
+			if !caughtUp {
+				var e api.LogEvent
+				if err := json.Unmarshal([]byte(event), &e); err == nil && !e.Timestamp.After(lastSent) {
+					continue // already sent during catch-up
+				}
+				caughtUp = true // events arrive in order; stop inspecting
 			}
 			fmt.Fprintf(w, "data: %s\n\n", event)
 			flusher.Flush()
