@@ -151,6 +151,7 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS ref TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS commit_sha TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS scm_provider TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_job_id TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS preferred_agent_id TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS applied_step_ids JSONB NOT NULL DEFAULT '[]';
 
@@ -241,6 +242,8 @@ CREATE TABLE IF NOT EXISTS test_shard_assignments (
 
 CREATE INDEX IF NOT EXISTS test_shard_run_idx
     ON test_shard_assignments(run_id, step_id, shard_index);
+
+CREATE UNIQUE INDEX IF NOT EXISTS runs_parent_job_idx ON runs(parent_job_id) WHERE parent_job_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS jobs_run_id_idx ON jobs(run_id);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);

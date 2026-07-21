@@ -87,6 +87,9 @@ type SubmitRunRequest struct {
 	PreferredAgentID string `json:"preferred_agent_id,omitempty"`
 	// AppliedStepIDs is a list of step IDs already present in the parent run.
 	AppliedStepIDs []string `json:"applied_step_ids,omitempty"`
+	// ParentRunID and ParentJobID are used to ensure idempotency for child pipelines.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	ParentJobID string `json:"parent_job_id,omitempty"`
 }
 
 // StepDef carries a step's definition inside a SubmitRunRequest.
@@ -218,6 +221,7 @@ type RunDetail struct {
 	CommitSHA        string                             `json:"commit_sha,omitempty"`
 	SCMProvider      string                             `json:"scm_provider,omitempty"`
 	ShardAssignments map[string][]ShardAssignmentDetail `json:"shard_assignments,omitempty"`
+	ParentRunID      string                             `json:"parent_run_id,omitempty"`
 }
 
 type ShardAssignmentDetail struct {
@@ -239,6 +243,7 @@ type JobDetail struct {
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	ExitCode     int        `json:"exit_code"`
 	PolicySource string     `json:"policy_source,omitempty"`
+	ChildRunID   string     `json:"child_run_id,omitempty"`
 }
 
 // CreateDebugRequest asks the scheduler to start a debug session for a job.
