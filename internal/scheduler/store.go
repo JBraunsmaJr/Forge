@@ -22,14 +22,14 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID, steps, appliedStepIDs, parentRunID, parentJobID)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string, artifactsSend []string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID, steps, appliedStepIDs, parentRunID, parentJobID, artifactsSend)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string, artifactsSend []string) (string, error) {
 
 	stepIDsJSON, _ := json.Marshal(appliedStepIDs)
 
@@ -124,7 +124,7 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 		if parentRunID != "" && status == string(api.JobStatusPassed) {
 			_, err = tx.Exec(`
 				INSERT INTO artifacts (id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, confirmed, created_at)
-				SELECT md5(random()::text || clock_timestamp()::text), $1, 'rerun-skipped', name, filename, size_bytes, content_type, storage_key, true, created_at
+				SELECT md5(random()::text || clock_timestamp()::text), $1, NULL, name, filename, size_bytes, content_type, storage_key, true, created_at
 				FROM artifacts
 				WHERE run_id = $2 AND job_id IN (
 					SELECT id FROM jobs WHERE run_id = $2 AND step_id = $3
@@ -132,6 +132,22 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 			`, runID, parentRunID, step.ID)
 			if err != nil {
 				fmt.Printf("[store] failed to copy artifacts for rerun step %s: %v\n", step.ID, err)
+			}
+		}
+	}
+
+	// Bridge requested artifacts from parent run (ArtifactsSend)
+	if parentRunID != "" && len(artifactsSend) > 0 {
+		for _, name := range artifactsSend {
+			_, err = tx.Exec(`
+				INSERT INTO artifacts (id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, confirmed, created_at)
+				SELECT md5(random()::text || clock_timestamp()::text), $1, NULL, name, filename, size_bytes, content_type, storage_key, true, created_at
+				FROM artifacts
+				WHERE run_id = $2 AND name = $3 AND confirmed = true
+				ORDER BY created_at DESC LIMIT 1
+			`, runID, parentRunID, name)
+			if err != nil {
+				fmt.Printf("[store] failed to bridge artifact %s from parent run %s: %v\n", name, parentRunID, err)
 			}
 		}
 	}

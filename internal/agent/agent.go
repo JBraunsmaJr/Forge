@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -697,6 +696,9 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	if spec.Type == "pipeline" {
 		return a.executePipelineStep(ctx, spec, jobWorkspace, jobBaseDir)
 	}
+
+	// Inject forge binary into the workspace so the job can use it (e.g. forge report)
+	a.injectForgeBinary(jobWorkspace)
 
 	jobLogDir := filepath.Join(a.logDir, spec.JobID)
 	defer os.RemoveAll(jobLogDir)
@@ -2029,7 +2031,7 @@ func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) []string
 			if name == "" {
 				name = filepath.Base(filePath)
 			}
-			if err := a.uploadArtifact(spec.RunID, spec.JobID, name, filePath); err != nil {
+			if err := a.uploadArtifact(spec.RunID, spec.JobID, name, filePath, ""); err != nil {
 				fmt.Printf("[agent %s] artifact upload %q failed: %v\n", a.id[:8], name, err)
 			} else {
 				fmt.Printf("[agent %s] uploaded artifact %q → %s\n", a.id[:8], name, filePath)
@@ -2076,7 +2078,7 @@ func (a *Agent) listArtifacts(runId string) ([]api.ArtifactMeta, error) {
 	return list, nil
 }
 
-func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
+func (a *Agent) uploadArtifact(runId, jobId, name, filePath, filename string) error {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -2095,12 +2097,16 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 		contentType = "application/octet-stream"
 	}
 
+	if filename == "" {
+		filename = filepath.Base(filePath)
+	}
+
 	// Step 1: Get presigned URL
 	body, _ := json.Marshal(api.PresignUploadRequest{
 		RunID:       runId,
 		JobID:       jobId,
 		Name:        name,
-		Filename:    filepath.Base(filePath),
+		Filename:    filename,
 		ContentType: contentType,
 	})
 
@@ -2302,70 +2308,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("compiled child pipeline %q (%d steps)", childPipeline.Name, len(childPipeline.Steps)))...)
 
-	steps := make([]api.StepDef, 0, len(childPipeline.Steps))
-	for _, s := range childPipeline.Steps {
-		env := make(map[string]string, len(s.Env)+len(ref.Variables))
-		maps.Copy(env, s.Env)
-
-		// Variables override the step's own env vars.
-		maps.Copy(env, ref.Variables)
-		var uploads []api.ArtifactUploadSpec
-		for _, u := range s.ArtifactUploads {
-			uploads = append(uploads, api.ArtifactUploadSpec{
-				Path: u.Path,
-				Name: u.Name,
-			})
-		}
-		var downloads []api.ArtifactDownloadSpec
-		for _, d := range s.ArtifactDownloads {
-			downloads = append(downloads, api.ArtifactDownloadSpec{
-				Name: d.Name,
-				Dest: d.Dest,
-			})
-		}
-
-		var pipelineRef *api.PipelineRef
-		if s.PipelineRef != nil {
-			pipelineRef = &api.PipelineRef{
-				Path:             s.PipelineRef.Path,
-				Wait:             s.PipelineRef.Wait,
-				Variables:        s.PipelineRef.Variables,
-				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
-				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
-			}
-		}
-
-		var release *api.ReleaseConfig
-		if s.Release != nil {
-			release = &api.ReleaseConfig{
-				Name:      s.Release.Name,
-				Tag:       s.Release.Tag,
-				Body:      s.Release.Body,
-				Artifacts: s.Release.Artifacts,
-			}
-		}
-
-		steps = append(steps, api.StepDef{
-			ID:                s.ID,
-			Image:             s.Image,
-			Entrypoint:        s.Entrypoint,
-			Command:           s.Command,
-			WorkDir:           s.WorkDir,
-			Env:               env,
-			DependsOn:         s.DependsOn,
-			Inputs:            s.Inputs,
-			Timeout:           s.Timeout,
-			SecretNames:       s.Secrets,
-			DockerSocket:      s.DockerSocket,
-			Condition:         s.Condition,
-			AlwaysRun:         s.AlwaysRun,
-			Type:              s.Type,
-			ArtifactUploads:   uploads,
-			ArtifactDownloads: downloads,
-			PipelineRef:       pipelineRef,
-			Release:           release,
-		})
-	}
+	steps := childPipeline.ToAPISteps(ref.Variables)
 
 	// Submit the child run.
 	childRunName := fmt.Sprintf("%s → %s", spec.StepID, childPipeline.Name)
@@ -2381,6 +2324,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		AppliedStepIDs:   spec.AppliedStepIDs,
 		ParentRunID:      spec.RunID,
 		ParentJobID:      spec.JobID,
+		ArtifactsSend:    ref.ArtifactsSend,
 	})
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -2494,12 +2438,13 @@ func (a *Agent) bridgeArtifact(ctx context.Context, srcRunID, dstRunID, dstJobID
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if err := a.downloadFile(meta.DownloadURL, tmp.Name()); err != nil {
+	downloadURL := a.rebaseURL(meta.DownloadURL)
+	if err := a.downloadFile(downloadURL, tmp.Name()); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
 
-	// Re-upload into the parent run under the same logical name.
-	return a.uploadArtifact(dstRunID, dstJobID, name, tmp.Name())
+	// Re-upload into the parent run under the same logical name and filename.
+	return a.uploadArtifact(dstRunID, dstJobID, name, tmp.Name(), meta.Filename)
 }
 
 func pipelineLog(level, msg string) []api.LogEvent {
@@ -2582,4 +2527,60 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 	}
 
 	return res.SocketPath, nil
+}
+
+func (a *Agent) injectForgeBinary(workspace string) {
+	binDir := filepath.Join(workspace, ".forge", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return
+	}
+
+	target := filepath.Join(binDir, "forge")
+	if _, err := os.Stat(target); err == nil {
+		return // already injected
+	}
+
+	if runtime.GOOS == "linux" {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+
+		src, err := os.Open(exe)
+		if err != nil {
+			return
+		}
+		defer src.Close()
+
+		dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		if err != nil {
+			return
+		}
+		defer dst.Close()
+
+		io.Copy(dst, src)
+		os.Chmod(target, 0755)
+	} else {
+		// Try to get Linux binary from docker
+		image := os.Getenv("FORGE_IMAGE")
+		if image == "" {
+			image = "ghcr.io/jbraunsmajr/forge/forge:latest"
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		// Use dockerutil to extract /forge
+		// Note: we don't log to the agent log here to keep it quiet, but maybe we should?
+		containerID, err := dockerutil.RunDockerCreate(ctx, nil, []string{image, "true"})
+		if err != nil {
+			return
+		}
+		defer dockerutil.DockerStopAndRm(ctx, containerID)
+
+		if err := dockerutil.DockerCp(ctx, containerID+":/forge", target); err != nil {
+			return
+		}
+		os.Chmod(target, 0755)
+	}
 }

@@ -36,8 +36,42 @@ steps:
 	if step.DockerSocket {
 		t.Errorf("expected DockerSocket to be false, got true")
 	}
-	// Note: currently run will probably contain the comment if it's not a literal block
-	// We should decide if that's acceptable.
+}
+
+func TestYAMLToJSON_Integers(t *testing.T) {
+	yaml := `
+name: test-split
+steps:
+  - id: step1
+    image: alpine
+    split:
+      shards: 3
+      history_days: 14
+`
+	jsonData, err := yamlToJSON([]byte(yaml))
+	if err != nil {
+		t.Fatalf("yamlToJSON failed: %v", err)
+	}
+
+	var pipe jsonPipeline
+	if err := json.Unmarshal(jsonData, &pipe); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v. JSON: %s", err, string(jsonData))
+	}
+
+	if len(pipe.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(pipe.Steps))
+	}
+
+	step := pipe.Steps[0]
+	if step.Split == nil {
+		t.Fatal("expected Split to be not nil")
+	}
+	if step.Split.Shards != 3 {
+		t.Errorf("expected shards 3, got %d", step.Split.Shards)
+	}
+	if step.Split.HistoryDays != 14 {
+		t.Errorf("expected history_days 14, got %d", step.Split.HistoryDays)
+	}
 }
 
 func TestParseScalar_Comments(t *testing.T) {
@@ -50,7 +84,8 @@ func TestParseScalar_Comments(t *testing.T) {
 		{"false # comment", false},
 		{"yes # comment", true},
 		{"no # comment", false},
-		{"123 # comment", "123"}, // it stays string for now as per current impl
+		{"123 # comment", 123},
+		{"12.34 # comment", 12.34},
 		{"\"quoted # string\"", "quoted # string"},
 		{"'single # quoted'", "single # quoted"},
 		{"[a, b] # comment", []any{"a", "b"}},

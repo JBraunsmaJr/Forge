@@ -90,6 +90,10 @@ type SubmitRunRequest struct {
 	// ParentRunID and ParentJobID are used to ensure idempotency for child pipelines.
 	ParentRunID string `json:"parent_run_id,omitempty"`
 	ParentJobID string `json:"parent_job_id,omitempty"`
+
+	// ArtifactsSend names artifacts from the PARENT run to make available
+	// in the child run.
+	ArtifactsSend []string `json:"artifacts_send,omitempty"`
 }
 
 // StepDef carries a step's definition inside a SubmitRunRequest.
