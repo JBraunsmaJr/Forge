@@ -13,7 +13,7 @@
         timed_out: { fill: '#2d0a0a', stroke: '#ef4444', text: '#f87171', sub: '#7f1d1d' },
         approval: { fill: '#2d1a0a', stroke: '#f59e0b', text: '#fbbf24', sub: '#78350f' },
         running:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
-        waiting:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
+        waiting:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#71717a' },
         queued:   { fill: '#161b22', stroke: '#6b7280', text: '#9ca3af', sub: '#374151' },
         pending:  { fill: '#0d1117', stroke: '#30363d', text: '#484f58', sub: '#21262d' },
         canceled: { fill: '#0d1117', stroke: '#30363d', text: '#484f58', sub: '#21262d' },
@@ -151,6 +151,7 @@
     function statusBadge(status: string) {
         const labels: Record<string, string> = { 
             passed:'passed', failed:'failed', running:'running…',
+            waiting:'waiting…',
             queued:'queued', pending:'pending', canceled:'canceled',
             timed_out: 'timed out', approval: 'waiting for approval',
             release: 'releasing'

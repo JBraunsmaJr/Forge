@@ -378,7 +378,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 func (s *Store) Heartbeat(jobID, leaseID, agentID string) error {
 	res, err := s.db.Exec(`
 		UPDATE jobs SET heartbeat_at = NOW()
-		WHERE  id = $1 AND lease_id = $2 AND status = 'running'`,
+		WHERE  id = $1 AND lease_id = $2 AND (status = 'running' OR status = 'waiting')`,
 		jobID, leaseID,
 	)
 	if err != nil {
@@ -396,7 +396,7 @@ func (s *Store) ActiveAgentsCount() (int, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(DISTINCT agent_id) FROM jobs 
-		WHERE status = 'running' AND heartbeat_at > NOW() - INTERVAL '2 minutes'
+		WHERE (status = 'running' OR status = 'waiting') AND heartbeat_at > NOW() - INTERVAL '2 minutes'
 	`).Scan(&count)
 	return count, err
 }
@@ -619,7 +619,7 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 				break
 			}
 
-			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "approval" || dep.status == "release" {
+			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "waiting" || dep.status == "approval" || dep.status == "release" {
 				allFinished = false
 				break
 			}
@@ -630,7 +630,7 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 			if emits, ok := generatorEmits[depID]; ok {
 				for _, emittedID := range emits {
 					emitted, ok := allJobs[emittedID]
-					if !ok || emitted.status == "pending" || emitted.status == "queued" || emitted.status == "running" || emitted.status == "approval" {
+					if !ok || emitted.status == "pending" || emitted.status == "queued" || emitted.status == "running" || emitted.status == "waiting" || emitted.status == "approval" {
 						allFinished = false
 						break
 					}
@@ -1247,17 +1247,79 @@ func (s *Store) RunCount() (int64, error) {
 }
 
 // CancelRun marks all queued and running jobs in a run as canceled.
+// It also recursively cancels any child runs.
 func (s *Store) CancelRun(runID string) (int64, error) {
-	res, err := s.db.Exec(`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`
 		UPDATE jobs
 		SET    status = 'canceled', finished_at = NOW()
-		WHERE  run_id = $1 AND status IN ('queued', 'pending', 'running')`,
+		WHERE  run_id = $1 AND status IN ('queued', 'running', 'pending', 'approval', 'waiting', 'release')`,
 		runID,
 	)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	count, _ := res.RowsAffected()
+
+	// Recursively cancel child runs
+	rows, err := tx.Query(`SELECT id FROM runs WHERE parent_run_id = $1`, runID)
+	if err == nil {
+		var childIDs []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err == nil {
+				childIDs = append(childIDs, id)
+			}
+		}
+		rows.Close()
+
+		for _, cid := range childIDs {
+			c, err := s.cancelRunTx(tx, cid)
+			if err == nil {
+				count += c
+			}
+		}
+	}
+
+	return count, tx.Commit()
+}
+
+func (s *Store) cancelRunTx(tx *sql.Tx, runID string) (int64, error) {
+	res, err := tx.Exec(`
+		UPDATE jobs
+		SET    status = 'canceled', finished_at = NOW()
+		WHERE  run_id = $1 AND status IN ('queued', 'running', 'pending', 'approval', 'waiting', 'release')`,
+		runID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	count, _ := res.RowsAffected()
+
+	rows, err := tx.Query(`SELECT id FROM runs WHERE parent_run_id = $1`, runID)
+	if err == nil {
+		var childIDs []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err == nil {
+				childIDs = append(childIDs, id)
+			}
+		}
+		rows.Close()
+
+		for _, cid := range childIDs {
+			c, err := s.cancelRunTx(tx, cid)
+			if err == nil {
+				count += c
+			}
+		}
+	}
+	return count, nil
 }
 
 // GetJobStepID returns the logical step_id for a job. Used by flaky detection

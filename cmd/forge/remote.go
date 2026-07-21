@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -163,7 +164,12 @@ func runAgent(cmd *cobra.Command, args []string) {
 	maxGB := 10.0
 	maxPercent := 80.0
 	pruneSchedule := "0 0 * * *"
-	concurrency := runtime.NumCPU()
+	concurrency := 1
+	if c := os.Getenv("FORGE_CONCURRENCY"); c != "" {
+		if val, err := strconv.Atoi(c); err == nil {
+			concurrency = val
+		}
+	}
 
 	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, proxyURL, maxGB, maxPercent, pruneSchedule, concurrency)
 	if err := a.Run(context.Background()); err != nil {
