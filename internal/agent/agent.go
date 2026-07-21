@@ -932,6 +932,11 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		uploadedNames = a.uploadArtifacts(spec, jobWorkspace)
 	}
 
+	// Report test results if test_report is set
+	if spec.TestReport != "" {
+		a.reportTestResults(spec, jobWorkspace)
+	}
+
 	// Store result in cache (only on success).
 	// We do this AFTER artifact upload so the cache entry includes the artifact names.
 	// This will overwrite the entry stored by the executor if it also has access to the CAS.
@@ -1665,6 +1670,56 @@ func (a *Agent) streamJobLogs(jobID, leaseID string, ch <-chan api.LogEvent) {
 }
 
 // authPost makes an authenticated POST to the scheduler.
+func (a *Agent) reportTestResults(spec *api.JobSpec, workspaceDir string) {
+	if spec.TestReport == "" {
+		return
+	}
+	reportPath := filepath.Join(workspaceDir, spec.TestReport)
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		// Non-fatal — test reporting is optional, splitting still works
+		// without it (falls back to round-robin next time)
+		fmt.Printf("[agent %s] no test report at %s: %v\n",
+			a.id[:8], spec.TestReport, err)
+		return
+	}
+
+	// Parse to validate before sending.
+	var report api.TestReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		fmt.Printf("[agent %s] invalid test report JSON: %v\n", a.id[:8], err)
+		return
+	}
+
+	// Extract the step_id base name (strip -shard-N suffix for correlation).
+	baseStepID := stripShardSuffix(spec.StepID) // "test-shard-2" → "test"
+
+	body, _ := json.Marshal(api.RecordTestReportRequest{
+		RunID:        spec.RunID,
+		JobID:        spec.JobID,
+		StepID:       baseStepID,
+		PipelineName: spec.PipelineName,
+		ProjectID:    spec.ProjectID,
+		Report:       report,
+	})
+
+	resp, err := a.authPost(
+		a.schedulerURL+"/api/v1/test-reports",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func stripShardSuffix(stepID string) string {
+	if i := strings.Index(stepID, "-shard-"); i != -1 {
+		return stepID[:i]
+	}
+	return stepID
+}
+
 func (a *Agent) authPost(url, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest("POST", url, body)
 	if err != nil {

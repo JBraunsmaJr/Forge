@@ -33,6 +33,13 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 
 	stepIDsJSON, _ := json.Marshal(appliedStepIDs)
 
+	// Expand steps with split: configuration before processing.
+	expandedSteps, err := s.expandSplitSteps(runID, projectID, name, steps)
+	if err != nil {
+		return "", fmt.Errorf("expand split steps: %w", err)
+	}
+	steps = expandedSteps
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
@@ -143,15 +150,16 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 			id, run_id, step_id, step_type, image, entrypoint, command, work_dir,
 			env, inputs, timeout_ns, depends_on, secret_names,
 			policy_source, condition, always_run, docker_socket, pipeline_ref,
-			release_config, artifact_uploads, artifact_downloads, status
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+			release_config, artifact_uploads, artifact_downloads, status,
+			test_report, split
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 		jobID, runID, step.ID, stepType, step.Image, toJSON(step.Entrypoint),
 		toJSON(command), workDir,
 		toJSON(step.Env), toJSON(step.Inputs), int64(timeout),
 		toJSON(step.DependsOn), toJSON(step.SecretNames),
 		step.PolicySource, step.Condition, step.AlwaysRun, step.DockerSocket, pipelineRefJSON,
 		releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
-		status,
+		status, step.TestReport, toJSON(step.Split),
 	)
 	return err
 }
@@ -201,7 +209,9 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
-			runs.applied_step_ids
+			runs.applied_step_ids,
+			jobs.test_report,
+			COALESCE(jobs.split::text, 'null')
 		`,
 		leaseID, agentID, now,
 	)
@@ -242,7 +252,9 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
-			runs.applied_step_ids
+			runs.applied_step_ids,
+			jobs.test_report,
+			COALESCE(jobs.split::text, 'null')
 		`,
 		leaseID, now,
 	)
@@ -263,6 +275,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		dockerSocket                               bool
 		condition                                  string
 		alwaysRun                                  bool
+		testReport, splitJSON                      string
 	)
 	err := row.Scan(
 		&jobID, &runID, &stepID, &image, &entrypointJSON,
@@ -276,6 +289,8 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 		&workspaceDir,
 		&appliedStepIDsJSON,
+		&testReport,
+		&splitJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, false
@@ -309,6 +324,11 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	var artifactDownloads []api.ArtifactDownloadSpec
 	json.Unmarshal([]byte(artifactUploadsJSON), &artifactUploads)
 	json.Unmarshal([]byte(artifactDownloadsJSON), &artifactDownloads)
+
+	var split *api.SplitConfig
+	if splitJSON != "null" && splitJSON != "" {
+		json.Unmarshal([]byte(splitJSON), &split)
+	}
 
 	// Fetch org_id, project_id, ref and pipeline name from the parent run for secret scoping and conditions.
 	var orgID, projectID, ref, commitSHA, repoURL, pipelineName string
@@ -348,6 +368,8 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		Release:           releaseConfig,
 		ArtifactUploads:   artifactUploads,
 		ArtifactDownloads: artifactDownloads,
+		TestReport:        testReport,
+		Split:             split,
 	}, true
 }
 
@@ -923,6 +945,25 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	detail.Jobs = jobs
 	detail.Status = overallStatus(statuses)
 
+	// Fetch shard assignments
+	shardRows, err := s.db.Query(`
+		SELECT step_id, shard_index, total_shards, file_paths, estimated_ms
+		FROM   test_shard_assignments
+		WHERE  run_id = $1`, runID)
+	if err == nil {
+		defer shardRows.Close()
+		detail.ShardAssignments = make(map[string][]api.ShardAssignmentDetail)
+		for shardRows.Next() {
+			var stepID string
+			var a api.ShardAssignmentDetail
+			var filesJSON []byte
+			if err := shardRows.Scan(&stepID, &a.ShardIndex, &a.TotalShards, &filesJSON, &a.EstimatedMS); err == nil {
+				json.Unmarshal(filesJSON, &a.FilePaths)
+				detail.ShardAssignments[stepID] = append(detail.ShardAssignments[stepID], a)
+			}
+		}
+	}
+
 	return detail, true
 }
 
@@ -1236,7 +1277,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       COALESCE(release_config::text, 'null'),
 		       COALESCE(artifact_uploads::text, '[]'),
 		       COALESCE(artifact_downloads::text, '[]'),
-		       status
+		       status, test_report, COALESCE(split::text, 'null')
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
 		return "", nil, "", "", "", "", "", "", nil, err
@@ -1244,7 +1285,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 	defer rows.Close()
 
 	for rows.Next() {
-		var stepID, stepType, image, workDir, policySource string
+		var stepID, stepType, image, workDir, policySource, testReport, splitJSON string
 		var pipelineRefJSON, releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON, status string
 		var entrypointJSON, commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
 		var timeoutNS int64
@@ -1257,7 +1298,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			&inputsJSON, &timeoutNS, &dependsJSON, &secretsJSON, &policySource,
 			&dockerSocket, &condition, &alwaysRun,
 			&pipelineRefJSON, &releaseConfigJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
-			&status,
+			&status, &testReport, &splitJSON,
 		); err != nil {
 			continue
 		}
@@ -1269,6 +1310,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		var artifactDownloads []api.ArtifactDownloadSpec
 		var pipelineRef *api.PipelineRef
 		var releaseConfig *api.ReleaseConfig
+		var split *api.SplitConfig
 		json.Unmarshal(entrypointJSON, &entrypoint)
 		json.Unmarshal(commandJSON, &command)
 		json.Unmarshal(envJSON, &env)
@@ -1282,6 +1324,9 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		}
 		if releaseConfigJSON != "null" {
 			json.Unmarshal([]byte(releaseConfigJSON), &releaseConfig)
+		}
+		if splitJSON != "null" {
+			json.Unmarshal([]byte(splitJSON), &split)
 		}
 
 		steps = append(steps, api.StepDef{
@@ -1305,6 +1350,8 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			PipelineRef:       pipelineRef,
 			Release:           releaseConfig,
 			Status:            api.JobStatus(status),
+			TestReport:        testReport,
+			Split:             split,
 		})
 	}
 	return name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, nil

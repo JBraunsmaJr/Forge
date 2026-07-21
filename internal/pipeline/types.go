@@ -3,6 +3,8 @@ package pipeline
 import (
 	"fmt"
 	"time"
+
+	"github.com/JBraunsmaJr/forge/internal/api"
 )
 
 // Pipeline is the compiled, canonical representation of a pipeline.
@@ -67,6 +69,11 @@ type Step struct {
 	DockerSocket bool
 	// AlwaysRun ensures the step runs even if dependencies fail.
 	AlwaysRun bool
+
+	// Split is non-nil when this step should be fanned out into parallel shards.
+	Split *api.SplitConfig
+	// TestReport is the path to the test report file produced by this step.
+	TestReport string
 }
 
 // PipelineRef holds chaining configuration for pipeline steps.
