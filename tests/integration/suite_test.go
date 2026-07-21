@@ -225,9 +225,18 @@ func stopStack(repoRoot string) {
 	// Clean up any sibling job containers that weren't part of the compose project.
 	// We do this BEFORE compose down so that job containers are removed before
 	// compose tries to remove the network they might be attached to.
+	//
+	// IMPORTANT: scope by this project's network, not just labels. The
+	// forge.agent_id label is shared by every job running on the same agent,
+	// so a label-only listing also matches *sibling test runs* (e.g. parallel
+	// split shards) — and removing their forge.run_id containers killed them
+	// mid-test. Only containers attached to OUR stack's network belong to us.
 	fmt.Println("[integration] cleaning up dangling job containers...")
 	// We use --format to get labels for filtering.
-	out, _ := exec.Command("docker", "ps", "-a", "--filter", "label=forge.managed=true", "--format", "{{.ID}}|{{.Labels}}").Output()
+	out, _ := exec.Command("docker", "ps", "-a",
+		"--filter", "label=forge.managed=true",
+		"--filter", "network="+composeProjectName+"_forge",
+		"--format", "{{.ID}}|{{.Labels}}").Output()
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) > 0 && lines[0] != "" {
 		self, _ := os.Hostname()

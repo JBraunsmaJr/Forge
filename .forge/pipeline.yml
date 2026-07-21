@@ -69,9 +69,14 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test ./... -v -json \
-      $(echo $FORGE_TEST_FILES | tr ',' ' ') \
-      2>&1 | tee /tmp/go-test-output.json
+      # Run only this shard's packages. Passing ./... alongside the shard list
+      # made every shard run the entire suite (go merges the package patterns),
+      # which tripled output and ran the docker-heavy integration suite three
+      # times concurrently. Fall back to ./... only when there is no shard
+      # assignment yet (first run / no timing history).
+      TEST_PKGS=$(echo "$FORGE_TEST_FILES" | tr ',' ' ')
+      if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
+      go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json
       forge report from-go-test /tmp/go-test-output.json
 
   - id: main-pipeline
