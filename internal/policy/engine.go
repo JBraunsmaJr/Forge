@@ -170,11 +170,14 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 		}
 
 		createCmd := exec.CommandContext(ctx, "docker", createArgs...)
-		createOut, err := createCmd.CombinedOutput()
+		var stdout, stderr bytes.Buffer
+		createCmd.Stdout = &stdout
+		createCmd.Stderr = &stderr
+		err = createCmd.Run()
 		if err != nil {
-			return nil, fmt.Errorf("docker create failed: %w\n%s", err, string(createOut))
+			return nil, fmt.Errorf("docker create failed: %w\n%s", err, stderr.String())
 		}
-		containerID := strings.TrimSpace(string(createOut))
+		containerID := strings.TrimSpace(stdout.String())
 
 		// Ensure cleanup
 		defer func() {

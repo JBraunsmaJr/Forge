@@ -123,7 +123,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		apiToken:         apiToken,
 		proxyURL:         proxyURL,
 		proxyID:          proxyID,
-		client:           &http.Client{Timeout: 10 * time.Second},
+		client:           &http.Client{Timeout: 60 * time.Second},
 		maxDockerGB:      maxGB,
 		maxDockerPercent: maxPercent,
 		pruneSchedule:    schedule,
@@ -636,7 +636,9 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			}}, "", false)
 			return err
 		}
-		defer os.RemoveAll(jobBaseDir)
+		if spec.Type != "pipeline" {
+			defer os.RemoveAll(jobBaseDir)
+		}
 	} else {
 		// Use provided workspace dir. If it doesn't exist, create it.
 		// Automatic checkout logic below will populate it if empty.
@@ -678,7 +680,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 
 	if spec.Type == "pipeline" {
-		return a.executePipelineStep(ctx, spec, jobWorkspace)
+		return a.executePipelineStep(ctx, spec, jobWorkspace, jobBaseDir)
 	}
 
 	jobLogDir := filepath.Join(a.logDir, spec.JobID)
@@ -2246,10 +2248,17 @@ func (a *Agent) downloadFile(downloadURL, dest string) error {
 	return err
 }
 
-func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace string) error {
+func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace, jobBaseDir string) error {
 	ref := spec.PipelineRef
 	if ref == nil || ref.Path == "" {
+		if jobBaseDir != "" {
+			os.RemoveAll(jobBaseDir)
+		}
 		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), "", false)
+	}
+
+	if jobBaseDir != "" && ref.Wait {
+		defer os.RemoveAll(jobBaseDir)
 	}
 
 	start := time.Now()

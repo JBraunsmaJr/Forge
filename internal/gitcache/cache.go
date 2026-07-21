@@ -1,6 +1,7 @@
 package gitcache
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -123,12 +124,14 @@ func (c *Cache) ListBranches(repoURL string) ([]string, string, error) {
 
 	// List remote branches. In a mirror clone, refs/heads/* are mirrored directly.
 	cmd := exec.Command("git", "-C", dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, "", fmt.Errorf("git for-each-ref failed: %w, output: %s", err, string(output))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, "", fmt.Errorf("git for-each-ref failed: %w, output: %s", err, stderr.String())
 	}
 
-	branches := strings.Split(strings.TrimSpace(string(output)), "\n")
+	branches := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	var filtered []string
 	for _, b := range branches {
 		b = strings.TrimSpace(b)
@@ -139,10 +142,12 @@ func (c *Cache) ListBranches(repoURL string) ([]string, string, error) {
 
 	// Try to find the default branch from HEAD symbolic ref.
 	headCmd := exec.Command("git", "-C", dir, "symbolic-ref", "--short", "HEAD")
-	headOutput, err := headCmd.CombinedOutput()
+	var hStdout, hStderr bytes.Buffer
+	headCmd.Stdout = &hStdout
+	headCmd.Stderr = &hStderr
 	defaultBranch := "main"
-	if err == nil {
-		defaultBranch = strings.TrimSpace(string(headOutput))
+	if err := headCmd.Run(); err == nil {
+		defaultBranch = strings.TrimSpace(hStdout.String())
 	}
 
 	return filtered, defaultBranch, nil
@@ -172,16 +177,21 @@ func (c *Cache) ResolveCommit(repoURL, branch string) (string, error) {
 
 	// Try origin/branch first (mirror clone usually maps refs/heads/* to refs/heads/*)
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "origin/"+branch)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+	var out, serr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &serr
+	if err := cmd.Run(); err != nil {
 		// Fallback to local branch name
 		cmd = exec.Command("git", "-C", dir, "rev-parse", branch)
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve commit for branch %s: %v", branch, string(output))
+		out.Reset()
+		serr.Reset()
+		cmd.Stdout = &out
+		cmd.Stderr = &serr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to resolve commit for branch %s: %v", branch, serr.String())
 		}
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(out.String()), nil
 }
 
 func (c *Cache) Show(repoURL, ref, path string) ([]byte, error) {
@@ -197,17 +207,22 @@ func (c *Cache) Show(repoURL, ref, path string) ([]byte, error) {
 	// Use git show to extract the file from the mirror.
 	// We try both as-is and with refs/heads/ prefix if it looks like a branch.
 	cmd := exec.Command("git", "-C", dir, "show", ref+":"+path)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+	var out, serr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &serr
+	if err := cmd.Run(); err != nil {
 		// Try refs/heads/ prefix
 		cmd = exec.Command("git", "-C", dir, "show", "refs/heads/"+ref+":"+path)
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("git show failed: %w, output: %s", err, string(output))
+		out.Reset()
+		serr.Reset()
+		cmd.Stdout = &out
+		cmd.Stderr = &serr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("git show failed: %w, output: %s", err, serr.String())
 		}
 	}
 
-	return output, nil
+	return out.Bytes(), nil
 }
 
 func (c *Cache) ResolveRef(repoURL, name string) (string, error) {

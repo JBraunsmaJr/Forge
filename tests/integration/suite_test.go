@@ -93,7 +93,7 @@ func startStack(repoRoot string) error {
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
 	fmt.Println("[integration] pre-building forge image...")
-	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer buildCancel()
 	buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
 	buildCmd.Dir = repoRoot
