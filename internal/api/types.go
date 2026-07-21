@@ -68,6 +68,9 @@ type JobSpec struct {
 	// AlwaysRun mirrors StepDef.AlwaysRun — kept in JobSpec so the agent can
 	// log it clearly (the scheduler already acted on it via unlockDownstream).
 	AlwaysRun bool `json:"always_run,omitempty"`
+
+	Split      *SplitConfig `json:"split,omitempty"`
+	TestReport string       `json:"test_report,omitempty"`
 }
 
 // SubmitRunRequest is sent by the CLI to submit a pipeline for execution.
@@ -113,6 +116,8 @@ type StepDef struct {
 	Timeout           time.Duration          `json:"timeout_ns"`
 	DockerSocket      bool                   `json:"docker_socket,omitempty"`
 	AlwaysRun         bool                   `json:"always_run,omitempty"`
+	Split             *SplitConfig           `json:"split,omitempty"`
+	TestReport        string                 `json:"test_report,omitempty"`
 }
 
 // SubmitRunResponse is returned after a successful pipeline submission.
@@ -201,16 +206,24 @@ type RunSummary struct {
 // RunDetail is the rich response used by the DAG view.
 // It includes per-job dependency info so the browser can draw edges.
 type RunDetail struct {
-	RunID          string      `json:"run_id"`
-	Name           string      `json:"name"`
-	Status         JobStatus   `json:"status"`
-	CreatedAt      time.Time   `json:"created_at"`
-	Jobs           []JobDetail `json:"jobs"`
-	AppliedStepIDs []string    `json:"applied_step_ids,omitempty"`
-	OrgID          string      `json:"org_id,omitempty"`
-	ProjectID      string      `json:"project_id,omitempty"`
-	CommitSHA      string      `json:"commit_sha,omitempty"`
-	SCMProvider    string      `json:"scm_provider,omitempty"`
+	RunID            string                             `json:"run_id"`
+	Name             string                             `json:"name"`
+	Status           JobStatus                          `json:"status"`
+	CreatedAt        time.Time                          `json:"created_at"`
+	Jobs             []JobDetail                        `json:"jobs"`
+	AppliedStepIDs   []string                           `json:"applied_step_ids,omitempty"`
+	OrgID            string                             `json:"org_id,omitempty"`
+	ProjectID        string                             `json:"project_id,omitempty"`
+	CommitSHA        string                             `json:"commit_sha,omitempty"`
+	SCMProvider      string                             `json:"scm_provider,omitempty"`
+	ShardAssignments map[string][]ShardAssignmentDetail `json:"shard_assignments,omitempty"`
+}
+
+type ShardAssignmentDetail struct {
+	ShardIndex  int      `json:"shard_index"`
+	TotalShards int      `json:"total_shards"`
+	FilePaths   []string `json:"file_paths"`
+	EstimatedMS int64    `json:"estimated_ms"`
 }
 
 // JobDetail carries everything the DAG renderer needs for one node.
@@ -504,6 +517,46 @@ type ArtifactUploadSpec struct {
 type ArtifactDownloadSpec struct {
 	Name string `json:"name"`
 	Dest string `json:"dest"`
+}
+
+type SplitConfig struct {
+	Strategy       string `json:"strategy"` // "duration" | "round-robin"
+	Shards         int    `json:"shards"`
+	HistoryDays    int    `json:"history_days"`
+	MinHistoryRuns int    `json:"min_history_runs"` // default 3
+	Fallback       string `json:"fallback"`         // "round-robin" | "single"
+}
+
+type FlakyDurationResult struct {
+	FilePath  string  `json:"file_path"`
+	AvgFailMS float64 `json:"avg_fail_ms"`
+	AvgPassMS float64 `json:"avg_pass_ms"`
+	Ratio     float64 `json:"ratio"`
+}
+
+type TestFileResult struct {
+	Path       string `json:"path"`
+	DurationMS int64  `json:"duration_ms"`
+	Tests      int    `json:"tests"`
+	Passed     int    `json:"passed"`
+	Failed     int    `json:"failed"`
+	Skipped    int    `json:"skipped"`
+}
+
+type TestReport struct {
+	Version         int              `json:"version"` // always 1
+	Framework       string           `json:"framework"`
+	TotalDurationMS int64            `json:"total_duration_ms"`
+	Files           []TestFileResult `json:"files"`
+}
+
+type RecordTestReportRequest struct {
+	RunID        string     `json:"run_id"`
+	JobID        string     `json:"job_id"`
+	StepID       string     `json:"step_id"` // base step ID, no shard suffix
+	PipelineName string     `json:"pipeline_name"`
+	ProjectID    string     `json:"project_id"`
+	Report       TestReport `json:"report"`
 }
 
 // ReleaseConfig holds parameters for creating an SCM release.

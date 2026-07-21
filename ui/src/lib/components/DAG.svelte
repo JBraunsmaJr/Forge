@@ -4,6 +4,7 @@
     import { RotateCcw, XCircle, Package, CheckCircle, TrendingUp, TrendingDown } from '@lucide/svelte';
 
     import DetailsPanel from './DetailsPanel.svelte';
+    import { ChevronRight, ChevronDown } from '@lucide/svelte';
 
     const MIN_NODE_W = 160, NODE_H = 52, COL_GAP = 90, ROW_GAP = 24, PAD = 32;
     const STATUS_COLORS: Record<string, any> = {
@@ -19,7 +20,12 @@
     };
 
     function estimateNodeWidth(j: Job) {
-        const labelLen = j.step_id.length;
+        let label = j.step_id;
+        if ($activeRun?.shard_assignments?.[j.step_id]) {
+            const count = $activeRun.shard_assignments[j.step_id].length;
+            label += ` ×${count}`;
+        }
+        const labelLen = label.length;
         const subLen = (statusBadge(j.status) + (j.duration_ms ? ` · ${fmtDuration(j.duration_ms)}` : '')).length;
         const policyLen = j.policy_source ? j.policy_source.length + 2 : 0;
         
@@ -35,13 +41,43 @@
         return Math.max(MIN_NODE_W, 14 + contentW + actionsW);
     }
 
+    let expandedSteps = new Set<string>();
+
+    function toggleExpand(stepID: string) {
+        if (expandedSteps.has(stepID)) {
+            expandedSteps.delete(stepID);
+        } else {
+            expandedSteps.add(stepID);
+        }
+        expandedSteps = expandedSteps;
+    }
+
     function computeLayout(jobsInput: Job[]) {
         if (!jobsInput || jobsInput.length === 0) {
             return { positions: {}, svgW: 0, svgH: 0 };
         }
 
-        // Sort jobs by step_id to ensure deterministic layout
-        const jobs = [...jobsInput].sort((a, b) => a.step_id.localeCompare(b.step_id));
+        // Filter out shard jobs if their parent step is not expanded
+        const filteredJobs = jobsInput.filter(j => {
+            if (j.step_id.includes('-shard-')) {
+                const base = j.step_id.split('-shard-')[0];
+                return expandedSteps.has(base);
+            }
+            return true;
+        });
+
+        // Redirect dependencies for fan-in steps if shards are collapsed
+        const jobs = filteredJobs.map(j => {
+            if ($activeRun?.shard_assignments?.[j.step_id] && !expandedSteps.has(j.step_id)) {
+                // This is a fan-in step and shards are collapsed.
+                // It should depend on whatever the shards depend on.
+                const shard1 = jobsInput.find(sj => sj.step_id === j.step_id + '-shard-1');
+                if (shard1) {
+                    return { ...j, depends_on: shard1.depends_on };
+                }
+            }
+            return j;
+        }).sort((a, b) => a.step_id.localeCompare(b.step_id));
 
         try {
             const depth: Record<string, number> = {};
@@ -334,7 +370,7 @@
                                     y={j.policy_source ? pos.y + 16 : pos.y + 22}
                                     fill={isSelected ? '#e2e8f0' : c.text}
                                 >
-                                    {j.step_id}
+                                    {j.step_id}{$activeRun?.shard_assignments?.[j.step_id] ? ` ×${$activeRun.shard_assignments[j.step_id].length}` : ''}
                                 </text>
                                 {#if j.policy_source}
                                     <text 
@@ -384,13 +420,28 @@
 
                                 {#if j.status === 'failed'}
                                     <text 
-                                        x={pos.x + pos.w - 10} y={pos.y + NODE_H - 10}
+                                        x={pos.x + pos.w - (j.step_id.includes('-shard-') ? 10 : 65)} y={pos.y + NODE_H - 10}
                                         text-anchor="end" fill="#818cf8"
                                         class="node-debug-link"
                                         on:click|stopPropagation={() => onOpenDebug(j)}
                                     >
                                         Debug →
                                     </text>
+                                {/if}
+
+                                {#if $activeRun?.shard_assignments?.[j.step_id]}
+                                    <foreignObject x={pos.x + pos.w - 24} y={pos.y + NODE_H - 24} width="20" height="20">
+                                        <button 
+                                            class="node-expand-btn" 
+                                            on:click|stopPropagation={() => toggleExpand(j.step_id)}
+                                        >
+                                            {#if expandedSteps.has(j.step_id)}
+                                                <ChevronDown size={14} />
+                                            {:else}
+                                                <ChevronRight size={14} />
+                                            {/if}
+                                        </button>
+                                    </foreignObject>
                                 {/if}
                             </g>
                         {/if}
@@ -505,6 +556,22 @@
         transition: all 0.2s;
     }
     .node-debug-link:hover { fill: #a78bfa; }
+    .node-expand-btn {
+        background: none;
+        border: none;
+        padding: 2px;
+        cursor: pointer;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        transition: all 0.2s;
+    }
+    .node-expand-btn:hover {
+        background: rgba(255,255,255,0.1);
+        color: var(--accent);
+    }
     .dag-label { font-family: 'Inter', system-ui, sans-serif; font-size: 13px; font-weight: 700;
         pointer-events: none; }
     .dag-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 10px; font-weight: 500; pointer-events: none; }

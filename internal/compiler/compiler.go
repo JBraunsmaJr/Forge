@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
@@ -71,6 +72,8 @@ type JSONStep struct {
 		Upload   []jsonArtifactUpload   `json:"upload"`
 		Download []jsonArtifactDownload `json:"download"`
 	} `json:"artifacts"`
+	Split      *api.SplitConfig `json:"split,omitempty"`
+	TestReport string           `json:"test_report,omitempty"`
 }
 
 type jsonArtifactUpload struct {
@@ -388,6 +391,8 @@ type jsStepTemplate struct {
 		Upload   []jsonArtifactUpload   `json:"upload"`
 		Download []jsonArtifactDownload `json:"download"`
 	} `json:"artifacts"`
+	Split      *api.SplitConfig `json:"split,omitempty"`
+	TestReport string           `json:"test_report,omitempty"`
 }
 
 func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
@@ -585,6 +590,19 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		return nil, fmt.Errorf("either 'run', 'command', or 'pipeline' is required")
 	}
 
+	if js.Split != nil {
+		if js.Split.Shards < 2 {
+			return nil, fmt.Errorf("split.shards must be at least 2, got %d", js.Split.Shards)
+		}
+		if stepType == "generator" {
+			return nil, fmt.Errorf("split: and type: generator are incompatible")
+		}
+		// Strategy validation: only "duration" and "round-robin" supported.
+		if js.Split.Strategy != "duration" && js.Split.Strategy != "round-robin" && js.Split.Strategy != "" {
+			return nil, fmt.Errorf("unknown split strategy %q", js.Split.Strategy)
+		}
+	}
+
 	return &pipeline.Step{
 		ID:                id,
 		Name:              name,
@@ -607,5 +625,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		Condition:         js.Condition,
 		AlwaysRun:         js.AlwaysRun,
 		Release:           release,
+		Split:             js.Split,
+		TestReport:        js.TestReport,
 	}, nil
 }

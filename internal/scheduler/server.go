@@ -318,6 +318,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/runs/prune", s.handlePruneRuns)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
+	mux.HandleFunc("POST /api/v1/test-reports", s.handleRecordTestReport)
+	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.handleGetFlakyTests)
 
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
@@ -1663,6 +1665,31 @@ func (s *Server) triggerProject(projectID, branch, commit string) (string, error
 	}
 
 	return s.triggerWebhookRun(proj, proj.RepoURL, branch, commitSHA, "", scmToken, meta, true)
+}
+
+func (s *Server) handleRecordTestReport(w http.ResponseWriter, r *http.Request) {
+	var req api.RecordTestReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.RecordTestReport(req); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) handleGetFlakyTests(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	results, err := s.store.GetFlakyByDuration(projectID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {

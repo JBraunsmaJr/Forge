@@ -6,12 +6,12 @@
     import ArtifactViewer from './ArtifactViewer.svelte';
     import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
-    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check } from '@lucide/svelte';
+    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check, TrendingUp } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
     export let onCloseDebug: () => void;
 
-    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' = 'logs';
+    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' | 'shards' = 'logs';
     let expanded = false;
 
     $: if (debugSession.sessionID && activeTab !== 'terminal') {
@@ -90,6 +90,12 @@
         }
     }
 
+    function fmtDuration(ms: number) {
+        if (!ms) return '0s';
+        if (ms < 1000) return `${ms}ms`;
+        return `${(ms/1000).toFixed(1)}s`;
+    }
+
     onDestroy(() => {
         clearInterval(ttlInterval);
     });
@@ -118,6 +124,12 @@
                 <Clock size={12} />
                 Timing
             </button>
+            {#if $selectedJob && $activeRun?.shard_assignments?.[$selectedJob.step_id]}
+                <button class:active={activeTab === 'shards'} on:click={() => activeTab = 'shards'}>
+                    <TrendingUp size={12} />
+                    Shards
+                </button>
+            {/if}
         </div>
         <div class="actions">
             {#if $selectedJob?.status === 'approval'}
@@ -162,6 +174,24 @@
             <div class="timing-tab-content">
                 <GanttChart jobs={$activeRun?.jobs || []} />
             </div>
+        {:else if activeTab === 'shards'}
+            <div class="shards-tab-content">
+                {#if $selectedJob && $activeRun?.shard_assignments?.[$selectedJob.step_id]}
+                    {#each $activeRun.shard_assignments[$selectedJob.step_id] as shard}
+                        <div class="shard-card">
+                            <div class="shard-card-header">
+                                <span class="shard-name">Shard {shard.shard_index + 1} of {shard.total_shards}</span>
+                                <span class="shard-est">Estimated {fmtDuration(shard.estimated_ms)}</span>
+                            </div>
+                            <div class="shard-files">
+                                {#each shard.file_paths as file}
+                                    <div class="file-item">{file}</div>
+                                {/each}
+                            </div>
+                        </div>
+                    {/each}
+                {/if}
+            </div>
         {/if}
     </div>
 </div>
@@ -171,6 +201,36 @@
         flex: 1;
         overflow-y: auto;
     }
+    .shards-tab-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 20px;
+        background: var(--bg);
+    }
+    .shard-card {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    .shard-card-header {
+        padding: 10px 14px;
+        background: rgba(255,255,255,0.03);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .shard-name { font-size: 11px; font-weight: 700; color: var(--text); text-transform: uppercase; }
+    .shard-est { font-size: 10px; color: var(--muted); }
+    .shard-files { padding: 10px 14px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+    .file-item { margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
     #details-panel {
         display: flex;
         flex-direction: column;
