@@ -1262,7 +1262,21 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", req.PreferredAgentID, steps, appliedStepIDs, req.ParentRunID, req.ParentJobID, req.ArtifactsSend)
+	runID, err := s.store.SubmitRun(SubmitRunParams{
+		Name:             req.PipelineName,
+		PipelineName:     req.PipelineName,
+		WorkspaceDir:     req.WorkspaceDir,
+		OrgID:            req.OrgID,
+		ProjectID:        req.ProjectID,
+		Ref:              req.Ref,
+		CommitSHA:        req.CommitSHA,
+		PreferredAgentID: req.PreferredAgentID,
+		Steps:            steps,
+		AppliedStepIDs:   appliedStepIDs,
+		ParentRunID:      req.ParentRunID,
+		ParentJobID:      req.ParentJobID,
+		ArtifactsSend:    req.ArtifactsSend,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1836,33 +1850,51 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"canceled_jobs": n})
 }
 
+// rerunParams builds submission parameters for rerunning parentRunID.
+// The display name is prefixed with "rerun: " (without stacking prefixes)
+// while the stable PipelineName is carried over unchanged so historical
+// data such as test-split timings keeps accumulating under one key.
+func rerunParams(info RerunInfo, parentRunID string) SubmitRunParams {
+	displayName := info.Name
+	for strings.HasPrefix(displayName, "rerun: ") {
+		displayName = strings.TrimPrefix(displayName, "rerun: ")
+	}
+	return SubmitRunParams{
+		Name:             "rerun: " + displayName,
+		PipelineName:     info.PipelineName,
+		WorkspaceDir:     info.WorkspaceDir,
+		OrgID:            info.OrgID,
+		ProjectID:        info.ProjectID,
+		Ref:              info.Ref,
+		CommitSHA:        info.CommitSHA,
+		PreferredAgentID: info.PreferredAgentID,
+		Steps:            info.Steps,
+		AppliedStepIDs:   info.AppliedStepIDs,
+		ParentRunID:      parentRunID,
+	}
+}
+
 func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
+	info, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	if err := validateSteps(steps); err != nil {
+	if err := validateSteps(info.Steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
 		return
 	}
 
-	newName := name
-	for strings.HasPrefix(newName, "rerun: ") {
-		newName = strings.TrimPrefix(newName, "rerun: ")
-	}
-	newName = "rerun: " + newName
-
-	for i := range steps {
-		steps[i].Status = ""
+	for i := range info.Steps {
+		info.Steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "", nil)
+	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1877,30 +1909,24 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
+	info, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	if err := validateSteps(steps); err != nil {
+	if err := validateSteps(info.Steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
 		return
 	}
 
-	newName := name
-	for strings.HasPrefix(newName, "rerun: ") {
-		newName = strings.TrimPrefix(newName, "rerun: ")
-	}
-	newName = "rerun: " + newName
-
-	for i := range steps {
-		if steps[i].Status != api.JobStatusPassed {
-			steps[i].Status = "" // Rerun
+	for i := range info.Steps {
+		if info.Steps[i].Status != api.JobStatusPassed {
+			info.Steps[i].Status = "" // Rerun
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "", nil)
+	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1922,7 +1948,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	}
 	runID := detail.RunID
 
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
+	info, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1936,23 +1962,17 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := validateSteps(steps); err != nil {
+	if err := validateSteps(info.Steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
 		return
 	}
-
-	newName := name
-	for strings.HasPrefix(newName, "rerun: ") {
-		newName = strings.TrimPrefix(newName, "rerun: ")
-	}
-	newName = "rerun: " + newName
 
 	toRerun := make(map[string]bool)
 	toRerun[targetStepID] = true
 	changed := true
 	for changed {
 		changed = false
-		for _, step := range steps {
+		for _, step := range info.Steps {
 			if toRerun[step.ID] {
 				continue
 			}
@@ -1966,13 +1986,13 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for i := range steps {
-		if toRerun[steps[i].ID] {
-			steps[i].Status = ""
+	for i := range info.Steps {
+		if toRerun[info.Steps[i].ID] {
+			info.Steps[i].Status = ""
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "", nil)
+	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

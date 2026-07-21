@@ -154,6 +154,10 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_job_id TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS preferred_agent_id TEXT;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS applied_step_ids JSONB NOT NULL DEFAULT '[]';
+-- Stable pipeline identity, distinct from the human-readable run name.
+-- runs.name is decorated per run ("ci @ ab12cd34 [main]", "rerun: ...") so it
+-- cannot be used to correlate history (test durations, splitting) across runs.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS pipeline_name TEXT NOT NULL DEFAULT '';
 
 -- ── Jobs ─────────────────────────────────────────────────────────────────────
 -- References runs — must come after runs.

@@ -21,17 +21,46 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string, artifactsSend []string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID, steps, appliedStepIDs, parentRunID, parentJobID, artifactsSend)
+// SubmitRunParams carries everything needed to create a run.
+//
+// Name is the human-readable, per-run display name and may be decorated
+// ("ci @ ab12cd34 [main]", "rerun: ..."). PipelineName is the stable
+// identity of the pipeline and is what historical data (test file
+// durations, split shard planning) is keyed on. If PipelineName is empty
+// it falls back to Name.
+type SubmitRunParams struct {
+	RunID            string // optional; generated when empty
+	Name             string
+	PipelineName     string
+	WorkspaceDir     string
+	OrgID            string
+	ProjectID        string
+	Ref              string
+	CommitSHA        string
+	SCMProvider      string
+	PreferredAgentID string
+	Steps            []api.StepDef
+	AppliedStepIDs   []string
+	ParentRunID      string
+	ParentJobID      string
+	ArtifactsSend    []string
 }
 
-// SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
-// Used by webhook handlers which allocate the ID before creating the
-// workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string, artifactsSend []string) (string, error) {
+// SubmitRun inserts a new run and all its jobs in a single transaction.
+// Callers that need the run ID ahead of time (e.g. webhooks naming a
+// workspace directory after it) can set params.RunID themselves.
+func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
+	runID := p.RunID
+	if runID == "" {
+		runID = newID()
+	}
+	pipelineName := p.PipelineName
+	if pipelineName == "" {
+		pipelineName = p.Name
+	}
+	steps := p.Steps
 
-	stepIDsJSON, _ := json.Marshal(appliedStepIDs)
+	stepIDsJSON, _ := json.Marshal(p.AppliedStepIDs)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -39,38 +68,26 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 	}
 	defer tx.Rollback()
 
-	if parentJobID != "" {
+	if p.ParentJobID != "" {
 		var existingID string
-		err := tx.QueryRow(`SELECT id FROM runs WHERE parent_job_id = $1`, parentJobID).Scan(&existingID)
+		err := tx.QueryRow(`SELECT id FROM runs WHERE parent_job_id = $1`, p.ParentJobID).Scan(&existingID)
 		if err == nil {
 			return existingID, nil // Idempotent: return existing run
 		}
 	}
 
-	var orgIDParam any
-	if orgID != "" {
-		orgIDParam = orgID
-	}
-
-	var parentRunParam any
-	if parentRunID != "" {
-		parentRunParam = parentRunID
-	}
-
-	var preferredAgentParam any
-	if preferredAgentID != "" {
-		preferredAgentParam = preferredAgentID
-	}
-
-	var parentJobParam any
-	if parentJobID != "" {
-		parentJobParam = parentJobID
+	// NULL out optional foreign-key-ish columns when empty.
+	nullable := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		runID, name, workspaceDir, stepIDsJSON, orgIDParam, projectID, ref, commitSHA, scmProvider, parentRunParam, preferredAgentParam, parentJobParam,
+		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), p.ProjectID, p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -78,7 +95,9 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 
 	// Expand steps with split: configuration before processing.
 	// Must happen after inserting the run due to foreign key constraints.
-	expandedSteps, err := s.expandSplitSteps(tx, runID, projectID, name, steps)
+	// Keyed on the stable pipeline name so shard planning can find
+	// duration history recorded by earlier runs of the same pipeline.
+	expandedSteps, err := s.expandSplitSteps(tx, runID, p.ProjectID, pipelineName, steps)
 	if err != nil {
 		return "", fmt.Errorf("expand split steps: %w", err)
 	}
@@ -121,7 +140,7 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 		}
 
 		// If this is a rerun and the job was already passed, copy its artifacts
-		if parentRunID != "" && status == string(api.JobStatusPassed) {
+		if p.ParentRunID != "" && status == string(api.JobStatusPassed) {
 			_, err = tx.Exec(`
 				INSERT INTO artifacts (id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, confirmed, created_at)
 				SELECT md5(random()::text || clock_timestamp()::text), $1, NULL, name, filename, size_bytes, content_type, storage_key, true, created_at
@@ -129,7 +148,7 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 				WHERE run_id = $2 AND job_id IN (
 					SELECT id FROM jobs WHERE run_id = $2 AND step_id = $3
 				) AND confirmed = true
-			`, runID, parentRunID, step.ID)
+			`, runID, p.ParentRunID, step.ID)
 			if err != nil {
 				fmt.Printf("[store] failed to copy artifacts for rerun step %s: %v\n", step.ID, err)
 			}
@@ -137,17 +156,17 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 	}
 
 	// Bridge requested artifacts from parent run (ArtifactsSend)
-	if parentRunID != "" && len(artifactsSend) > 0 {
-		for _, name := range artifactsSend {
+	if p.ParentRunID != "" && len(p.ArtifactsSend) > 0 {
+		for _, name := range p.ArtifactsSend {
 			_, err = tx.Exec(`
 				INSERT INTO artifacts (id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, confirmed, created_at)
 				SELECT md5(random()::text || clock_timestamp()::text), $1, NULL, name, filename, size_bytes, content_type, storage_key, true, created_at
 				FROM artifacts
 				WHERE run_id = $2 AND name = $3 AND confirmed = true
 				ORDER BY created_at DESC LIMIT 1
-			`, runID, parentRunID, name)
+			`, runID, p.ParentRunID, name)
 			if err != nil {
-				fmt.Printf("[store] failed to bridge artifact %s from parent run %s: %v\n", name, parentRunID, err)
+				fmt.Printf("[store] failed to bridge artifact %s from parent run %s: %v\n", name, p.ParentRunID, err)
 			}
 		}
 	}
@@ -361,9 +380,11 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	}
 
 	// Fetch org_id, project_id, ref and pipeline name from the parent run for secret scoping and conditions.
+	// pipeline_name (stable identity) is preferred over the decorated run name so
+	// that agents report test durations under the same key the split planner queries.
 	var orgID, projectID, ref, commitSHA, repoURL, pipelineName string
 	s.db.QueryRow(`
-		SELECT COALESCE(r.org_id, ''), COALESCE(r.project_id, ''), COALESCE(r.ref, ''), COALESCE(r.commit_sha, ''), COALESCE(p.repo_url, ''), r.name
+		SELECT COALESCE(r.org_id, ''), COALESCE(r.project_id, ''), COALESCE(r.ref, ''), COALESCE(r.commit_sha, ''), COALESCE(p.repo_url, ''), COALESCE(NULLIF(r.pipeline_name, ''), r.name)
 		FROM runs r
 		LEFT JOIN projects p ON r.project_id = p.id
 		WHERE r.id=$1`, runID).
@@ -1368,19 +1389,34 @@ func (s *Store) GetJobStepID(jobID string) string {
 	return stepID
 }
 
+// RerunInfo is everything needed to resubmit an existing run as a new one.
+type RerunInfo struct {
+	Name             string
+	PipelineName     string // stable identity; see SubmitRunParams
+	Steps            []api.StepDef
+	WorkspaceDir     string
+	OrgID            string
+	ProjectID        string
+	Ref              string
+	CommitSHA        string
+	PreferredAgentID string
+	AppliedStepIDs   []string
+}
+
 // RerunSteps returns the original step definitions and workspace dir for a run
 // so it can be resubmitted as a new run.
-func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID string, appliedStepIDs []string, err error) {
+func (s *Store) RerunSteps(runID string) (RerunInfo, error) {
+	var info RerunInfo
 	var stepIDsJSON []byte
-	err = s.db.QueryRow(`SELECT name, workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,''), COALESCE(preferred_agent_id,''), applied_step_ids FROM runs WHERE id=$1`, runID).
-		Scan(&name, &workspaceDir, &orgID, &projectID, &ref, &commitSHA, &preferredAgentID, &stepIDsJSON)
+	err := s.db.QueryRow(`SELECT name, COALESCE(NULLIF(pipeline_name,''), name), workspace_dir, COALESCE(org_id,''), COALESCE(project_id,''), COALESCE(ref,''), COALESCE(commit_sha,''), COALESCE(preferred_agent_id,''), applied_step_ids FROM runs WHERE id=$1`, runID).
+		Scan(&info.Name, &info.PipelineName, &info.WorkspaceDir, &info.OrgID, &info.ProjectID, &info.Ref, &info.CommitSHA, &info.PreferredAgentID, &stepIDsJSON)
 	if err == sql.ErrNoRows {
-		return "", nil, "", "", "", "", "", "", nil, fmt.Errorf("run %s not found", runID)
+		return RerunInfo{}, fmt.Errorf("run %s not found", runID)
 	}
 	if err != nil {
-		return "", nil, "", "", "", "", "", "", nil, err
+		return RerunInfo{}, err
 	}
-	json.Unmarshal(stepIDsJSON, &appliedStepIDs)
+	json.Unmarshal(stepIDsJSON, &info.AppliedStepIDs)
 
 	rows, err := s.db.Query(`
 		SELECT step_id, step_type, image, entrypoint, command, work_dir, env,
@@ -1393,7 +1429,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 		       status, test_report, COALESCE(split::text, 'null')
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
-		return "", nil, "", "", "", "", "", "", nil, err
+		return RerunInfo{}, err
 	}
 	defer rows.Close()
 
@@ -1442,7 +1478,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			json.Unmarshal([]byte(splitJSON), &split)
 		}
 
-		steps = append(steps, api.StepDef{
+		info.Steps = append(info.Steps, api.StepDef{
 			ID:                stepID,
 			Image:             image,
 			Entrypoint:        entrypoint,
@@ -1467,7 +1503,7 @@ func (s *Store) RerunSteps(runID string) (name string, steps []api.StepDef, work
 			Split:             split,
 		})
 	}
-	return name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, nil
+	return info, nil
 }
 
 // RecordStepResult stores a step outcome for flaky detection analysis.

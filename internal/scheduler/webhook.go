@@ -416,7 +416,20 @@ func (s *Server) triggerWebhookRun(
 		appliedStepIDs = append(appliedStepIDs, s.ID)
 	}
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, "", steps, appliedStepIDs, "", "", nil)
+	submittedID, err := s.store.SubmitRun(SubmitRunParams{
+		RunID: runID,
+		Name:  runName,
+		// pipeline.Name (not runName) so test-duration history and shard
+		// planning correlate across commits — runName embeds the SHA.
+		PipelineName:   pipeline.Name,
+		OrgID:          proj.OrgID,
+		ProjectID:      proj.ID,
+		Ref:            meta.Ref,
+		CommitSHA:      commitSHA,
+		SCMProvider:    meta.Provider,
+		Steps:          steps,
+		AppliedStepIDs: appliedStepIDs,
+	})
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}
