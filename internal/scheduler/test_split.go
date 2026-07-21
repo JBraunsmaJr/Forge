@@ -147,9 +147,11 @@ func (s *Store) computeShardAssignments(
 }
 
 func (s *Store) roundRobinAssignment(projectID, pipelineName, stepID string, config *api.SplitConfig) ([]ShardAssignment, error) {
-	// Query all known files for this step, even if they don't have much history.
+	// Query all known files for this step, even if they don't have much
+	// history. We still pull the average duration where one exists so the
+	// UI can show a rough estimate instead of 0 for fallback assignments.
 	rows, err := s.db.Query(`
-		SELECT file_path
+		SELECT file_path, COALESCE(AVG(duration_ms), 0)::BIGINT AS avg_ms
 		FROM   test_file_durations
 		WHERE  project_id    = $1
 		AND    pipeline_name = $2
@@ -163,13 +165,13 @@ func (s *Store) roundRobinAssignment(projectID, pipelineName, stepID string, con
 	}
 	defer rows.Close()
 
-	var allFiles []string
+	var allFiles []fileInfo
 	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
+		var f fileInfo
+		if err := rows.Scan(&f.path, &f.avgMS); err != nil {
 			return nil, err
 		}
-		allFiles = append(allFiles, path)
+		allFiles = append(allFiles, f)
 	}
 
 	shards := config.Shards
@@ -186,9 +188,10 @@ func (s *Store) roundRobinAssignment(projectID, pipelineName, stepID string, con
 		return assignments, nil
 	}
 
-	for i, file := range allFiles {
+	for i, f := range allFiles {
 		shardIdx := i % shards
-		assignments[shardIdx].Files = append(assignments[shardIdx].Files, file)
+		assignments[shardIdx].Files = append(assignments[shardIdx].Files, f.path)
+		assignments[shardIdx].EstimatedMS += f.avgMS
 	}
 
 	return assignments, nil

@@ -181,12 +181,20 @@
                         <div class="shard-card">
                             <div class="shard-card-header">
                                 <span class="shard-name">Shard {shard.shard_index + 1} of {shard.total_shards}</span>
-                                <span class="shard-est">Estimated {fmtDuration(shard.estimated_ms)}</span>
+                                {#if shard.estimated_ms > 0}
+                                    <span class="shard-est">Estimated {fmtDuration(shard.estimated_ms)}</span>
+                                {:else}
+                                    <span class="shard-est">No estimate yet</span>
+                                {/if}
                             </div>
                             <div class="shard-files">
-                                {#each shard.file_paths as file}
-                                    <div class="file-item">{file}</div>
-                                {/each}
+                                {#if shard.file_paths && shard.file_paths.length > 0}
+                                    {#each shard.file_paths as file}
+                                        <div class="file-item">{file}</div>
+                                    {/each}
+                                {:else}
+                                    <div class="file-item">No timing history yet — this shard ran the full suite. Assignments appear once test reports have been recorded.</div>
+                                {/if}
                             </div>
                         </div>
                     {/each}

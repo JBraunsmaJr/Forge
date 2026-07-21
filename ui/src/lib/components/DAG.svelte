@@ -53,7 +53,12 @@
         expandedSteps = expandedSteps;
     }
 
-    function computeLayout(jobsInput: Job[]) {
+    // expanded is passed in (rather than closing over expandedSteps) so the
+    // reactive `$: layout = ...` statement below actually depends on it —
+    // Svelte only tracks variables referenced in the statement itself, so
+    // reading expandedSteps inside this function was invisible to the
+    // dependency tracker and expand/collapse never triggered a re-layout.
+    function computeLayout(jobsInput: Job[], expanded: Set<string>) {
         if (!jobsInput || jobsInput.length === 0) {
             return { positions: {}, svgW: 0, svgH: 0 };
         }
@@ -62,14 +67,14 @@
         const filteredJobs = jobsInput.filter(j => {
             if (j.step_id.includes('-shard-')) {
                 const base = j.step_id.split('-shard-')[0];
-                return expandedSteps.has(base);
+                return expanded.has(base);
             }
             return true;
         });
 
         // Redirect dependencies for fan-in steps if shards are collapsed
         const jobs = filteredJobs.map(j => {
-            if ($activeRun?.shard_assignments?.[j.step_id] && !expandedSteps.has(j.step_id)) {
+            if ($activeRun?.shard_assignments?.[j.step_id] && !expanded.has(j.step_id)) {
                 // This is a fan-in step and shards are collapsed.
                 // It should depend on whatever the shards depend on.
                 const shard1 = jobsInput.find(sj => sj.step_id === j.step_id + '-shard-1');
@@ -159,7 +164,7 @@
         return labels[status] || status;
     }
 
-    $: layout = ($activeRun && $activeRun.jobs) ? computeLayout($activeRun.jobs) : null;
+    $: layout = ($activeRun && $activeRun.jobs) ? computeLayout($activeRun.jobs, expandedSteps) : null;
     $: byStep = ($activeRun && $activeRun.jobs) ? Object.fromEntries($activeRun.jobs.map(j => [j.step_id, j])) : {};
     $: jobHasArtifacts = (jobID: string) => $artifacts.some(a => a.job_id === jobID);
 
