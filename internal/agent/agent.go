@@ -2386,8 +2386,16 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	// Release the concurrency slot while waiting for the child pipeline to finish.
 	// This prevents deadlocks if the child pipeline jobs have affinity to this agent
 	// and the agent's concurrency limit is reached.
+	if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=true", a.schedulerURL, spec.JobID), "", nil); err == nil {
+		resp.Body.Close()
+	}
 	<-a.semaphore
-	defer func() { a.semaphore <- struct{}{} }()
+	defer func() {
+		a.semaphore <- struct{}{}
+		if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=false", a.schedulerURL, spec.JobID), "", nil); err == nil {
+			resp.Body.Close()
+		}
+	}()
 
 	// Poll until the child run finishes.
 	finalStatus, pollLogs := a.waitForChildRun(ctx, runResp.RunID)

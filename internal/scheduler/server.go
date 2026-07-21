@@ -318,6 +318,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/runs/prune", s.handlePruneRuns)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/waiting", s.handleJobWaiting)
 	mux.HandleFunc("POST /api/v1/test-reports", s.handleRecordTestReport)
 	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.handleGetFlakyTests)
 
@@ -491,6 +492,27 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 		s.publishRunDetail(runID)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleJobWaiting(w http.ResponseWriter, r *http.Request) {
+	// agentOnly might take w, r or just r depending on implementation.
+	// I saw !agentOnly(r) in handleSubmitRun earlier.
+	if !agentOnly(r) {
+		writeError(w, http.StatusForbidden, "agent permission required")
+		return
+	}
+	jobID := r.PathValue("id")
+	waiting := r.URL.Query().Get("waiting") == "true"
+	if err := s.store.UpdateJobWaiting(jobID, waiting); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	runID := s.store.GetJobRunID(jobID)
+	if runID != "" {
+		s.publishRunDetail(runID)
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleDenyJob(w http.ResponseWriter, r *http.Request) {
@@ -1181,7 +1203,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 					tmpDir, err := os.MkdirTemp("", "forge-policy-*")
 					if err == nil {
 						defer os.RemoveAll(tmpDir)
-						if err := s.gitCache.Sync(proj.RepoURL, scmToken); err == nil {
+						if err := s.gitCache.SyncCommit(proj.RepoURL, scmToken, commitSHA); err == nil {
 							if err := s.extractSourceToDir(proj.RepoURL, commitSHA, tmpDir); err == nil {
 								workspaceDir = tmpDir
 							} else {
@@ -1634,7 +1656,7 @@ func (s *Server) triggerProject(projectID, branch, commit string) (string, error
 		return "", fmt.Errorf("project not found")
 	}
 
-	if err := s.gitCache.Sync(proj.RepoURL, scmToken); err != nil {
+	if err := s.gitCache.SyncCommit(proj.RepoURL, scmToken, branch); err != nil {
 		return "", fmt.Errorf("failed to sync repo: %w", err)
 	}
 
@@ -2194,7 +2216,7 @@ func (s *Server) resolveRemoteSteps(steps []api.StepDef, scmToken string, visite
 		}
 
 		// Fetch via gitcache
-		if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
+		if err := s.gitCache.SyncCommit(repoURL, scmToken, ref); err != nil {
 			return nil, fmt.Errorf("fetching remote template %s: %w", repoURL, err)
 		}
 

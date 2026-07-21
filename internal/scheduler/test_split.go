@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -20,7 +21,7 @@ type fileInfo struct {
 	avgMS int64
 }
 
-func (s *Store) expandSplitSteps(runID, projectID, pipelineName string, steps []api.StepDef) ([]api.StepDef, error) {
+func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName string, steps []api.StepDef) ([]api.StepDef, error) {
 	var expanded []api.StepDef
 	for _, step := range steps {
 		if step.Split == nil {
@@ -40,7 +41,7 @@ func (s *Store) expandSplitSteps(runID, projectID, pipelineName string, steps []
 		}
 
 		// Store the shard plan so the UI can show it.
-		if err := s.storeShardAssignments(runID, step.ID, assignments); err != nil {
+		if err := s.storeShardAssignments(tx, runID, step.ID, assignments); err != nil {
 			return nil, err
 		}
 
@@ -230,10 +231,10 @@ func distributeUnknownFiles(unknown []string, assignments []ShardAssignment) {
 	}
 }
 
-func (s *Store) storeShardAssignments(runID, stepID string, assignments []ShardAssignment) error {
+func (s *Store) storeShardAssignments(tx *sql.Tx, runID, stepID string, assignments []ShardAssignment) error {
 	for _, a := range assignments {
 		filePathsJSON, _ := json.Marshal(a.Files)
-		_, err := s.db.Exec(`
+		_, err := tx.Exec(`
 			INSERT INTO test_shard_assignments (run_id, step_id, shard_index, total_shards, file_paths, estimated_ms)
 			VALUES ($1, $2, $3, $4, $5, $6)`,
 			runID, stepID, a.ShardIndex, len(assignments), filePathsJSON, a.EstimatedMS,

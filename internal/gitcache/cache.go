@@ -68,11 +68,26 @@ func (c *Cache) authURL(repoURL, token string) string {
 }
 
 func (c *Cache) Sync(repoURL, token string) error {
+	return c.SyncCommit(repoURL, token, "")
+}
+
+func (c *Cache) SyncCommit(repoURL, token, commit string) error {
 	lock := c.getLock(repoURL)
 	lock.Lock()
 	defer lock.Unlock()
 
 	dir := c.RepoDir(repoURL)
+
+	if commit != "" {
+		if _, err := os.Stat(dir); err == nil {
+			// Check if commit already exists
+			checkCmd := exec.Command("git", "-C", dir, "rev-parse", "--verify", commit+"^{commit}")
+			if err := checkCmd.Run(); err == nil {
+				return nil // Already have it
+			}
+		}
+	}
+
 	authURL := c.authURL(repoURL, token)
 
 	if _, err := os.Stat(dir); os.IsNotExist(err) {

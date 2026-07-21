@@ -321,7 +321,7 @@ func (s *Server) triggerWebhookRun(
 ) (string, error) {
 
 	if !skipSync {
-		if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
+		if err := s.gitCache.SyncCommit(repoURL, scmToken, commitSHA); err != nil {
 			return "", fmt.Errorf("syncing repo: %w", err)
 		}
 	}

@@ -58,7 +58,7 @@
         const statusMsg = ['pending', 'queued', 'canceled'].includes(job.status);
         if (statusMsg) return;
 
-        if (job.status === 'running') {
+        if (job.status === 'running' || job.status === 'waiting') {
             openLogWS(job.job_id);
         } else {
             currentJobId = job.job_id;
@@ -106,7 +106,7 @@
                 {:else if $selectedJob.status === 'canceled'}
                     Job was canceled before it ran.
                 {:else}
-                    No logs stored for this job{#if $selectedJob.status === 'running'} — still running{/if}.
+                    No logs stored for this job{#if $selectedJob.status === 'running' || $selectedJob.status === 'waiting'} — still running{/if}.
                 {/if}
             </div>
         {:else}

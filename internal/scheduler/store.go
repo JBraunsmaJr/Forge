@@ -33,13 +33,6 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 
 	stepIDsJSON, _ := json.Marshal(appliedStepIDs)
 
-	// Expand steps with split: configuration before processing.
-	expandedSteps, err := s.expandSplitSteps(runID, projectID, name, steps)
-	if err != nil {
-		return "", fmt.Errorf("expand split steps: %w", err)
-	}
-	steps = expandedSteps
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
@@ -69,6 +62,14 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
 	}
+
+	// Expand steps with split: configuration before processing.
+	// Must happen after inserting the run due to foreign key constraints.
+	expandedSteps, err := s.expandSplitSteps(tx, runID, projectID, name, steps)
+	if err != nil {
+		return "", fmt.Errorf("expand split steps: %w", err)
+	}
+	steps = expandedSteps
 
 	for _, step := range steps {
 		command := step.Command
@@ -400,6 +401,15 @@ func (s *Store) ActiveAgentsCount() (int, error) {
 	return count, err
 }
 
+func (s *Store) UpdateJobWaiting(jobID string, waiting bool) error {
+	status := api.JobStatusRunning
+	if waiting {
+		status = api.JobStatusWaiting
+	}
+	_, err := s.db.Exec(`UPDATE jobs SET status = $1 WHERE id = $2`, status, jobID)
+	return err
+}
+
 func (s *Store) ActiveJobsCount(agentID string) (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE agent_id = $1 AND status = 'running'`, agentID).Scan(&count)
@@ -413,7 +423,7 @@ func (s *Store) ReclaimStaleJobs() int {
 		UPDATE jobs
 		SET    status = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
 		       lease_id = '', agent_id = ''
-		WHERE  status       = 'running'
+		WHERE  (status = 'running' OR status = 'waiting')
 		AND    heartbeat_at < NOW() - INTERVAL '30 seconds'`)
 	if err != nil {
 		return 0
@@ -448,7 +458,7 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 	err = tx.QueryRow(`
 		UPDATE jobs
 		SET    status = $1, exit_code = $2, duration_ms = $3, finished_at = NOW()
-		WHERE  id = $4 AND lease_id = $5 AND status = 'running'
+		WHERE  id = $4 AND lease_id = $5 AND (status = 'running' OR status = 'waiting')
 		RETURNING run_id, step_id`,
 		status, exitCode, durationMs, jobID, leaseID,
 	).Scan(&runID, &stepID)
@@ -855,7 +865,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 			SELECT r.id, r.name, r.created_at,
 			       COUNT(j.id) AS job_count,
 			       CASE 
-			           WHEN bool_or(j.status IN ('running', 'queued', 'release')) THEN 'running'
+			           WHEN bool_or(j.status IN ('running', 'waiting', 'queued', 'release')) THEN 'running'
 			           WHEN bool_or(j.status = 'approval') THEN 'approval'
 			           WHEN bool_or(j.status = 'pending') THEN 'running'
 			           WHEN bool_or(j.status IN ('failed', 'timed_out')) THEN 'failed'
@@ -1116,6 +1126,7 @@ func (s *Store) jobStatuses(runID string) []api.JobStatus {
 
 func overallStatus(statuses []api.JobStatus) api.JobStatus {
 	hasRunning := false
+	hasWaiting := false
 	hasQueued := false
 	hasApproval := false
 	hasRelease := false
@@ -1127,6 +1138,8 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 		switch s {
 		case api.JobStatusRunning:
 			hasRunning = true
+		case api.JobStatusWaiting:
+			hasWaiting = true
 		case api.JobStatusQueued:
 			hasQueued = true
 		case api.JobStatusApproval:
@@ -1142,7 +1155,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 		}
 	}
 
-	if hasRunning || hasQueued || hasRelease {
+	if hasRunning || hasWaiting || hasQueued || hasRelease {
 		return api.JobStatusRunning
 	}
 	if hasApproval {
@@ -1167,7 +1180,7 @@ func (s *Store) AppendJobLogs(jobID, leaseID string, events []api.LogEvent) erro
 	// Verify the lease is still valid.
 	var currentLease string
 	err := s.db.QueryRow(
-		`SELECT lease_id FROM jobs WHERE id=$1 AND status='running'`, jobID,
+		`SELECT lease_id FROM jobs WHERE id=$1 AND (status='running' OR status='waiting')`, jobID,
 	).Scan(&currentLease)
 	if err != nil || currentLease != leaseID {
 		return fmt.Errorf("invalid lease or job not running")
