@@ -476,7 +476,7 @@ func (s *Server) triggerWebhookRun(
 		appliedStepIDs = append(appliedStepIDs, s.ID)
 	}
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, "", steps, appliedStepIDs, "")
+	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, "", steps, appliedStepIDs, "", "")
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}

@@ -22,14 +22,14 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // SubmitRun inserts a new run and all its jobs in a single transaction.
-func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID string) (string, error) {
-	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID, steps, appliedStepIDs, parentRunID)
+func (s *Store) SubmitRun(name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string) (string, error) {
+	return s.SubmitRunWithID(newID(), name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID, steps, appliedStepIDs, parentRunID, parentJobID)
 }
 
 // SubmitRunWithID is like SubmitRun but uses a caller-provided run ID.
 // Used by webhook handlers which allocate the ID before creating the
 // workspace directory (so the dir name can include the run ID).
-func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID string) (string, error) {
+func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref, commitSHA, scmProvider, preferredAgentID string, steps []api.StepDef, appliedStepIDs []string, parentRunID, parentJobID string) (string, error) {
 
 	stepIDsJSON, _ := json.Marshal(appliedStepIDs)
 
@@ -38,6 +38,14 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 		return "", fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	if parentJobID != "" {
+		var existingID string
+		err := tx.QueryRow(`SELECT id FROM runs WHERE parent_job_id = $1`, parentJobID).Scan(&existingID)
+		if err == nil {
+			return existingID, nil // Idempotent: return existing run
+		}
+	}
 
 	var orgIDParam any
 	if orgID != "" {
@@ -54,10 +62,15 @@ func (s *Store) SubmitRunWithID(runID, name, workspaceDir, orgID, projectID, ref
 		preferredAgentParam = preferredAgentID
 	}
 
+	var parentJobParam any
+	if parentJobID != "" {
+		parentJobParam = parentJobID
+	}
+
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		runID, name, workspaceDir, stepIDsJSON, orgIDParam, projectID, ref, commitSHA, scmProvider, parentRunParam, preferredAgentParam,
+		`INSERT INTO runs (id, name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		runID, name, workspaceDir, stepIDsJSON, orgIDParam, projectID, ref, commitSHA, scmProvider, parentRunParam, preferredAgentParam, parentJobParam,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -424,7 +437,7 @@ func (s *Store) ReclaimStaleJobs() int {
 		SET    status = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
 		       lease_id = '', agent_id = ''
 		WHERE  (status = 'running' OR status = 'waiting')
-		AND    heartbeat_at < NOW() - INTERVAL '30 seconds'`)
+		AND    heartbeat_at < NOW() - INTERVAL '2 minutes'`)
 	if err != nil {
 		return 0
 	}
@@ -904,10 +917,10 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 // RunDetail returns the full run state for the DAG view.
 func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	detail := &api.RunDetail{RunID: runID}
-	var orgID, projectID, commitSHA, scmProvider sql.NullString
+	var orgID, projectID, commitSHA, scmProvider, parentRunID sql.NullString
 	err := s.db.QueryRow(
-		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider FROM runs WHERE id=$1`, runID,
-	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider)
+		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider, parent_run_id FROM runs WHERE id=$1`, runID,
+	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider, &parentRunID)
 	if err != nil {
 		return nil, false
 	}
@@ -924,11 +937,16 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	if scmProvider.Valid {
 		detail.SCMProvider = scmProvider.String
 	}
+	if parentRunID.Valid {
+		detail.ParentRunID = parentRunID.String
+	}
 
 	rows, err := s.db.Query(`
-		SELECT id, step_id, status, depends_on,
-		       duration_ms, timeout_ns, started_at, finished_at, exit_code, policy_source
-		FROM   jobs WHERE run_id=$1`, runID)
+		SELECT j.id, j.step_id, j.status, j.depends_on,
+		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id
+		FROM   jobs j
+		LEFT JOIN runs r ON r.parent_job_id = j.id
+		WHERE  j.run_id=$1`, runID)
 	if err != nil {
 		return nil, false
 	}
@@ -939,11 +957,15 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	for rows.Next() {
 		var j api.JobDetail
 		var depsJSON []byte
+		var childRunID sql.NullString
 		rows.Scan(&j.JobID, &j.StepID, &j.Status, &depsJSON,
-			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource)
+			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID)
 		json.Unmarshal(depsJSON, &j.DependsOn)
 		if j.DependsOn == nil {
 			j.DependsOn = []string{}
+		}
+		if childRunID.Valid {
+			j.ChildRunID = childRunID.String
 		}
 		jobs = append(jobs, j)
 		statuses = append(statuses, j.Status)

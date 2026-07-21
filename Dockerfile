@@ -1,5 +1,5 @@
-# ── Stage 1: Build UI ──────────────────────────────────────────────────────────
-FROM node:22-alpine AS ui-builder
+# --- Stage 1: Build UI ---
+FROM node:22-alpine AS ui_builder
 WORKDIR /app
 COPY . .
 # Skip UI build if assets are already present in the context
@@ -9,8 +9,8 @@ RUN if [ ! -d "internal/scheduler/web/dist" ] || [ -z "$(ls -A internal/schedule
       echo "Using pre-built UI assets from context"; \
     fi
 
-# ── Stage 2: Build Go ─────────────────────────────────────────────────────────
-FROM golang:1.26.5-alpine AS builder
+# --- Stage 2: Build Go ---
+FROM golang:1.26.5-alpine AS go_builder
 
 WORKDIR /app
 
@@ -27,11 +27,11 @@ RUN go mod download
 
 COPY . .
 # Copy the built UI assets (either from the context or from the build above)
-COPY --from=ui-builder /app/internal/scheduler/web/dist ./internal/scheduler/web/dist
+COPY --from=ui_builder /app/internal/scheduler/web/dist ./internal/scheduler/web/dist
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o /forge ./cmd/forge
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+# --- Stage 3: Runtime ---
 FROM alpine:3.20
 
 # docker-cli        — agents call docker run/exec to launch job containers
@@ -52,7 +52,7 @@ RUN apk add --no-cache \
         postgresql-client \
         python3
 
-COPY --from=builder /forge /forge
+COPY --from=go_builder /forge /forge
 COPY scripts/ /scripts/
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh /scripts/*.sh

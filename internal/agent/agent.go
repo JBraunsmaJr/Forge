@@ -94,8 +94,9 @@ type Agent struct {
 }
 
 type activeJobInfo struct {
-	Cancel context.CancelFunc
-	RunID  string
+	Cancel  context.CancelFunc
+	RunID   string
+	LeaseID string
 }
 
 // New creates an agent that connects to schedulerURL.
@@ -313,6 +314,16 @@ func (a *Agent) Run(ctx context.Context) error {
 				Ref:            pbSpec.Ref,
 			}
 
+			if info, ok := a.activeJobs.Load(spec.JobID); ok {
+				if info.(activeJobInfo).LeaseID != spec.LeaseID {
+					fmt.Printf("[agent %s] received redundant job %s with new lease, canceling old execution\n", a.id[:8], spec.JobID[:8])
+					info.(activeJobInfo).Cancel()
+				} else {
+					fmt.Printf("[agent %s] received redundant job %s with same lease, ignoring\n", a.id[:8], spec.JobID[:8])
+					continue
+				}
+			}
+
 			if pbSpec.PipelineRef != nil {
 				spec.PipelineRef = &api.PipelineRef{
 					Path:             pbSpec.PipelineRef.Path,
@@ -347,8 +358,12 @@ func (a *Agent) Run(ctx context.Context) error {
 				}()
 
 				jobCtx, cancel := context.WithCancel(ctx)
-				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID})
-				defer a.activeJobs.Delete(s.JobID)
+				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID, LeaseID: s.LeaseID})
+				defer func() {
+					if info, ok := a.activeJobs.Load(s.JobID); ok && info.(activeJobInfo).LeaseID == s.LeaseID {
+						a.activeJobs.Delete(s.JobID)
+					}
+				}()
 				defer cancel()
 
 				if err := a.execute(jobCtx, s); err != nil {
@@ -2364,6 +2379,8 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		Ref:              spec.Ref,
 		CommitSHA:        spec.CommitSHA,
 		AppliedStepIDs:   spec.AppliedStepIDs,
+		ParentRunID:      spec.RunID,
+		ParentJobID:      spec.JobID,
 	})
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {
