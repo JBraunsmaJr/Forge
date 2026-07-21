@@ -226,11 +226,20 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy && containerID != "" {
 		// 4. Copy workspace OUT (to capture any changes/artifacts)
 		// We copy "/workspace" from the container back to the host's job directory.
+		//
+		// The copy gets its own grace period rather than the step context:
+		// by the time we get here the step budget is often nearly spent, and
+		// after a timeout it is *fully* spent — so copying with ctx failed
+		// unconditionally with "context deadline exceeded" and threw away
+		// exactly the output (test reports, artifacts) needed to debug the
+		// timeout. WithoutCancel keeps ctx values but detaches the deadline.
+		copyCtx, copyCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		src := containerID + ":/workspace/."
 		dst := e.WorkspaceDir
-		if err := dockerutil.DockerCp(ctx, src, dst); err != nil {
+		if err := dockerutil.DockerCp(copyCtx, src, dst); err != nil {
 			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v", err), map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
+		copyCancel()
 
 		// 5. Cleanup container
 		exec.Command("docker", "rm", "-f", containerID).Run()

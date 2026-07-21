@@ -1018,7 +1018,8 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	shardRows, err := s.db.Query(`
 		SELECT step_id, shard_index, total_shards, file_paths, estimated_ms
 		FROM   test_shard_assignments
-		WHERE  run_id = $1`, runID)
+		WHERE  run_id = $1
+		ORDER  BY step_id, shard_index`, runID)
 	if err == nil {
 		defer shardRows.Close()
 		detail.ShardAssignments = make(map[string][]api.ShardAssignmentDetail)
