@@ -19,6 +19,7 @@ type ShardAssignment struct {
 type fileInfo struct {
 	path  string
 	avgMS int64
+	runs  int // distinct runs this file has timing data from
 }
 
 func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName string, steps []api.StepDef) ([]api.StepDef, error) {
@@ -83,6 +84,16 @@ func (s *Store) computeShardAssignments(
 	config *api.SplitConfig,
 ) ([]ShardAssignment, error) {
 
+	// Apply documented defaults (see api.SplitConfig).
+	historyDays := config.HistoryDays
+	if historyDays <= 0 {
+		historyDays = 14
+	}
+	minHistoryRuns := config.MinHistoryRuns
+	if minHistoryRuns <= 0 {
+		minHistoryRuns = 3
+	}
+
 	// Query historical file durations.
 	rows, err := s.db.Query(`
 		SELECT file_path, AVG(duration_ms)::BIGINT as avg_ms, COUNT(DISTINCT run_id) as runs
@@ -95,21 +106,16 @@ func (s *Store) computeShardAssignments(
 		ORDER  BY avg_ms DESC`, // longest files first (greedy assignment works better)
 		projectID, pipelineName,
 		stepID+"%", // step_id prefix match covers split shards
-		config.HistoryDays,
+		historyDays,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	type fileInfoWithRuns struct {
-		path  string
-		avgMS int64
-		runs  int
-	}
-	var files []fileInfoWithRuns
+	var files []fileInfo
 	for rows.Next() {
-		var f fileInfoWithRuns
+		var f fileInfo
 		if err := rows.Scan(&f.path, &f.avgMS, &f.runs); err != nil {
 			return nil, err
 		}
@@ -124,10 +130,10 @@ func (s *Store) computeShardAssignments(
 	var known []fileInfo
 	var unknown []string
 	for _, f := range files {
-		if config.MinHistoryRuns > 0 && f.runs < config.MinHistoryRuns {
+		if f.runs < minHistoryRuns {
 			unknown = append(unknown, f.path)
 		} else {
-			known = append(known, fileInfo{path: f.path, avgMS: f.avgMS})
+			known = append(known, f)
 		}
 	}
 
@@ -246,11 +252,10 @@ func (s *Store) storeShardAssignments(tx *sql.Tx, runID, stepID string, assignme
 	return nil
 }
 
+// copyEnv returns a non-nil copy so callers can safely add keys.
+// (Returning nil for a nil input would panic on the first assignment.)
 func copyEnv(env map[string]string) map[string]string {
-	if env == nil {
-		return nil
-	}
-	res := make(map[string]string, len(env))
+	res := make(map[string]string, len(env)+4)
 	for k, v := range env {
 		res[k] = v
 	}
