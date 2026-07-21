@@ -220,6 +220,7 @@ func runSubmit(cmd *cobra.Command, args []string) {
 	workspaceDir, _ := os.Getwd()
 	body, _ := json.Marshal(api.SubmitRunRequest{
 		PipelineName: p.Name,
+		Steps:        p.ToAPISteps(nil),
 		WorkspaceDir: workspaceDir,
 		OrgID:        os.Getenv("FORGE_ORG"),
 		Ref:          ref,

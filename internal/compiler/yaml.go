@@ -3,6 +3,7 @@ package compiler
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -287,6 +288,16 @@ func parseScalar(s string) any {
 			(s[0] == '\'' && s[len(s)-1] == '\'') {
 			return s[1 : len(s)-1]
 		}
+	}
+
+	// Try to parse as int
+	if i, err := strconv.Atoi(s); err == nil {
+		return i
+	}
+
+	// Try to parse as float
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
 	}
 
 	return s

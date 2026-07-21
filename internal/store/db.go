@@ -294,7 +294,7 @@ CREATE INDEX IF NOT EXISTS step_results_time_idx ON step_results(created_at DESC
 CREATE TABLE IF NOT EXISTS artifacts (
     id           TEXT        PRIMARY KEY,
     run_id       TEXT        NOT NULL REFERENCES runs(id)  ON DELETE CASCADE,
-    job_id       TEXT        NOT NULL REFERENCES jobs(id)  ON DELETE CASCADE,
+    job_id       TEXT        REFERENCES jobs(id)  ON DELETE CASCADE,
     name         TEXT        NOT NULL,
     filename     TEXT        NOT NULL,
     size_bytes   BIGINT      NOT NULL DEFAULT 0,
@@ -306,6 +306,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS upload_token TEXT;
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS confirmed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE artifacts ALTER COLUMN job_id DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS artifacts_run_id_idx   ON artifacts(run_id);
 CREATE INDEX IF NOT EXISTS artifacts_run_name_idx ON artifacts(run_id, name);
 

@@ -398,8 +398,15 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 		args = append(args, "-e", "FORGE_ID_TOKEN="+step.OIDCToken)
 	}
 
+	// Inject /workspace/.forge/bin into PATH if it's already defined in Env.
+	// We don't provide a default PATH here to avoid overriding the image's default PATH.
+	// For shell commands (run:), we prepend it in the command itself at the end of this function.
 	for k, v := range step.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+		val := v
+		if k == "PATH" {
+			val = "/workspace/.forge/bin:" + v
+		}
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, val))
 	}
 
 	// Always inject the current agent's ID so steps (like integration tests)
@@ -409,7 +416,17 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 	args = append(args, "-e", "FORGE_PROXY_AGENT_ID="+e.getLabelAgentID())
 
 	args = append(args, step.Image)
-	args = append(args, step.Command...)
+
+	cmd := step.Command
+	if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" {
+		// Prepend PATH to the shell command so forge is available even if we didn't
+		// override the image's PATH (which we don't if step.Env["PATH"] was empty).
+		newCmd := make([]string, len(cmd))
+		copy(newCmd, cmd)
+		newCmd[2] = "export PATH=/workspace/.forge/bin:$PATH; " + newCmd[2]
+		cmd = newCmd
+	}
+	args = append(args, cmd...)
 	return args
 }
 

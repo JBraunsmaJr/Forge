@@ -1262,7 +1262,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", req.PreferredAgentID, steps, appliedStepIDs, req.ParentRunID, req.ParentJobID)
+	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", req.PreferredAgentID, steps, appliedStepIDs, req.ParentRunID, req.ParentJobID, req.ArtifactsSend)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1862,7 +1862,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 		steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "")
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "", nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1900,7 +1900,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "")
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "", nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1972,7 +1972,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "")
+	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID, "", nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

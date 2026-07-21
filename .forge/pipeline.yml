@@ -54,6 +54,13 @@ steps:
       download:
         - name: ui-dist.tar.gz
     timeout: 10m
+    split:
+      strategy: duration
+      shards: 3
+      history_days: 14
+      min_history_runs: 2
+      fallback: round-robin
+    test_report: .forge/test-report.json
     run: |
       apk add --no-cache docker-cli docker-cli-compose iproute2
       # Debug: check if artifact was downloaded
@@ -62,7 +69,10 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test -v ./tests/integration/...    
+      go test ./... -v -json \
+      $(echo $FORGE_TEST_FILES | tr ',' ' ') \
+      2>&1 | tee /tmp/go-test-output.json
+      forge report from-go-test /tmp/go-test-output.json
 
   - id: main-pipeline
     condition: branch(main)
