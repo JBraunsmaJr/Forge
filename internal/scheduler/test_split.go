@@ -122,7 +122,7 @@ func (s *Store) computeShardAssignments(
 	rows, err := s.db.Query(`
 		SELECT file_path, AVG(duration_ms)::BIGINT as avg_ms, COUNT(DISTINCT run_id) as runs
 		FROM   test_file_durations
-		WHERE  project_id    = $1
+		WHERE  COALESCE(project_id, '') = $1
 		AND    pipeline_name = $2
 		AND    step_id       LIKE $3   -- matches "test" AND "test-shard-1", "test-shard-2" etc
 		AND    created_at    > NOW() - ($4 || ' days')::INTERVAL
@@ -177,7 +177,7 @@ func (s *Store) roundRobinAssignment(projectID, pipelineName, stepID string, con
 	rows, err := s.db.Query(`
 		SELECT file_path, COALESCE(AVG(duration_ms), 0)::BIGINT AS avg_ms
 		FROM   test_file_durations
-		WHERE  project_id    = $1
+		WHERE  COALESCE(project_id, '') = $1
 		AND    pipeline_name = $2
 		AND    step_id       LIKE $3
 		GROUP  BY file_path

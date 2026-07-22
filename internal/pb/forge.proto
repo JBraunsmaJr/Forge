@@ -107,6 +107,14 @@ message JobSpec {
   string workspace_dir = 25;
   // Ref is the git ref (e.g. "refs/heads/main") the run was submitted for.
   string ref = 26;
+  // TestReport is the workspace-relative path of the test report file this
+  // step produces (from the step's `test_report:` config). Empty when unset.
+  // Without this field on the wire, agents never saw test_report and test
+  // duration recording silently never ran.
+  string test_report = 27;
+  // PipelineName is the stable pipeline identity used to correlate history
+  // (test durations, shard planning) across runs.
+  string pipeline_name = 28;
 }
 
 message PipelineRef {

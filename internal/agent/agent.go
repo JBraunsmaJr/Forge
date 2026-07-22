@@ -311,6 +311,8 @@ func (a *Agent) Run(ctx context.Context) error {
 				AppliedStepIDs: pbSpec.AppliedStepIds,
 				WorkspaceDir:   pbSpec.WorkspaceDir,
 				Ref:            pbSpec.Ref,
+				TestReport:     pbSpec.TestReport,
+				PipelineName:   pbSpec.PipelineName,
 			}
 
 			if info, ok := a.activeJobs.Load(spec.JobID); ok {

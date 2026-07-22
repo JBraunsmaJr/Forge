@@ -11,13 +11,21 @@ func (s *Store) RecordTestReport(req api.RecordTestReportRequest) error {
 	}
 	defer tx.Rollback()
 
+	// project_id carries a foreign key; an empty string is not NULL and
+	// violates it, which 500'd duration recording for any run without a
+	// project (e.g. direct API submissions).
+	var projectID any
+	if req.ProjectID != "" {
+		projectID = req.ProjectID
+	}
+
 	for _, f := range req.Report.Files {
 		_, err := tx.Exec(`
 			INSERT INTO test_file_durations (
 				run_id, job_id, project_id, pipeline_name, step_id,
 				file_path, duration_ms, test_count, passed, failed, skipped
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			req.RunID, req.JobID, req.ProjectID, req.PipelineName, req.StepID,
+			req.RunID, req.JobID, projectID, req.PipelineName, req.StepID,
 			f.Path, f.DurationMS, f.Tests, f.Passed, f.Failed, f.Skipped,
 		)
 		if err != nil {
