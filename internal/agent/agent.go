@@ -1727,9 +1727,17 @@ func (a *Agent) reportTestResults(spec *api.JobSpec, workspaceDir string) {
 		"application/json",
 		bytes.NewReader(body),
 	)
-	if err == nil {
-		resp.Body.Close()
+	if err != nil {
+		fmt.Printf("[agent %s] failed to send test report: %v\n", a.id[:8], err)
+		return
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		fmt.Printf("[agent %s] scheduler rejected test report: HTTP %d\n", a.id[:8], resp.StatusCode)
+		return
+	}
+	fmt.Printf("[agent %s] recorded %d test file durations (pipeline=%s step=%s)\n",
+		a.id[:8], len(report.Files), spec.PipelineName, baseStepID)
 }
 
 func stripShardSuffix(stepID string) string {
