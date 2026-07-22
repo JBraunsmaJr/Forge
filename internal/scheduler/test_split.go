@@ -47,6 +47,26 @@ func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName stri
 		}
 
 		// Fan out: one step per shard.
+		//
+		// coldStart: no shard has any assigned files (no usable timing
+		// history yet). Historically every shard then ran the entire suite
+		// concurrently — N× the work, and for docker-heavy suites N nested
+		// stacks stampeding one daemon (OOM kills, flaky failures). The
+		// SplitConfig.Fallback field documents "round-robin" | "single";
+		// implement it: with "single" (the default), only shard 1 runs the
+		// full suite on a cold start and the rest are told to no-op via
+		// FORGE_TEST_SHARD_EMPTY=1. Set fallback: "round-robin" to keep the
+		// old run-everything-everywhere behavior.
+		coldStart := true
+		for _, a := range assignments {
+			if len(a.Files) > 0 {
+				coldStart = false
+				break
+			}
+		}
+		if step.Split.Fallback == "round-robin" {
+			coldStart = false
+		}
 		originalDeps := step.DependsOn
 		var shardIDs []string
 		for i, assignment := range assignments {
@@ -60,6 +80,10 @@ func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName stri
 			shardStep.Env["FORGE_SHARD_INDEX"] = strconv.Itoa(i)
 			shardStep.Env["FORGE_SHARD_TOTAL"] = strconv.Itoa(len(assignments))
 			shardStep.Env["FORGE_SHARD_ESTIMATED_MS"] = strconv.FormatInt(assignment.EstimatedMS, 10)
+			if coldStart && i > 0 {
+				// See coldStart above: only shard 1 runs the full suite.
+				shardStep.Env["FORGE_TEST_SHARD_EMPTY"] = "1"
+			}
 			expanded = append(expanded, shardStep)
 			shardIDs = append(shardIDs, shardID)
 		}
