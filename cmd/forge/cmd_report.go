@@ -32,6 +32,43 @@ var fromGoTestCmd = &cobra.Command{
 	},
 }
 
+var streamGoTestCmd = &cobra.Command{
+	Use:   "stream-go-test",
+	Short: "Convert `go test -json` on stdin to human-readable output",
+	Long: `Reads go test -json events from stdin and prints only the human-readable
+test output, so CI log viewers show classic "go test -v" text instead of raw
+JSONL. Non-JSON lines (e.g. build errors) pass through untouched.
+
+Typical use, keeping the raw JSON for from-go-test:
+
+  go test -v -json ./... 2>&1 | tee /tmp/go-test.json | forge report stream-go-test
+  forge report from-go-test /tmp/go-test.json`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sc := bufio.NewScanner(os.Stdin)
+		// go test output lines can be long (giant assertion diffs).
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
+			var ev struct {
+				Action string `json:"Action"`
+				Output string `json:"Output"`
+			}
+			if err := json.Unmarshal(line, &ev); err != nil || ev.Action == "" {
+				// Not a go-test event — pass through as-is.
+				os.Stdout.Write(append(line, '\n'))
+				continue
+			}
+			if ev.Action == "output" {
+				// Output already carries its own trailing newline.
+				// Unbuffered on purpose: these lines stream into live CI logs.
+				os.Stdout.WriteString(ev.Output)
+			}
+		}
+		return sc.Err()
+	},
+}
+
 var fromPytestCmd = &cobra.Command{
 	Use:   "from-pytest <input-file> [output-file]",
 	Short: "Convert pytest --json-report output",
@@ -77,6 +114,7 @@ var fromRSpecCmd = &cobra.Command{
 func init() {
 	reportCmd.PersistentFlags().StringVar(&workspaceDir, "workspace", ".", "Workspace root directory")
 	reportCmd.AddCommand(fromGoTestCmd)
+	reportCmd.AddCommand(streamGoTestCmd)
 	reportCmd.AddCommand(fromPytestCmd)
 	reportCmd.AddCommand(fromJestCmd)
 	reportCmd.AddCommand(fromRSpecCmd)

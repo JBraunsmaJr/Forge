@@ -62,6 +62,9 @@ steps:
       fallback: single
     test_report: .forge/test-report.json
     run: |
+      # pipefail: without it, `go test | tee | ...` exits with the LAST
+      # command's status and test failures would not fail the step.
+      set -eo pipefail
       apk add --no-cache docker-cli docker-cli-compose iproute2
       # Debug: check if artifact was downloaded
       ls -la
@@ -73,10 +76,12 @@ steps:
         echo "no timing history yet; shard $FORGE_SHARD_INDEX deferring to shard 0 (fallback: single)"
         exit 0
       fi
+      go build -o /usr/local/bin/forge ./cmd/forge
+     
       TEST_PKGS=$(echo "$FORGE_TEST_FILES" | tr ',' ' ')
       if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
-      go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json
-      forge report from-go-test /tmp/go-test-output.json
+      go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json | forge report stream-go-test
+      forge report from-go-test /tmp/go-test-output.json .forge/test-report.json
 
   - id: main-pipeline
     condition: branch(main)
