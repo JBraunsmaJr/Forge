@@ -451,12 +451,20 @@ func (s *Store) ActiveAgentsCount() (int, error) {
 	return count, err
 }
 
+// UpdateJobWaiting toggles a job between running and waiting (used by
+// pipeline steps that release their concurrency slot while a child run
+// executes). Only the running<->waiting transitions are legal: the update
+// is guarded so that a completed job can never be resurrected. Without the
+// guard, the agent's deferred waiting=false (sent after reportComplete)
+// flipped already-passed pipeline steps back to 'running', where — with
+// heartbeats long stopped — the stale-job reaper would requeue and re-run
+// them in a loop.
 func (s *Store) UpdateJobWaiting(jobID string, waiting bool) error {
-	status := api.JobStatusRunning
-	if waiting {
-		status = api.JobStatusWaiting
+	from, to := api.JobStatusRunning, api.JobStatusWaiting
+	if !waiting {
+		from, to = api.JobStatusWaiting, api.JobStatusRunning
 	}
-	_, err := s.db.Exec(`UPDATE jobs SET status = $1 WHERE id = $2`, status, jobID)
+	_, err := s.db.Exec(`UPDATE jobs SET status = $1 WHERE id = $2 AND status = $3`, to, jobID, from)
 	return err
 }
 

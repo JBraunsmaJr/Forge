@@ -348,6 +348,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				})
 			}
 
+			if spec.TestReport != "" {
+				fmt.Printf("[agent %s] job %.8s carries test_report=%q pipeline=%q\n",
+					a.id[:8], spec.JobID, spec.TestReport, spec.PipelineName)
+			}
 			fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
 				a.id[:8], spec.JobID[:8], spec.StepID)
 
@@ -2370,16 +2374,22 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		resp.Body.Close()
 	}
 	<-a.semaphore
-	defer func() {
-		a.semaphore <- struct{}{}
-		if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=false", a.schedulerURL, spec.JobID), "", nil); err == nil {
-			resp.Body.Close()
-		}
-	}()
 
 	// Poll until the child run finishes.
 	finalStatus, pollLogs := a.waitForChildRun(ctx, runResp.RunID)
 	logs = append(logs, pollLogs...)
+
+	// Re-acquire the slot and flip waiting off BEFORE reporting completion.
+	// This used to live in a defer, which ran AFTER reportComplete — so the
+	// waiting=false request raced in behind the terminal status, and if the
+	// semaphore was contended the job showed "passed" while this goroutine
+	// was still blocked here, then snapped back to "running". Doing it in
+	// order means: waiting -> running (slot held again) -> terminal, and the
+	// terminal status is the last word.
+	a.semaphore <- struct{}{}
+	if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=false", a.schedulerURL, spec.JobID), "", nil); err == nil {
+		resp.Body.Close()
+	}
 
 	exitCode := 0
 	if finalStatus != "passed" {
