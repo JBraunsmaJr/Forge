@@ -77,8 +77,8 @@ steps:
         exit 0
       fi
       go build -o /usr/local/bin/forge ./cmd/forge
-     
-      TEST_PKGS=$(echo "$FORGE_TEST_FILES" | tr ',' ' ')
+      TEST_PKGS=""
+      for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do TEST_PKGS="$TEST_PKGS ./$p"; done
       if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
       go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json | forge report stream-go-test
       forge report from-go-test /tmp/go-test-output.json .forge/test-report.json

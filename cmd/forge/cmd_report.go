@@ -179,6 +179,9 @@ func fromGoTest(inputPath, outputPath string) error {
 	var files []api.TestFileResult
 	var totalDuration int64
 	for pkg, stats := range packages {
+		if pkg == "" {
+			continue
+		}
 		path := pkg
 		if moduleName != "" && strings.HasPrefix(pkg, moduleName) {
 			path = strings.TrimPrefix(pkg, moduleName)
