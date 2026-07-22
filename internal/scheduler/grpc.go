@@ -223,6 +223,8 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					AppliedStepIds: spec.AppliedStepIDs,
 					WorkspaceDir:   spec.WorkspaceDir,
 					Ref:            spec.Ref,
+					TestReport:     spec.TestReport,
+					PipelineName:   spec.PipelineName,
 				}
 
 				if spec.PipelineRef != nil {
