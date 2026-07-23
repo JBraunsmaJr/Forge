@@ -53,6 +53,14 @@ export function ansiToHtml(raw: string): string {
             const code = parseInt(codeStr, 10);
             if (code === 0) {
                 classes = [];
+            } else if (code === 22) {
+                classes = classes.filter((c) => c !== 'a-bold' && c !== 'a-dim');
+            } else if (code === 23) {
+                classes = classes.filter((c) => c !== 'a-italic');
+            } else if (code === 24) {
+                classes = classes.filter((c) => c !== 'a-underline');
+            } else if (code === 39) {
+                classes = classes.filter((c) => !Object.values(FG).includes(c));
             } else if (code === 1) {
                 if (!classes.includes('a-bold')) classes.push('a-bold');
             } else if (code === 2 || code === 3 || code === 4) {
