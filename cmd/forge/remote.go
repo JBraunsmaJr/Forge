@@ -195,6 +195,10 @@ func runProxy(cmd *cobra.Command, args []string) {
 	p := proxy.NewProxyServer(dockerSocket, socketDir)
 	defer p.Shutdown()
 
+	// Re-listen on any sockets a previous proxy instance left in the shared
+	// volume, so already-running agents keep working across proxy restarts.
+	p.RestoreRegistrations()
+
 	fmt.Printf("✓ Docker proxy management server starting on :%s\n", port)
 	if err := http.ListenAndServe(":"+port, p); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ proxy server: %v\n", err)
