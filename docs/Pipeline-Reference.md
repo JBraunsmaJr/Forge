@@ -47,6 +47,13 @@ At least one of `run`, `command`, or `script` is required for non-pipeline steps
 | `image`         | string   | Docker image. Pulled fresh if not cached locally.                                                        |
 | `docker_socket` | bool     | Mount host Docker socket into the container. Required for steps that run `docker build` or `docker run`. |
 
+#### `test_report`
+
+`test_report: <path>` names a workspace-relative JSON file the step produces
+describing per-file test timings (generate it with `forge report
+from-go-test` / `from-pytest`). The agent uploads it after the job; it feeds
+the flaky-test view and drives `split:` shard planning.
+
 ### The `script:` Field
 
 The `script:` field runs an external file from the workspace. The interpreter is inferred from the file extension:
@@ -180,6 +187,65 @@ Matrix builds allow you to run the same step multiple times with different varia
 Variables are accessed via `${{ matrix.key }}`. Forge generates step IDs like `test-18-linux`, `test-20-linux`, etc. 
 
 Any step that depends on a matrix step will automatically wait for **all** expanded instances of that matrix step to complete. Artifacts, environment variables, and release configurations within a matrix step also support `${{ matrix.key }}` interpolation.
+
+### Test Splitting (`split:`)
+
+Fan a slow test step out into N parallel shards, with test files distributed
+by historical runtime so each shard finishes at roughly the same time.
+
+```yaml
+- id: integration-tests
+  image: golang:1.26-alpine
+  timeout: 10m
+  test_report: .forge/test-report.json
+  split:
+    shards: 3
+    history_days: 14      # look-back window for timing data (default 14)
+    min_history_runs: 2   # runs required before a file's timing is trusted (default 3)
+    fallback: single      # cold-start behavior: "single" (default) or "round-robin"
+  run: |
+    set -eo pipefail
+    go build -o /usr/local/bin/forge ./cmd/forge
+    if [ "$FORGE_TEST_SHARD_EMPTY" = "1" ]; then
+      echo "no timing history yet; deferring to shard 0"; exit 0
+    fi
+    TEST_PKGS=""
+    for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do TEST_PKGS="$TEST_PKGS ./$p"; done
+    if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
+    go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test.json | forge report stream-go-test
+    forge report from-go-test /tmp/go-test.json .forge/test-report.json
+```
+
+At submit time the step expands into `<id>-shard-1..N` plus a fan-in step
+that keeps the original ID, so downstream `depends_on` works unchanged.
+
+**How timing history works.** The step's command writes a machine-readable
+report to the `test_report:` path (see `forge report` in the CLI reference);
+the agent uploads it after the job. Durations are keyed on
+`(project, pipeline name, step id, file path)` — commit- and branch-agnostic,
+so history recorded on any branch drives splitting everywhere. Rows are
+retained per run: pruning runs also prunes their timing history.
+
+**Cold start.** With no usable history, `fallback: single` (the default)
+runs the full suite on shard 1 while the remaining shards no-op with
+`FORGE_TEST_SHARD_EMPTY=1` — one warm-up run, not N concurrent full runs.
+`fallback: round-robin` instead runs the full suite on every shard. Once at
+least one report exists, files are distributed round-robin; once each file
+has `min_history_runs` recorded runs, assignment switches to
+duration-balanced bin packing.
+
+**Shard environment.** Each shard receives:
+
+| Variable                   | Meaning                                             |
+|----------------------------|-----------------------------------------------------|
+| `FORGE_TEST_FILES`         | Comma-separated file/package list for this shard.   |
+| `FORGE_SHARD_INDEX`        | Zero-based shard index.                             |
+| `FORGE_SHARD_TOTAL`        | Total shard count.                                  |
+| `FORGE_SHARD_ESTIMATED_MS` | Predicted runtime for this shard's assignment.     |
+| `FORGE_TEST_SHARD_EMPTY`   | `"1"` when this shard should no-op (cold start).    |
+
+The run detail view has a **Shards** tab showing each shard's assigned
+files, the predicted runtime, and — once finished — the actual runtime.
 
 ### Step Templates (`uses:`)
 

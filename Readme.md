@@ -330,6 +330,7 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 | Scheduled Pipelines                 | ✅ `on: schedule`                | ✅                         | ✅ Project-level Cron           |
 | Release Artifacts to SCM            | ❌ Action required               | ❌ Action required         | ✅ `type: release`              |
 | Debug failing jobs                  | ❌ Re-run and add echo           | ❌                         | ✅ Live terminal                |
+| Timing-based test splitting         | ❌ Third-party actions           | ⚠️ `parallel:` (manual)   | ✅ `split:` + timing history    |
 | Policy injection                    | ❌                               | ❌                         | ✅ Org-level policies           |
 | Scoped secrets (project/org/global) | ❌                               | ⚠️ Group variables        | ✅                              |
 | Self-hosted                         | ✅ Runners                       | ✅ Runners                 | ✅ Full stack                   |

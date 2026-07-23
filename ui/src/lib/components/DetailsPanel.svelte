@@ -93,7 +93,16 @@
     function fmtDuration(ms: number) {
         if (!ms) return '0s';
         if (ms < 1000) return `${ms}ms`;
-        return `${(ms/1000).toFixed(1)}s`;
+        if (ms < 90000) return `${(ms/1000).toFixed(1)}s`;
+        return `${Math.floor(ms/60000)}m ${Math.round((ms%60000)/1000)}s`;
+    }
+
+    // The job backing a shard card, e.g. "integration-tests-shard-2".
+    // Used to show the actual runtime and status next to the estimate.
+    function shardJob(stepId: string, shardIndex: number) {
+        return ($activeRun?.jobs || []).find(
+            (j) => j.step_id === `${stepId}-shard-${shardIndex + 1}`
+        );
     }
 
     onDestroy(() => {
@@ -178,10 +187,18 @@
             <div class="shards-tab-content">
                 {#if $selectedJob && $activeRun?.shard_assignments?.[$selectedJob.step_id]}
                     {#each $activeRun.shard_assignments[$selectedJob.step_id] as shard}
+                        {@const job = shardJob($selectedJob.step_id, shard.shard_index)}
                         <div class="shard-card">
                             <div class="shard-card-header">
                                 <span class="shard-name">Shard {shard.shard_index + 1} of {shard.total_shards}</span>
-                                {#if shard.estimated_ms > 0}
+                                {#if job && job.duration_ms > 0}
+                                    <span class="shard-est shard-actual-{job.status}">
+                                        {fmtDuration(job.duration_ms)}
+                                        {#if shard.estimated_ms > 0}(est. {fmtDuration(shard.estimated_ms)}){/if}
+                                    </span>
+                                {:else if job && (job.status === 'running' || job.status === 'waiting')}
+                                    <span class="shard-est">Running{#if shard.estimated_ms > 0} — est. {fmtDuration(shard.estimated_ms)}{/if}</span>
+                                {:else if shard.estimated_ms > 0}
                                     <span class="shard-est">Estimated {fmtDuration(shard.estimated_ms)}</span>
                                 {:else}
                                     <span class="shard-est">No estimate yet</span>
@@ -235,6 +252,9 @@
         align-items: center;
     }
     .shard-name { font-size: 11px; font-weight: 700; color: var(--text); text-transform: uppercase; }
+    .shard-actual-passed { color: var(--ok, #4caf50); }
+    .shard-actual-failed { color: var(--err, #f44336); }
+
     .shard-est { font-size: 10px; color: var(--muted); }
     .shard-files { padding: 10px 14px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
     .file-item { margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
