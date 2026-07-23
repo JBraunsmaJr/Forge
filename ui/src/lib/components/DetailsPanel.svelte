@@ -142,7 +142,7 @@
                 <Clock size={12} />
                 Timing
             </button>
-            {#if $selectedJob && shardList}
+            {#if $selectedJob && shardList?.length}
                 <button class:active={activeTab === 'shards'} on:click={() => activeTab = 'shards'}>
                     <TrendingUp size={12} />
                     Shards
@@ -194,7 +194,7 @@
             </div>
         {:else if activeTab === 'shards'}
             <div class="shards-tab-content">
-                {#if $selectedJob && shardList}
+                {#if $selectedJob && shardList?.length}
                     {#each shardList as shard}
                         {@const job = shardJob(shardStepKey, shard.shard_index)}
                         <div class="shard-card">

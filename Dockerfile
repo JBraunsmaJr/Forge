@@ -1,8 +1,8 @@
 # --- Stage 1: Build UI ---
 FROM node:22-alpine AS uibuilder
-WORKDIR /app
-COPY ui/ ./ui/
-RUN rm -rf internal/scheduler/web/dist && cd ui && npm install && npm run build
+WORKDIR /app/ui
+COPY ui/ .
+RUN rm -rf /app/internal/scheduler/web/dist && npm install && npm run build
 
 # --- Stage 2: Build Go ---
 FROM golang:1.26.5-alpine AS gobuilder

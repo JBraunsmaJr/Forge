@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { ansiToHtml } from '../ansi';
     import { onMount, tick } from 'svelte';
     import { selectedJob } from '../stores';
     import { api, authUrl, wsUrl, type LogEvent, type Job } from '../api';
@@ -114,7 +115,7 @@
                 <div class="log-line">
                     <span class="log-ts">{formatTime(log.ts)}</span>
                     <span class="log-level {log.level}">{log.level}</span>
-                    <span class="log-msg">{log.message}</span>
+                    <span class="log-msg">{@html ansiToHtml(log.message)}</span>
                 </div>
             {/each}
         {/if}
@@ -140,6 +141,19 @@
     .log-level.WARN  { color: var(--amber); }
     .log-level.ERROR { color: var(--red); }
     .log-msg { color: var(--text); white-space: pre-wrap; word-break: break-all; }
+    .log-msg :global(.a-bold) { font-weight: 700; }
+    .log-msg :global(.a-dim) { opacity: 0.65; }
+    .log-msg :global(.a-italic) { font-style: italic; }
+    .log-msg :global(.a-underline) { text-decoration: underline; }
+    .log-msg :global(.a-black) { color: #4d4d4d; }
+    .log-msg :global(.a-red), .log-msg :global(.a-bred) { color: #f47067; }
+    .log-msg :global(.a-green), .log-msg :global(.a-bgreen) { color: #57ab5a; }
+    .log-msg :global(.a-yellow), .log-msg :global(.a-byellow) { color: #c69026; }
+    .log-msg :global(.a-blue), .log-msg :global(.a-bblue) { color: #539bf5; }
+    .log-msg :global(.a-magenta), .log-msg :global(.a-bmagenta) { color: #b083f0; }
+    .log-msg :global(.a-cyan), .log-msg :global(.a-bcyan) { color: #39c5cf; }
+    .log-msg :global(.a-white), .log-msg :global(.a-bwhite) { color: #d9dee3; }
+    .log-msg :global(.a-bblack) { color: #768390; }
     #log-empty, .loading-msg { color: var(--muted); font-size: 13px; text-align: center; padding: 24px;
         font-family: system-ui, sans-serif; }
     .loading-msg { font-family: var(--font-mono); font-size: 12px; }
