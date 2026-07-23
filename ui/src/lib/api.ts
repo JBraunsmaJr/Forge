@@ -65,6 +65,7 @@ export interface Job {
     finished_at?: string;
     depends_on: string[];
     policy_source?: string;
+    child_run_id?: string;
 }
 
 export interface Run {
