@@ -170,8 +170,12 @@ func fromGoTest(inputPath, outputPath string) error {
 				pkg.failed++
 			}
 		case "skip":
-			pkg.tests++
-			pkg.skipped++
+			if e.Test == "" {
+				pkg.durationMS = int64(e.Elapsed * 1000)
+			} else {
+				pkg.tests++
+				pkg.skipped++
+			}
 		}
 	}
 

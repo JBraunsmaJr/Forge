@@ -109,7 +109,7 @@
     // named "<step>-shard-N". Normalize so the Shards tab appears whether
     // the user selects the fan-in node or an individual shard.
     function shardBaseStep(stepId: string): string {
-        return stepId.split('-shard-')[0];
+        return stepId.replace(/-shard-\d+$/, '');
     }
     $: shardStepKey = $selectedJob ? shardBaseStep($selectedJob.step_id) : '';
     $: shardList = shardStepKey ? $activeRun?.shard_assignments?.[shardStepKey] : undefined;

@@ -1323,35 +1323,10 @@ func (s *Store) CancelRun(runID string) (int64, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.Exec(`
-		UPDATE jobs
-		SET    status = 'canceled', finished_at = NOW()
-		WHERE  run_id = $1 AND status IN ('queued', 'running', 'pending', 'approval', 'waiting', 'release')`,
-		runID,
-	)
+	count, err := s.cancelRunTx(tx, runID)
+
 	if err != nil {
 		return 0, err
-	}
-	count, _ := res.RowsAffected()
-
-	// Recursively cancel child runs
-	rows, err := tx.Query(`SELECT id FROM runs WHERE parent_run_id = $1`, runID)
-	if err == nil {
-		var childIDs []string
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err == nil {
-				childIDs = append(childIDs, id)
-			}
-		}
-		rows.Close()
-
-		for _, cid := range childIDs {
-			c, err := s.cancelRunTx(tx, cid)
-			if err == nil {
-				count += c
-			}
-		}
 	}
 
 	return count, tx.Commit()
