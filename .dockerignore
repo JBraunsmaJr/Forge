@@ -1,7 +1,8 @@
 # Build outputs
 *.exe
 dist/
-!internal/scheduler/web/dist/
+# internal/scheduler/web/dist is intentionally NOT re-included: the image's
+# UI must come from the uibuilder stage, never from ambient context state.
 .forge/
 node_modules/
 **/node_modules/

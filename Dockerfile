@@ -1,13 +1,8 @@
 # --- Stage 1: Build UI ---
 FROM node:22-alpine AS uibuilder
 WORKDIR /app
-COPY . .
-# Skip UI build if assets are already present in the context
-RUN if [ ! -d "internal/scheduler/web/dist" ] || [ -z "$(ls -A internal/scheduler/web/dist 2>/dev/null)" ]; then \
-      cd ui && npm install && npm run build; \
-    else \
-      echo "Using pre-built UI assets from context"; \
-    fi
+COPY ui/ ./ui/
+RUN rm -rf internal/scheduler/web/dist && cd ui && npm install && npm run build
 
 # --- Stage 2: Build Go ---
 FROM golang:1.26.5-alpine AS gobuilder
