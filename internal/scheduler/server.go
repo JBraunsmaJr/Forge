@@ -563,6 +563,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := fs.Stat(distFS, path); err != nil {
+		// SPA fallback for route paths — but never for hashed assets: serving
+		// index.html as a stale bundle's JS makes browsers execute HTML and
+		// mask deploys behind cached pages.
+		if strings.HasPrefix(path, "assets/") {
+			http.NotFound(w, r)
+			return
+		}
 		path = "index.html"
 	}
 
@@ -574,6 +581,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	fi, _ := f.Stat()
+
+	// Vite emits content-hashed filenames under assets/, so those are safe
+	// to cache forever; index.html must revalidate on every load or a
+	// browser keeps referencing the previous deploy's bundle — the UI then
+	// silently lags the image ("I deployed but the new tab isn't there").
+	if strings.HasPrefix(path, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 
 	http.ServeContent(w, r, path, fi.ModTime(), f.(io.ReadSeeker))
 }

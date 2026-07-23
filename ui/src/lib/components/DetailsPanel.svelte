@@ -105,6 +105,15 @@
         );
     }
 
+    // Assignments are stored under the ORIGINAL step id; shard jobs are
+    // named "<step>-shard-N". Normalize so the Shards tab appears whether
+    // the user selects the fan-in node or an individual shard.
+    function shardBaseStep(stepId: string): string {
+        return stepId.split('-shard-')[0];
+    }
+    $: shardStepKey = $selectedJob ? shardBaseStep($selectedJob.step_id) : '';
+    $: shardList = shardStepKey ? $activeRun?.shard_assignments?.[shardStepKey] : undefined;
+
     onDestroy(() => {
         clearInterval(ttlInterval);
     });
@@ -133,7 +142,7 @@
                 <Clock size={12} />
                 Timing
             </button>
-            {#if $selectedJob && $activeRun?.shard_assignments?.[$selectedJob.step_id]}
+            {#if $selectedJob && shardList}
                 <button class:active={activeTab === 'shards'} on:click={() => activeTab = 'shards'}>
                     <TrendingUp size={12} />
                     Shards
@@ -185,9 +194,9 @@
             </div>
         {:else if activeTab === 'shards'}
             <div class="shards-tab-content">
-                {#if $selectedJob && $activeRun?.shard_assignments?.[$selectedJob.step_id]}
-                    {#each $activeRun.shard_assignments[$selectedJob.step_id] as shard}
-                        {@const job = shardJob($selectedJob.step_id, shard.shard_index)}
+                {#if $selectedJob && shardList}
+                    {#each shardList as shard}
+                        {@const job = shardJob(shardStepKey, shard.shard_index)}
                         <div class="shard-card">
                             <div class="shard-card-header">
                                 <span class="shard-name">Shard {shard.shard_index + 1} of {shard.total_shards}</span>
