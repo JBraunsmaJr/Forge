@@ -260,13 +260,24 @@
         justify-content: space-between;
         align-items: center;
     }
-    .shard-name { font-size: 11px; font-weight: 700; color: var(--text); text-transform: uppercase; }
+    .shard-name { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.3px; }
     .shard-actual-passed { color: var(--ok, #4caf50); }
     .shard-actual-failed { color: var(--err, #f44336); }
 
-    .shard-est { font-size: 10px; color: var(--muted); }
-    .shard-files { padding: 10px 14px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
-    .file-item { margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .shard-est { font-size: 11px; color: var(--muted); font-weight: 600; }
+    .shard-files {
+        padding: 12px 14px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text);
+    }
+    .file-item {
+        margin-bottom: 7px;
+        line-height: 1.5;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    .file-item:last-child { margin-bottom: 0; }
 
     #details-panel {
         display: flex;

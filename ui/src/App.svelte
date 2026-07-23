@@ -120,6 +120,13 @@
 
     let initialRunSelected = false;
     onMount(() => {
+        const unsubNav = navigateToRunID.subscribe((id) => {
+            if (id) {
+                selectRun(id);
+                navigateToRunID.set(null);
+            }
+        });
+
         // Initial auth check
         (async () => {
             try {
@@ -158,6 +165,7 @@
 
         return () => {
             unsubscribe();
+            unsubNav();
             ws?.close();
         };
     });
