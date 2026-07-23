@@ -428,3 +428,28 @@ print(json.dumps(steps))
 ```
 
 All standard step fields are supported in emitted steps: `artifacts`, `env`, `secrets`, `docker_socket`, `type`, etc.
+
+---
+
+## Example 8: Timing-Based Test Splitting
+
+**File:** `examples/.forge/test-splitting.yml`
+
+### What it does
+
+Fans a test step out into 3 parallel shards. Each shard runs only its
+assigned test files, chosen from historical per-file runtimes so all shards
+finish at roughly the same time. On the first run (no history) a single
+shard runs the whole suite to seed timing data; from the second run on, work
+is genuinely split. The run detail view's **Shards** tab shows each shard's
+assignment, its predicted runtime, and the actual runtime once complete.
+
+### Why it's hard elsewhere
+
+Test splitting usually means a paid third-party service or hand-maintaining
+static file lists per parallel job. Forge records per-file timings from the
+`test_report:` your step already produces and rebalances shards on every
+run — keyed to the pipeline and step, not to any branch or commit.
+
+See "Test Splitting" in the [Pipeline Reference](Pipeline-Reference.md) for
+the full field and environment-variable reference.

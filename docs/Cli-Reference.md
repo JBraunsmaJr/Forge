@@ -252,6 +252,24 @@ forge project list [--org <org-id>]
 
 ---
 
+## Report Commands
+
+Convert test-runner output into Forge test reports (used by `test_report:`
+steps and `split:` shard planning), or make raw output human-readable.
+
+```bash
+# Aggregate `go test -json` output into a Forge test report.
+# Output defaults to .forge/test-report.json when omitted.
+forge report from-go-test <input.json> [output.json]
+
+# Same, for pytest's --junit-xml output.
+forge report from-pytest <junit.xml> [output.json]
+
+# Stream `go test -json` from stdin as classic human-readable output,
+# for legible CI logs. Non-JSON lines pass through untouched.
+go test -v -json ./... 2>&1 | tee raw.json | forge report stream-go-test
+```
+
 ## Agent Command
 
 ### `forge agent`
