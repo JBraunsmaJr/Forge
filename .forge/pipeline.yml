@@ -82,10 +82,10 @@ steps:
       if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
       set +e
       go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json | forge report stream-go-test
-      statuses=("${PIPESTATUS[@]}")
+      test_status=$?
       set -e
       forge report from-go-test /tmp/go-test-output.json .forge/test-report.json
-      (( statuses[0] == 0 && statuses[1] == 0 && statuses[2] == 0 )) || exit 1
+      exit $test_status
 
   - id: main-pipeline
     condition: branch(main)
