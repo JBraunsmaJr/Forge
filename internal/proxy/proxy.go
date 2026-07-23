@@ -31,6 +31,36 @@ func NewProxyServer(dockerSocket, socketDir string) *ProxyServer {
 	}
 }
 
+// RestoreRegistrations recreates listeners for every agent socket file
+// already present in SocketDir. The proxy's registration state lives only
+// in memory, but the socket files live in a shared volume — so after a
+// proxy restart (redeploy, crash) agents were left pointing at socket
+// files nobody was listening on, failing with "is the docker daemon
+// running" until the agent itself restarted. The socket filename encodes
+// the agent ID (agent-<id>.sock), so state can be rebuilt without any
+// agent involvement.
+func (s *ProxyServer) RestoreRegistrations() {
+	entries, err := os.ReadDir(s.SocketDir)
+	if err != nil {
+		return // dir may not exist yet; Register creates it on demand
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".sock") {
+			continue
+		}
+		agentID := strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".sock")
+		if agentID == "" {
+			continue
+		}
+		if _, err := s.Register(agentID); err != nil {
+			fmt.Printf("[proxy] failed to restore socket for agent %s: %v\n", agentID, err)
+		} else {
+			fmt.Printf("[proxy] restored socket for agent %s\n", agentID)
+		}
+	}
+}
+
 func (s *ProxyServer) Register(agentID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

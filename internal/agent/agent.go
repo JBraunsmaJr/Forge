@@ -137,12 +137,38 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 // Run starts the agent's gRPC session and handles jobs. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
 	if a.proxyURL != "" {
-		socketPath, err := a.registerWithProxy(ctx)
+		// Retry registration: on a fresh deploy the proxy may come up
+		// after the agent, and a one-shot attempt here used to fall back
+		// permanently to the direct socket — which scoped deployments
+		// don't mount, breaking every docker command.
+		var socketPath string
+		var err error
+		for attempt := 1; attempt <= 12; attempt++ {
+			socketPath, err = a.registerWithProxy(ctx)
+			if err == nil {
+				break
+			}
+			fmt.Printf("[agent %s] proxy registration attempt %d/12 failed: %v\n", a.id[:8], attempt, err)
+			time.Sleep(5 * time.Second)
+		}
 		if err != nil {
-			fmt.Printf("[agent %s] warning: failed to register with proxy: %v. Falling back to direct socket.\n", a.id[:8], err)
+			fmt.Printf("[agent %s] warning: proxy unreachable after retries: %v. Falling back to direct socket.\n", a.id[:8], err)
 		} else {
 			fmt.Printf("[agent %s] using proxied Docker socket: %s\n", a.id[:8], socketPath)
 			os.Setenv("DOCKER_HOST", "unix://"+socketPath)
+
+			// Keepalive: re-register periodically. Registration is
+			// idempotent on the proxy, so this is a no-op in steady state,
+			// and it self-heals the socket if the proxy restarts or the
+			// socket volume is recreated out from under us.
+			go func() {
+				for {
+					time.Sleep(60 * time.Second)
+					if _, err := a.registerWithProxy(context.Background()); err != nil {
+						fmt.Printf("[agent %s] proxy re-registration failed: %v\n", a.id[:8], err)
+					}
+				}
+			}()
 		}
 	}
 
