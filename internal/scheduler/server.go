@@ -495,8 +495,6 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJobWaiting(w http.ResponseWriter, r *http.Request) {
-	// agentOnly might take w, r or just r depending on implementation.
-	// I saw !agentOnly(r) in handleSubmitRun earlier.
 	if !agentOnly(r) {
 		writeError(w, http.StatusForbidden, "agent permission required")
 		return
