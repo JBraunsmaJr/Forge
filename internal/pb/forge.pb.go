@@ -724,7 +724,12 @@ type JobSpec struct {
 	TestReport string `protobuf:"bytes,27,opt,name=test_report,json=testReport,proto3" json:"test_report,omitempty"`
 	// PipelineName is the stable pipeline identity used to correlate history
 	// (test durations, shard planning) across runs.
-	PipelineName  string `protobuf:"bytes,28,opt,name=pipeline_name,json=pipelineName,proto3" json:"pipeline_name,omitempty"`
+	PipelineName string `protobuf:"bytes,28,opt,name=pipeline_name,json=pipelineName,proto3" json:"pipeline_name,omitempty"`
+	// With holds `with:` template parameters for this step. Consumed by
+	// generator steps (see GeneratorInput.With in internal/api/types.go) so
+	// a remote agent's generator process gets the same inputs a local one
+	// would.
+	With          map[string]string `protobuf:"bytes,29,rep,name=with,proto3" json:"with,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -946,6 +951,13 @@ func (x *JobSpec) GetPipelineName() string {
 		return x.PipelineName
 	}
 	return ""
+}
+
+func (x *JobSpec) GetWith() map[string]string {
+	if x != nil {
+		return x.With
+	}
+	return nil
 }
 
 type PipelineRef struct {
@@ -1186,7 +1198,7 @@ const file_forge_proto_rawDesc = "" +
 	"\bLogBatch\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x19\n" +
 	"\blease_id\x18\x02 \x01(\tR\aleaseId\x12'\n" +
-	"\x06events\x18\x03 \x03(\v2\x0f.forge.LogEventR\x06events\"\xce\a\n" +
+	"\x06events\x18\x03 \x03(\v2\x0f.forge.LogEventR\x06events\"\xb5\b\n" +
 	"\aJobSpec\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x19\n" +
@@ -1222,8 +1234,12 @@ const file_forge_proto_rawDesc = "" +
 	"\x03ref\x18\x1a \x01(\tR\x03ref\x12\x1f\n" +
 	"\vtest_report\x18\x1b \x01(\tR\n" +
 	"testReport\x12#\n" +
-	"\rpipeline_name\x18\x1c \x01(\tR\fpipelineName\x1a6\n" +
+	"\rpipeline_name\x18\x1c \x01(\tR\fpipelineName\x12,\n" +
+	"\x04with\x18\x1d \x03(\v2\x18.forge.JobSpec.WithEntryR\x04with\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a7\n" +
+	"\tWithEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x88\x02\n" +
 	"\vPipelineRef\x12\x12\n" +
@@ -1256,7 +1272,7 @@ func file_forge_proto_rawDescGZIP() []byte {
 	return file_forge_proto_rawDescData
 }
 
-var file_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_forge_proto_goTypes = []any{
 	(*AgentMessage)(nil),          // 0: forge.AgentMessage
 	(*SchedulerMessage)(nil),      // 1: forge.SchedulerMessage
@@ -1273,8 +1289,9 @@ var file_forge_proto_goTypes = []any{
 	(*ArtifactDownloadSpec)(nil),  // 12: forge.ArtifactDownloadSpec
 	nil,                           // 13: forge.RegisterRequest.LabelsEntry
 	nil,                           // 14: forge.JobSpec.EnvEntry
-	nil,                           // 15: forge.PipelineRef.VariablesEntry
-	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
+	nil,                           // 15: forge.JobSpec.WithEntry
+	nil,                           // 16: forge.PipelineRef.VariablesEntry
+	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
 }
 var file_forge_proto_depIdxs = []int32{
 	2,  // 0: forge.AgentMessage.register:type_name -> forge.RegisterRequest
@@ -1286,20 +1303,21 @@ var file_forge_proto_depIdxs = []int32{
 	13, // 6: forge.RegisterRequest.labels:type_name -> forge.RegisterRequest.LabelsEntry
 	4,  // 7: forge.HeartbeatRequest.status:type_name -> forge.AgentStatus
 	7,  // 8: forge.CompleteRequest.logs:type_name -> forge.LogEvent
-	16, // 9: forge.LogEvent.ts:type_name -> google.protobuf.Timestamp
+	17, // 9: forge.LogEvent.ts:type_name -> google.protobuf.Timestamp
 	7,  // 10: forge.LogBatch.events:type_name -> forge.LogEvent
 	14, // 11: forge.JobSpec.env:type_name -> forge.JobSpec.EnvEntry
 	11, // 12: forge.JobSpec.artifact_uploads:type_name -> forge.ArtifactUploadSpec
 	12, // 13: forge.JobSpec.artifact_downloads:type_name -> forge.ArtifactDownloadSpec
 	10, // 14: forge.JobSpec.pipeline_ref:type_name -> forge.PipelineRef
-	15, // 15: forge.PipelineRef.variables:type_name -> forge.PipelineRef.VariablesEntry
-	0,  // 16: forge.AgentService.Session:input_type -> forge.AgentMessage
-	1,  // 17: forge.AgentService.Session:output_type -> forge.SchedulerMessage
-	17, // [17:18] is the sub-list for method output_type
-	16, // [16:17] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	15, // 15: forge.JobSpec.with:type_name -> forge.JobSpec.WithEntry
+	16, // 16: forge.PipelineRef.variables:type_name -> forge.PipelineRef.VariablesEntry
+	0,  // 17: forge.AgentService.Session:input_type -> forge.AgentMessage
+	1,  // 18: forge.AgentService.Session:output_type -> forge.SchedulerMessage
+	18, // [18:19] is the sub-list for method output_type
+	17, // [17:18] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_forge_proto_init() }
@@ -1323,7 +1341,7 @@ func file_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_proto_rawDesc), len(file_forge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

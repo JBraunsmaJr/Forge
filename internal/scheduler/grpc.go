@@ -225,6 +225,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					Ref:            spec.Ref,
 					TestReport:     spec.TestReport,
 					PipelineName:   spec.PipelineName,
+					With:           spec.With,
 				}
 
 				if spec.PipelineRef != nil {

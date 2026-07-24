@@ -200,15 +200,15 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 			env, inputs, timeout_ns, depends_on, secret_names,
 			policy_source, condition, always_run, docker_socket, pipeline_ref,
 			release_config, artifact_uploads, artifact_downloads, status,
-			test_report, split
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+			test_report, split, "with"
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
 		jobID, runID, step.ID, stepType, step.Image, toJSON(step.Entrypoint),
 		toJSON(command), workDir,
 		toJSON(step.Env), toJSON(step.Inputs), int64(timeout),
 		toJSON(step.DependsOn), toJSON(step.SecretNames),
 		step.PolicySource, step.Condition, step.AlwaysRun, step.DockerSocket, pipelineRefJSON,
 		releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
-		status, step.TestReport, toJSON(step.Split),
+		status, step.TestReport, toJSON(step.Split), toJSON(step.With),
 	)
 	return err
 }
@@ -260,7 +260,8 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			runs.workspace_dir,
 			runs.applied_step_ids,
 			jobs.test_report,
-			COALESCE(jobs.split::text, 'null')
+			COALESCE(jobs.split::text, 'null'),
+			COALESCE(jobs."with"::text, '{}')
 		`,
 		leaseID, agentID, now,
 	)
@@ -303,7 +304,8 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 			runs.workspace_dir,
 			runs.applied_step_ids,
 			jobs.test_report,
-			COALESCE(jobs.split::text, 'null')
+			COALESCE(jobs.split::text, 'null'),
+			COALESCE(jobs."with"::text, '{}')
 		`,
 		leaseID, now,
 	)
@@ -325,6 +327,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		condition                                  string
 		alwaysRun                                  bool
 		testReport, splitJSON                      string
+		withJSON                                   string
 	)
 	err := row.Scan(
 		&jobID, &runID, &stepID, &image, &entrypointJSON,
@@ -340,6 +343,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		&appliedStepIDsJSON,
 		&testReport,
 		&splitJSON,
+		&withJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, false
@@ -378,6 +382,9 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	if splitJSON != "null" && splitJSON != "" {
 		json.Unmarshal([]byte(splitJSON), &split)
 	}
+
+	var with map[string]string
+	json.Unmarshal([]byte(withJSON), &with)
 
 	// Fetch org_id, project_id, ref and pipeline name from the parent run for secret scoping and conditions.
 	// pipeline_name (stable identity) is preferred over the decorated run name so
@@ -421,6 +428,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		ArtifactDownloads: artifactDownloads,
 		TestReport:        testReport,
 		Split:             split,
+		With:              with,
 	}, true
 }
 

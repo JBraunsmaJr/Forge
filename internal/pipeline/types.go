@@ -179,6 +179,7 @@ func (s *Step) ToAPIStep(variables map[string]string) api.StepDef {
 		Release:           release,
 		Split:             s.Split,
 		TestReport:        s.TestReport,
+		With:              s.With,
 	}
 }
 

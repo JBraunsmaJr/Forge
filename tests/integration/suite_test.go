@@ -159,8 +159,7 @@ func startStack(repoRoot string) error {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
 				fmt.Println("[integration] scheduler is ready")
-				waitForInit(repoRoot)
-				return nil
+				return waitForInit(repoRoot)
 			}
 			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
 		}
@@ -574,20 +573,13 @@ func stripPrefix(s, prefix string) string {
 	return strings.TrimPrefix(s, prefix)
 }
 
-func waitForInit(repoRoot string) {
+func waitForInit(repoRoot string) error {
 	fmt.Println("[integration] waiting for init service to complete...")
-	//
-	// Deliberately NOT `docker compose ps` here: since compose v2.11 `ps`
-	// hides exited containers unless -a is passed, so a successfully
-	// completed init vanished from the listing and this wait always timed
-	// out. Its --format json output has also flipped between array and
-	// NDJSON across versions, making substring matching fragile. Inspecting
-	// the deterministically named container avoids both problems, and works
-	// through the forge socket proxy (per-container access is allowed for
-	// resources labeled with our proxy identity).
 	name := composeProjectName + "-init-1"
 	deadline := time.Now().Add(3 * time.Minute)
+	var err error
 	for time.Now().Before(deadline) {
+		err = nil // reset for current duration
 		cmd := exec.Command("docker", "inspect",
 			"--format", "{{.State.Status}}:{{.State.ExitCode}}", name)
 		cmd.Dir = repoRoot
@@ -597,11 +589,11 @@ func waitForInit(repoRoot string) {
 			if status, code, ok := strings.Cut(s, ":"); ok && status == "exited" {
 				if code == "0" {
 					fmt.Println("[integration] init service completed")
-					return
+					return nil
 				}
 				fmt.Printf("[integration] init service failed (exit %s), check logs if tests fail\n", code)
 				dumpLogs(repoRoot, "init", 50)
-				return
+				return nil
 			}
 		}
 		// err != nil: container not created yet, or not visible through the
@@ -610,6 +602,7 @@ func waitForInit(repoRoot string) {
 	}
 	fmt.Println("[integration] init service wait timed out; dumping init logs:")
 	dumpLogs(repoRoot, "init", 50)
+	return err
 }
 
 func dockerHostAddr() string {
