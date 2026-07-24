@@ -218,6 +218,9 @@ func runGeneratePreview(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 	exec.IsLocal = true
+	exec.PipelineName = p.Name
+	exec.Ref = ref
+	exec.CommitSHA = commitSHA
 
 	for _, step := range generators {
 		if step.Env == nil {

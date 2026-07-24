@@ -83,7 +83,7 @@ func (s *LocalStore) GetArtifact(_ context.Context, runID, name string) (*Artifa
 	var m ArtifactMeta
 	var storageKey string
 	err := s.db.QueryRow(`
-		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		SELECT id, run_id, COALESCE(job_id, ''), name, filename, size_bytes, content_type, storage_key, created_at
 		FROM artifacts
 		WHERE run_id=$1 AND name=$2 AND confirmed=true
 		ORDER BY created_at DESC LIMIT 1`,
@@ -102,7 +102,7 @@ func (s *LocalStore) GetArtifact(_ context.Context, runID, name string) (*Artifa
 
 func (s *LocalStore) ListArtifacts(_ context.Context, runID string) ([]ArtifactMeta, error) {
 	rows, err := s.db.Query(`
-		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, created_at
+		SELECT id, run_id, COALESCE(job_id, ''), name, filename, size_bytes, content_type, created_at
 		FROM artifacts
 		WHERE run_id=$1 AND confirmed=true
 		ORDER BY created_at`,
@@ -197,7 +197,7 @@ func (s *LocalStore) ServeDownload(_ context.Context, artifactID string) (io.Rea
 	var m ArtifactMeta
 	var storageKey string
 	err := s.db.QueryRow(`
-		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		SELECT id, run_id, COALESCE(job_id, ''), name, filename, size_bytes, content_type, storage_key, created_at
 		FROM artifacts WHERE id=$1 AND confirmed=true`,
 		artifactID,
 	).Scan(&m.ID, &m.RunID, &m.JobID, &m.Name, &m.Filename, &m.SizeBytes, &m.ContentType, &storageKey, &m.CreatedAt)

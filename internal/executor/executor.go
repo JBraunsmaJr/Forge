@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
@@ -42,6 +44,13 @@ type Executor struct {
 	// ProxyAgentID is used for the forge.agent_id label to satisfy the security proxy.
 	// If empty, AgentID is used.
 	ProxyAgentID string
+
+	// Run-level context for generators and policies
+	PipelineName string
+	OrgID        string
+	ProjectID    string
+	Ref          string
+	CommitSHA    string
 }
 
 // New creates an Executor. cas may be nil to disable caching.
@@ -217,11 +226,20 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if e.UseCopy && containerID != "" {
 		// 4. Copy workspace OUT (to capture any changes/artifacts)
 		// We copy "/workspace" from the container back to the host's job directory.
+		//
+		// The copy gets its own grace period rather than the step context:
+		// by the time we get here the step budget is often nearly spent, and
+		// after a timeout it is *fully* spent — so copying with ctx failed
+		// unconditionally with "context deadline exceeded" and threw away
+		// exactly the output (test reports, artifacts) needed to debug the
+		// timeout. WithoutCancel keeps ctx values but detaches the deadline.
+		copyCtx, copyCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		src := containerID + ":/workspace/."
 		dst := e.WorkspaceDir
-		if err := dockerutil.DockerCp(ctx, src, dst); err != nil {
+		if err := dockerutil.DockerCp(copyCtx, src, dst); err != nil {
 			logger.Error(fmt.Sprintf("failed to copy workspace out of container: %v", err), map[string]any{"error": err.Error(), "src": src, "dst": dst})
 		}
+		copyCancel()
 
 		// 5. Cleanup container
 		exec.Command("docker", "rm", "-f", containerID).Run()
@@ -389,8 +407,15 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 		args = append(args, "-e", "FORGE_ID_TOKEN="+step.OIDCToken)
 	}
 
+	// Inject /workspace/.forge/bin into PATH if it's already defined in Env.
+	// We don't provide a default PATH here to avoid overriding the image's default PATH.
+	// For shell commands (run:), we prepend it in the command itself at the end of this function.
 	for k, v := range step.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+		val := v
+		if k == "PATH" {
+			val = "/workspace/.forge/bin:" + v
+		}
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, val))
 	}
 
 	// Always inject the current agent's ID so steps (like integration tests)
@@ -400,7 +425,17 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 	args = append(args, "-e", "FORGE_PROXY_AGENT_ID="+e.getLabelAgentID())
 
 	args = append(args, step.Image)
-	args = append(args, step.Command...)
+
+	cmd := step.Command
+	if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" {
+		// Prepend PATH to the shell command so forge is available even if we didn't
+		// override the image's PATH (which we don't if step.Env["PATH"] was empty).
+		newCmd := make([]string, len(cmd))
+		copy(newCmd, cmd)
+		newCmd[2] = "export PATH=/workspace/.forge/bin:$PATH; " + newCmd[2]
+		cmd = newCmd
+	}
+	args = append(args, cmd...)
 	return args
 }
 
@@ -421,11 +456,27 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
 	logger.Info("generator step starting", map[string]any{"image": step.Image})
 
+	// Prepare generator input for stdin
+	input := api.GeneratorInput{
+		PipelineName: e.PipelineName,
+		WorkspaceDir: e.WorkspaceDir,
+		OrgID:        e.OrgID,
+		ProjectID:    e.ProjectID,
+		Ref:          e.Ref,
+		CommitSHA:    e.CommitSHA,
+		Env:          step.Env,
+		With:         step.With,
+	}
+	inputJSON, _ := json.Marshal(input)
+
 	var cmdGen *exec.Cmd
 	var containerID string
 
 	if e.UseCopy {
 		args := e.buildDockerArgs(step, "", true)
+		// Add --interactive so we can pipe stdin to the container
+		args = append([]string{"--interactive"}, args...)
+
 		containerID, err = dockerutil.RunDockerCreate(context.Background(), logger.Output, args)
 		if err != nil {
 			return nil, fmt.Errorf("creating generator container: %w", err)
@@ -437,11 +488,13 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
 		}
 
-		cmdGen = exec.Command("docker", "start", "-a", containerID)
+		cmdGen = exec.Command("docker", "start", "-a", "-i", containerID)
 	} else {
 		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
-		cmdGen = exec.Command("docker", append([]string{"run", "--rm"}, args...)...)
+		cmdGen = exec.Command("docker", append([]string{"run", "--rm", "-i", "-a", "stdin", "-a", "stdout", "-a", "stderr"}, args...)...)
 	}
+
+	cmdGen.Stdin = bytes.NewReader(inputJSON)
 
 	// Capture stdout (the generated step JSON) into a buffer.
 	// Stream stderr to the logger so errors are visible.

@@ -11,7 +11,7 @@ services:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
     environment:
       FORGE_ROOT_TOKEN: it-admin-token-forge
       FORGE_RUN_RETENTION_DAYS: "1"
@@ -34,11 +34,11 @@ services:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
     environment:
       FORGE_API_TOKEN: it-admin-token-forge
       FORGE_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME}_forge"
-      FORGE_PROXY_AGENT_ID: "${FORGE_AGENT_ID}"
+      FORGE_PROXY_AGENT_ID: "${FORGE_PROXY_AGENT_ID}"
       FORGE_PROXY_URL: http://proxy:9090
       FORGE_SCHEDULER_URL: http://scheduler:8080
     volumes:
@@ -55,19 +55,19 @@ services:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   vault:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   minio:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   proxy:
     image: "${FORGE_IMAGE}"
@@ -75,7 +75,7 @@ services:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
     environment:
       FORGE_AGENT_ID: "${FORGE_AGENT_ID}"
     volumes:
@@ -86,7 +86,7 @@ services:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   init:
     image: "${FORGE_IMAGE}"
@@ -95,12 +95,13 @@ services:
     logging: *default-logging
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
     environment:
       FORGE_API_TOKEN: it-admin-token-forge
       FORGE_VAULT_ADDR: http://vault:8200
       FORGE_VAULT_TOKEN: forge-dev-token
       SCHEDULER_URL: http://scheduler:8080
+    volumes: []
     depends_on:
       scheduler:
         condition: service_started
@@ -108,7 +109,7 @@ services:
   ui:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
     volumes: []
     profiles:
       - disabled
@@ -117,26 +118,26 @@ volumes:
   postgres_data:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
   git_cache:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
   cache_data:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
   minio_data:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
   forge_sockets:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
 networks:
   forge:
     labels:
       forge.managed: "true"
-      forge.agent_id: "${FORGE_AGENT_ID}"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"

@@ -6,12 +6,12 @@
     import ArtifactViewer from './ArtifactViewer.svelte';
     import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
-    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check } from '@lucide/svelte';
+    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check, TrendingUp } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
     export let onCloseDebug: () => void;
 
-    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' = 'logs';
+    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' | 'shards' = 'logs';
     let expanded = false;
 
     $: if (debugSession.sessionID && activeTab !== 'terminal') {
@@ -90,6 +90,30 @@
         }
     }
 
+    function fmtDuration(ms: number) {
+        if (!ms) return '0s';
+        if (ms < 1000) return `${ms}ms`;
+        if (ms < 90000) return `${(ms/1000).toFixed(1)}s`;
+        return `${Math.floor(ms/60000)}m ${Math.round((ms%60000)/1000)}s`;
+    }
+
+    // The job backing a shard card, e.g. "integration-tests-shard-2".
+    // Used to show the actual runtime and status next to the estimate.
+    function shardJob(stepId: string, shardIndex: number) {
+        return ($activeRun?.jobs || []).find(
+            (j) => j.step_id === `${stepId}-shard-${shardIndex + 1}`
+        );
+    }
+
+    // Assignments are stored under the ORIGINAL step id; shard jobs are
+    // named "<step>-shard-N". Normalize so the Shards tab appears whether
+    // the user selects the fan-in node or an individual shard.
+    function shardBaseStep(stepId: string): string {
+        return stepId.replace(/-shard-\d+$/, '');
+    }
+    $: shardStepKey = $selectedJob ? shardBaseStep($selectedJob.step_id) : '';
+    $: shardList = shardStepKey ? $activeRun?.shard_assignments?.[shardStepKey] : undefined;
+
     onDestroy(() => {
         clearInterval(ttlInterval);
     });
@@ -118,6 +142,12 @@
                 <Clock size={12} />
                 Timing
             </button>
+            {#if $selectedJob && shardList?.length}
+                <button class:active={activeTab === 'shards'} on:click={() => activeTab = 'shards'}>
+                    <TrendingUp size={12} />
+                    Shards
+                </button>
+            {/if}
         </div>
         <div class="actions">
             {#if $selectedJob?.status === 'approval'}
@@ -162,6 +192,40 @@
             <div class="timing-tab-content">
                 <GanttChart jobs={$activeRun?.jobs || []} />
             </div>
+        {:else if activeTab === 'shards'}
+            <div class="shards-tab-content">
+                {#if $selectedJob && shardList?.length}
+                    {#each shardList as shard}
+                        {@const job = shardJob(shardStepKey, shard.shard_index)}
+                        <div class="shard-card">
+                            <div class="shard-card-header">
+                                <span class="shard-name">Shard {shard.shard_index + 1} of {shard.total_shards}</span>
+                                {#if job && job.duration_ms > 0}
+                                    <span class="shard-est shard-actual-{job.status}">
+                                        {fmtDuration(job.duration_ms)}
+                                        {#if shard.estimated_ms > 0}(est. {fmtDuration(shard.estimated_ms)}){/if}
+                                    </span>
+                                {:else if job && (job.status === 'running' || job.status === 'waiting')}
+                                    <span class="shard-est">Running{#if shard.estimated_ms > 0} — est. {fmtDuration(shard.estimated_ms)}{/if}</span>
+                                {:else if shard.estimated_ms > 0}
+                                    <span class="shard-est">Estimated {fmtDuration(shard.estimated_ms)}</span>
+                                {:else}
+                                    <span class="shard-est">No estimate yet</span>
+                                {/if}
+                            </div>
+                            <div class="shard-files">
+                                {#if shard.file_paths && shard.file_paths.length > 0}
+                                    {#each shard.file_paths as file}
+                                        <div class="file-item">{file}</div>
+                                    {/each}
+                                {:else}
+                                    <div class="file-item">No timing history yet — this shard ran the full suite. Assignments appear once test reports have been recorded.</div>
+                                {/if}
+                            </div>
+                        </div>
+                    {/each}
+                {/if}
+            </div>
         {/if}
     </div>
 </div>
@@ -171,6 +235,50 @@
         flex: 1;
         overflow-y: auto;
     }
+    .shards-tab-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 20px;
+        background: var(--bg);
+    }
+    .shard-card {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    .shard-card-header {
+        padding: 10px 14px;
+        background: rgba(255,255,255,0.03);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .shard-name { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.3px; }
+    .shard-actual-passed { color: var(--ok, #4caf50); }
+    .shard-actual-failed { color: var(--err, #f44336); }
+
+    .shard-est { font-size: 11px; color: var(--muted); font-weight: 600; }
+    .shard-files {
+        padding: 12px 14px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--text);
+    }
+    .file-item {
+        margin-bottom: 7px;
+        line-height: 1.5;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    .file-item:last-child { margin-bottom: 0; }
+
     #details-panel {
         display: flex;
         flex-direction: column;

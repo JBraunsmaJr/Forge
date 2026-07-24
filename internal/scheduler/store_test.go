@@ -46,9 +46,9 @@ func makeStep(id string, deps ...string) api.StepDef {
 func TestSubmitAndLease(t *testing.T) {
 	s := openTestDB(t)
 
-	runID, err := s.SubmitRun("test-pipeline", "/workspace", "", "", "", "", "", "", []api.StepDef{
+	runID, err := s.SubmitRun(SubmitRunParams{Name: "test-pipeline", WorkspaceDir: "/workspace", Steps: []api.StepDef{
 		makeStep("lint"),
-	}, nil, "")
+	}})
 	if err != nil {
 		t.Fatalf("SubmitRun: %v", err)
 	}
@@ -82,10 +82,10 @@ func TestLeaseEmpty(t *testing.T) {
 func TestDependencyUnblocking(t *testing.T) {
 	s := openTestDB(t)
 
-	_, err := s.SubmitRun("pipe", "/ws", "", "", "", "", "", "", []api.StepDef{
+	_, err := s.SubmitRun(SubmitRunParams{Name: "pipe", WorkspaceDir: "/ws", Steps: []api.StepDef{
 		makeStep("lint"),
 		makeStep("test", "lint"),
-	}, nil, "")
+	}})
 	if err != nil {
 		t.Fatalf("SubmitRun: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestMatrixDependency(t *testing.T) {
 
 	// Step 'matrix-1' and 'matrix-2' are instances of the same matrix step
 	// Step 'downstream' depends on both.
-	_, err := s.SubmitRun("pipe", "/ws", "", "", "", "", "", "", []api.StepDef{
+	_, err := s.SubmitRun(SubmitRunParams{Name: "pipe", WorkspaceDir: "/ws", Steps: []api.StepDef{
 		makeStep("matrix-1"),
 		makeStep("matrix-2"),
 		{
@@ -130,7 +130,7 @@ func TestMatrixDependency(t *testing.T) {
 			Image:     "alpine",
 			Type:      "release", // to match user's case
 		},
-	}, nil, "")
+	}})
 	if err != nil {
 		t.Fatalf("SubmitRun: %v", err)
 	}
@@ -178,11 +178,11 @@ func TestMatrixDependency(t *testing.T) {
 func TestTransitiveSkipping(t *testing.T) {
 	s := openTestDB(t)
 
-	_, err := s.SubmitRun("pipe", "/ws", "", "", "", "", "", "", []api.StepDef{
+	_, err := s.SubmitRun(SubmitRunParams{Name: "pipe", WorkspaceDir: "/ws", Steps: []api.StepDef{
 		makeStep("a"),
 		makeStep("b", "a"),
 		makeStep("c", "b"),
-	}, nil, "")
+	}})
 	if err != nil {
 		t.Fatalf("SubmitRun: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestTransitiveSkipping(t *testing.T) {
 
 func TestHeartbeat(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("x")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
 	if err := s.Heartbeat(spec.JobID, spec.LeaseID, "agent-1"); err != nil {
@@ -238,7 +238,7 @@ func TestHeartbeat(t *testing.T) {
 
 func TestHeartbeat_WrongLease(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("x")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
 	if err := s.Heartbeat(spec.JobID, "wrong-lease", "agent-1"); err == nil {
@@ -248,7 +248,7 @@ func TestHeartbeat_WrongLease(t *testing.T) {
 
 func TestReclaimStaleJobs(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("x")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
 	// Age the heartbeat so the job looks stale.
@@ -272,7 +272,7 @@ func TestListRunsPagination(t *testing.T) {
 	s := openTestDB(t)
 
 	for i := range 5 {
-		_, err := s.SubmitRun(fmt.Sprintf("page-run-%d", i), "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
+		_, err := s.SubmitRun(SubmitRunParams{Name: fmt.Sprintf("page-run-%d", i), WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
 		if err != nil {
 			t.Fatalf("SubmitRun %d: %v", i, err)
 		}
@@ -300,9 +300,9 @@ func TestListRunsPagination(t *testing.T) {
 func TestListRunsSearchFilter(t *testing.T) {
 	s := openTestDB(t)
 
-	s.SubmitRun("frontend-deploy", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
-	s.SubmitRun("backend-deploy", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
-	s.SubmitRun("database-migrate", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "frontend-deploy", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
+	s.SubmitRun(SubmitRunParams{Name: "backend-deploy", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
+	s.SubmitRun(SubmitRunParams{Name: "database-migrate", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
 
 	results := s.ListRuns(ListRunsOptions{Search: "deploy"})
 	if len(results) != 2 {
@@ -328,15 +328,15 @@ func TestListRunsSearchFilter(t *testing.T) {
 func TestListRunsStatusFilter(t *testing.T) {
 	s := openTestDB(t)
 
-	passedID, _ := s.SubmitRun("passing-run", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
+	passedID, _ := s.SubmitRun(SubmitRunParams{Name: "passing-run", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
 	spec, _ := s.LeaseNext("agent-test")
 	s.Complete(spec.JobID, spec.LeaseID, 0, 100, nil, nil, false, false)
 
-	failedID, _ := s.SubmitRun("failing-run", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
+	failedID, _ := s.SubmitRun(SubmitRunParams{Name: "failing-run", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
 	spec2, _ := s.LeaseNext("agent-test")
 	s.Complete(spec2.JobID, spec2.LeaseID, 1, 100, nil, nil, false, false)
 
-	s.SubmitRun("pending-run", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("step")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "pending-run", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("step")}})
 
 	_ = passedID
 	_ = failedID
@@ -374,7 +374,7 @@ func TestListRunsDefaultLimit(t *testing.T) {
 }
 func TestComplete_StaleLeaseIgnored(t *testing.T) {
 	s := openTestDB(t)
-	s.SubmitRun("p", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("x")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
 	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() - INTERVAL '60 seconds' WHERE id = $1`, spec.JobID)
@@ -398,7 +398,7 @@ func TestActiveAgentsCount(t *testing.T) {
 		t.Errorf("expected 0 active agents, got %d", count)
 	}
 
-	s.SubmitRun("p", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("x")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
 	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() WHERE id = $1`, spec.JobID)
@@ -408,7 +408,7 @@ func TestActiveAgentsCount(t *testing.T) {
 		t.Errorf("expected 1 active agent, got %d", count)
 	}
 
-	s.SubmitRun("p2", "/ws", "", "", "", "", "", "", []api.StepDef{makeStep("y")}, nil, "")
+	s.SubmitRun(SubmitRunParams{Name: "p2", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("y")}})
 	spec2, _ := s.LeaseNext("agent-2")
 	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() WHERE id = $1`, spec2.JobID)
 
@@ -428,17 +428,17 @@ func TestAgentAffinity(t *testing.T) {
 	s := openTestDB(t)
 
 	// Job A: pinned to agent-A
-	_, err := s.SubmitRun("pinned-run", "/ws", "", "", "", "", "", "agent-A", []api.StepDef{
+	_, err := s.SubmitRun(SubmitRunParams{Name: "pinned-run", WorkspaceDir: "/ws", PreferredAgentID: "agent-A", Steps: []api.StepDef{
 		makeStep("job-A"),
-	}, nil, "")
+	}})
 	if err != nil {
 		t.Fatalf("SubmitRun: %v", err)
 	}
 
 	// Job None: no preference
-	_, err = s.SubmitRun("normal-run", "/ws", "", "", "", "", "", "", []api.StepDef{
+	_, err = s.SubmitRun(SubmitRunParams{Name: "normal-run", WorkspaceDir: "/ws", Steps: []api.StepDef{
 		makeStep("job-none"),
-	}, nil, "")
+	}})
 	if err != nil {
 		t.Fatalf("SubmitRun: %v", err)
 	}
@@ -458,9 +458,9 @@ func TestAgentAffinity(t *testing.T) {
 	}
 
 	// agent-A tries to lease its own preferred job
-	s.SubmitRun("pinned-run-2", "/ws", "", "", "", "", "", "agent-A", []api.StepDef{
+	s.SubmitRun(SubmitRunParams{Name: "pinned-run-2", WorkspaceDir: "/ws", PreferredAgentID: "agent-A", Steps: []api.StepDef{
 		makeStep("job-A-2"),
-	}, nil, "")
+	}})
 
 	spec, ok = s.LeaseNext("agent-A")
 	if !ok || spec.StepID != "job-A-2" {

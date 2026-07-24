@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -163,7 +164,12 @@ func runAgent(cmd *cobra.Command, args []string) {
 	maxGB := 10.0
 	maxPercent := 80.0
 	pruneSchedule := "0 0 * * *"
-	concurrency := runtime.NumCPU()
+	concurrency := 1
+	if c := os.Getenv("FORGE_CONCURRENCY"); c != "" {
+		if val, err := strconv.Atoi(c); err == nil {
+			concurrency = val
+		}
+	}
 
 	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, proxyURL, maxGB, maxPercent, pruneSchedule, concurrency)
 	if err := a.Run(context.Background()); err != nil {
@@ -188,6 +194,10 @@ func runProxy(cmd *cobra.Command, args []string) {
 
 	p := proxy.NewProxyServer(dockerSocket, socketDir)
 	defer p.Shutdown()
+
+	// Re-listen on any sockets a previous proxy instance left in the shared
+	// volume, so already-running agents keep working across proxy restarts.
+	p.RestoreRegistrations()
 
 	fmt.Printf("✓ Docker proxy management server starting on :%s\n", port)
 	if err := http.ListenAndServe(":"+port, p); err != nil {
@@ -214,6 +224,7 @@ func runSubmit(cmd *cobra.Command, args []string) {
 	workspaceDir, _ := os.Getwd()
 	body, _ := json.Marshal(api.SubmitRunRequest{
 		PipelineName: p.Name,
+		Steps:        p.ToAPISteps(nil),
 		WorkspaceDir: workspaceDir,
 		OrgID:        os.Getenv("FORGE_ORG"),
 		Ref:          ref,

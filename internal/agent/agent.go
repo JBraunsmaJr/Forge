@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -94,8 +93,9 @@ type Agent struct {
 }
 
 type activeJobInfo struct {
-	Cancel context.CancelFunc
-	RunID  string
+	Cancel  context.CancelFunc
+	RunID   string
+	LeaseID string
 }
 
 // New creates an agent that connects to schedulerURL.
@@ -123,7 +123,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		apiToken:         apiToken,
 		proxyURL:         proxyURL,
 		proxyID:          proxyID,
-		client:           &http.Client{Timeout: 10 * time.Second},
+		client:           &http.Client{Timeout: 60 * time.Second},
 		maxDockerGB:      maxGB,
 		maxDockerPercent: maxPercent,
 		pruneSchedule:    schedule,
@@ -137,12 +137,38 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 // Run starts the agent's gRPC session and handles jobs. Blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
 	if a.proxyURL != "" {
-		socketPath, err := a.registerWithProxy(ctx)
+		// Retry registration: on a fresh deploy the proxy may come up
+		// after the agent, and a one-shot attempt here used to fall back
+		// permanently to the direct socket — which scoped deployments
+		// don't mount, breaking every docker command.
+		var socketPath string
+		var err error
+		for attempt := 1; attempt <= 12; attempt++ {
+			socketPath, err = a.registerWithProxy(ctx)
+			if err == nil {
+				break
+			}
+			fmt.Printf("[agent %s] proxy registration attempt %d/12 failed: %v\n", a.id[:8], attempt, err)
+			time.Sleep(5 * time.Second)
+		}
 		if err != nil {
-			fmt.Printf("[agent %s] warning: failed to register with proxy: %v. Falling back to direct socket.\n", a.id[:8], err)
+			fmt.Printf("[agent %s] warning: proxy unreachable after retries: %v. Falling back to direct socket.\n", a.id[:8], err)
 		} else {
 			fmt.Printf("[agent %s] using proxied Docker socket: %s\n", a.id[:8], socketPath)
 			os.Setenv("DOCKER_HOST", "unix://"+socketPath)
+
+			// Keepalive: re-register periodically. Registration is
+			// idempotent on the proxy, so this is a no-op in steady state,
+			// and it self-heals the socket if the proxy restarts or the
+			// socket volume is recreated out from under us.
+			go func() {
+				for {
+					time.Sleep(60 * time.Second)
+					if _, err := a.registerWithProxy(context.Background()); err != nil {
+						fmt.Printf("[agent %s] proxy re-registration failed: %v\n", a.id[:8], err)
+					}
+				}
+			}()
 		}
 	}
 
@@ -311,6 +337,19 @@ func (a *Agent) Run(ctx context.Context) error {
 				AppliedStepIDs: pbSpec.AppliedStepIds,
 				WorkspaceDir:   pbSpec.WorkspaceDir,
 				Ref:            pbSpec.Ref,
+				TestReport:     pbSpec.TestReport,
+				PipelineName:   pbSpec.PipelineName,
+				With:           pbSpec.With,
+			}
+
+			if info, ok := a.activeJobs.Load(spec.JobID); ok {
+				if info.(activeJobInfo).LeaseID != spec.LeaseID {
+					fmt.Printf("[agent %s] received redundant job %s with new lease, canceling old execution\n", a.id[:8], spec.JobID[:8])
+					info.(activeJobInfo).Cancel()
+				} else {
+					fmt.Printf("[agent %s] received redundant job %s with same lease, ignoring\n", a.id[:8], spec.JobID[:8])
+					continue
+				}
 			}
 
 			if pbSpec.PipelineRef != nil {
@@ -336,6 +375,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				})
 			}
 
+			if spec.TestReport != "" {
+				fmt.Printf("[agent %s] job %.8s carries test_report=%q pipeline=%q\n",
+					a.id[:8], spec.JobID, spec.TestReport, spec.PipelineName)
+			}
 			fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
 				a.id[:8], spec.JobID[:8], spec.StepID)
 
@@ -347,8 +390,12 @@ func (a *Agent) Run(ctx context.Context) error {
 				}()
 
 				jobCtx, cancel := context.WithCancel(ctx)
-				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID})
-				defer a.activeJobs.Delete(s.JobID)
+				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID, LeaseID: s.LeaseID})
+				defer func() {
+					if info, ok := a.activeJobs.Load(s.JobID); ok && info.(activeJobInfo).LeaseID == s.LeaseID {
+						a.activeJobs.Delete(s.JobID)
+					}
+				}()
 				defer cancel()
 
 				if err := a.execute(jobCtx, s); err != nil {
@@ -636,7 +683,9 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			}}, "", false)
 			return err
 		}
-		defer os.RemoveAll(jobBaseDir)
+		if spec.Type != "pipeline" {
+			defer os.RemoveAll(jobBaseDir)
+		}
 	} else {
 		// Use provided workspace dir. If it doesn't exist, create it.
 		// Automatic checkout logic below will populate it if empty.
@@ -678,8 +727,11 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 
 	if spec.Type == "pipeline" {
-		return a.executePipelineStep(ctx, spec, jobWorkspace)
+		return a.executePipelineStep(ctx, spec, jobWorkspace, jobBaseDir)
 	}
+
+	// Inject forge binary into the workspace so the job can use it (e.g. forge report)
+	a.injectForgeBinary(jobWorkspace)
 
 	jobLogDir := filepath.Join(a.logDir, spec.JobID)
 	defer os.RemoveAll(jobLogDir)
@@ -695,6 +747,11 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 	exec.UseCopy = true
 	exec.DisableCacheStore = true
+	exec.PipelineName = spec.PipelineName
+	exec.OrgID = spec.OrgID
+	exec.ProjectID = spec.ProjectID
+	exec.Ref = spec.Ref
+	exec.CommitSHA = spec.CommitSHA
 
 	// Convert API Spec -> pipeline.Step
 	step := &pipeline.Step{
@@ -705,6 +762,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Command:      spec.Command,
 		WorkDir:      spec.WorkDir,
 		Env:          spec.Env,
+		With:         spec.With,
 		Inputs:       spec.Inputs,
 		Timeout:      spec.Timeout,
 		Secrets:      spec.SecretNames,
@@ -925,6 +983,11 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	var uploadedNames []string
 	if exitCode == 0 && len(spec.ArtifactUploads) > 0 {
 		uploadedNames = a.uploadArtifacts(spec, jobWorkspace)
+	}
+
+	// Report test results if test_report is set
+	if spec.TestReport != "" {
+		a.reportTestResults(spec, jobWorkspace)
 	}
 
 	// Store result in cache (only on success).
@@ -1660,6 +1723,64 @@ func (a *Agent) streamJobLogs(jobID, leaseID string, ch <-chan api.LogEvent) {
 }
 
 // authPost makes an authenticated POST to the scheduler.
+func (a *Agent) reportTestResults(spec *api.JobSpec, workspaceDir string) {
+	if spec.TestReport == "" {
+		return
+	}
+	reportPath := filepath.Join(workspaceDir, spec.TestReport)
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		// Non-fatal — test reporting is optional, splitting still works
+		// without it (falls back to round-robin next time)
+		fmt.Printf("[agent %s] no test report at %s: %v\n",
+			a.id[:8], spec.TestReport, err)
+		return
+	}
+
+	// Parse to validate before sending.
+	var report api.TestReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		fmt.Printf("[agent %s] invalid test report JSON: %v\n", a.id[:8], err)
+		return
+	}
+
+	// Extract the step_id base name (strip -shard-N suffix for correlation).
+	baseStepID := stripShardSuffix(spec.StepID) // "test-shard-2" → "test"
+
+	body, _ := json.Marshal(api.RecordTestReportRequest{
+		RunID:        spec.RunID,
+		JobID:        spec.JobID,
+		StepID:       baseStepID,
+		PipelineName: spec.PipelineName,
+		ProjectID:    spec.ProjectID,
+		Report:       report,
+	})
+
+	resp, err := a.authPost(
+		a.schedulerURL+"/api/v1/test-reports",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		fmt.Printf("[agent %s] failed to send test report: %v\n", a.id[:8], err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		fmt.Printf("[agent %s] scheduler rejected test report: HTTP %d\n", a.id[:8], resp.StatusCode)
+		return
+	}
+	fmt.Printf("[agent %s] recorded %d test file durations (pipeline=%s step=%s)\n",
+		a.id[:8], len(report.Files), spec.PipelineName, baseStepID)
+}
+
+func stripShardSuffix(stepID string) string {
+	if i := strings.Index(stepID, "-shard-"); i != -1 {
+		return stepID[:i]
+	}
+	return stepID
+}
+
 func (a *Agent) authPost(url, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
@@ -1952,7 +2073,7 @@ func (a *Agent) uploadArtifacts(spec *api.JobSpec, workspaceDir string) []string
 			if name == "" {
 				name = filepath.Base(filePath)
 			}
-			if err := a.uploadArtifact(spec.RunID, spec.JobID, name, filePath); err != nil {
+			if err := a.uploadArtifact(spec.RunID, spec.JobID, name, filePath, ""); err != nil {
 				fmt.Printf("[agent %s] artifact upload %q failed: %v\n", a.id[:8], name, err)
 			} else {
 				fmt.Printf("[agent %s] uploaded artifact %q → %s\n", a.id[:8], name, filePath)
@@ -1999,7 +2120,7 @@ func (a *Agent) listArtifacts(runId string) ([]api.ArtifactMeta, error) {
 	return list, nil
 }
 
-func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
+func (a *Agent) uploadArtifact(runId, jobId, name, filePath, filename string) error {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -2018,12 +2139,16 @@ func (a *Agent) uploadArtifact(runId, jobId, name, filePath string) error {
 		contentType = "application/octet-stream"
 	}
 
+	if filename == "" {
+		filename = filepath.Base(filePath)
+	}
+
 	// Step 1: Get presigned URL
 	body, _ := json.Marshal(api.PresignUploadRequest{
 		RunID:       runId,
 		JobID:       jobId,
 		Name:        name,
-		Filename:    filepath.Base(filePath),
+		Filename:    filename,
 		ContentType: contentType,
 	})
 
@@ -2186,10 +2311,17 @@ func (a *Agent) downloadFile(downloadURL, dest string) error {
 	return err
 }
 
-func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace string) error {
+func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace, jobBaseDir string) error {
 	ref := spec.PipelineRef
 	if ref == nil || ref.Path == "" {
+		if jobBaseDir != "" {
+			os.RemoveAll(jobBaseDir)
+		}
 		return a.reportComplete(spec, 1, 0, pipelineLog("ERROR", "pipeline step has no path"), "", false)
+	}
+
+	if jobBaseDir != "" && ref.Wait {
+		defer os.RemoveAll(jobBaseDir)
 	}
 
 	start := time.Now()
@@ -2218,70 +2350,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	}
 	logs = append(logs, pipelineLog("INFO", fmt.Sprintf("compiled child pipeline %q (%d steps)", childPipeline.Name, len(childPipeline.Steps)))...)
 
-	steps := make([]api.StepDef, 0, len(childPipeline.Steps))
-	for _, s := range childPipeline.Steps {
-		env := make(map[string]string, len(s.Env)+len(ref.Variables))
-		maps.Copy(env, s.Env)
-
-		// Variables override the step's own env vars.
-		maps.Copy(env, ref.Variables)
-		var uploads []api.ArtifactUploadSpec
-		for _, u := range s.ArtifactUploads {
-			uploads = append(uploads, api.ArtifactUploadSpec{
-				Path: u.Path,
-				Name: u.Name,
-			})
-		}
-		var downloads []api.ArtifactDownloadSpec
-		for _, d := range s.ArtifactDownloads {
-			downloads = append(downloads, api.ArtifactDownloadSpec{
-				Name: d.Name,
-				Dest: d.Dest,
-			})
-		}
-
-		var pipelineRef *api.PipelineRef
-		if s.PipelineRef != nil {
-			pipelineRef = &api.PipelineRef{
-				Path:             s.PipelineRef.Path,
-				Wait:             s.PipelineRef.Wait,
-				Variables:        s.PipelineRef.Variables,
-				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
-				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
-			}
-		}
-
-		var release *api.ReleaseConfig
-		if s.Release != nil {
-			release = &api.ReleaseConfig{
-				Name:      s.Release.Name,
-				Tag:       s.Release.Tag,
-				Body:      s.Release.Body,
-				Artifacts: s.Release.Artifacts,
-			}
-		}
-
-		steps = append(steps, api.StepDef{
-			ID:                s.ID,
-			Image:             s.Image,
-			Entrypoint:        s.Entrypoint,
-			Command:           s.Command,
-			WorkDir:           s.WorkDir,
-			Env:               env,
-			DependsOn:         s.DependsOn,
-			Inputs:            s.Inputs,
-			Timeout:           s.Timeout,
-			SecretNames:       s.Secrets,
-			DockerSocket:      s.DockerSocket,
-			Condition:         s.Condition,
-			AlwaysRun:         s.AlwaysRun,
-			Type:              s.Type,
-			ArtifactUploads:   uploads,
-			ArtifactDownloads: downloads,
-			PipelineRef:       pipelineRef,
-			Release:           release,
-		})
-	}
+	steps := childPipeline.ToAPISteps(ref.Variables)
 
 	// Submit the child run.
 	childRunName := fmt.Sprintf("%s → %s", spec.StepID, childPipeline.Name)
@@ -2295,6 +2364,9 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		Ref:              spec.Ref,
 		CommitSHA:        spec.CommitSHA,
 		AppliedStepIDs:   spec.AppliedStepIDs,
+		ParentRunID:      spec.RunID,
+		ParentJobID:      spec.JobID,
+		ArtifactsSend:    ref.ArtifactsSend,
 	})
 	submitResp, err := a.authPost(a.schedulerURL+"/api/v1/runs", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -2320,18 +2392,40 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 
 	if !ref.Wait {
 		logs = append(logs, pipelineLog("INFO", "fire-and-forget — not waiting for child run")...)
+		if jobBaseDir != "" {
+			childRunID := runResp.RunID
+			baseDir := jobBaseDir
+			go func() {
+				waitCtx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
+				defer cancel()
+				status, _ := a.waitForChildRun(waitCtx, childRunID)
+				fmt.Printf("[agent %s] fire-and-forget child run %s finished (%s); cleaning up workspace %s\n",
+					a.id[:8], childRunID[:8], status, baseDir)
+				os.RemoveAll(baseDir)
+			}()
+		}
 		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "", false)
 	}
 
-	// Release the concurrency slot while waiting for the child pipeline to finish.
-	// This prevents deadlocks if the child pipeline jobs have affinity to this agent
-	// and the agent's concurrency limit is reached.
+	/*
+		Release the concurrency slot while waiting for the child pipeline to finish.
+		This prevents deadlocks if the child pipeline jobs have affinity to this agent
+		and the agent's concurrency limit is reached.
+	*/
+	if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=true", a.schedulerURL, spec.JobID), "", nil); err == nil {
+		resp.Body.Close()
+	}
 	<-a.semaphore
-	defer func() { a.semaphore <- struct{}{} }()
 
 	// Poll until the child run finishes.
 	finalStatus, pollLogs := a.waitForChildRun(ctx, runResp.RunID)
 	logs = append(logs, pollLogs...)
+
+	// Re-acquire the slot and flip waiting off BEFORE reporting completion.
+	a.semaphore <- struct{}{}
+	if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=false", a.schedulerURL, spec.JobID), "", nil); err == nil {
+		resp.Body.Close()
+	}
 
 	exitCode := 0
 	if finalStatus != "passed" {
@@ -2400,12 +2494,13 @@ func (a *Agent) bridgeArtifact(ctx context.Context, srcRunID, dstRunID, dstJobID
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if err := a.downloadFile(meta.DownloadURL, tmp.Name()); err != nil {
+	downloadURL := a.rebaseURL(meta.DownloadURL)
+	if err := a.downloadFile(downloadURL, tmp.Name()); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
 
-	// Re-upload into the parent run under the same logical name.
-	return a.uploadArtifact(dstRunID, dstJobID, name, tmp.Name())
+	// Re-upload into the parent run under the same logical name and filename.
+	return a.uploadArtifact(dstRunID, dstJobID, name, tmp.Name(), meta.Filename)
 }
 
 func pipelineLog(level, msg string) []api.LogEvent {
@@ -2488,4 +2583,60 @@ func (a *Agent) registerWithProxy(ctx context.Context) (string, error) {
 	}
 
 	return res.SocketPath, nil
+}
+
+func (a *Agent) injectForgeBinary(workspace string) {
+	binDir := filepath.Join(workspace, ".forge", "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return
+	}
+
+	target := filepath.Join(binDir, "forge")
+	if _, err := os.Stat(target); err == nil {
+		return // already injected
+	}
+
+	if runtime.GOOS == "linux" {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+
+		src, err := os.Open(exe)
+		if err != nil {
+			return
+		}
+		defer src.Close()
+
+		dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		if err != nil {
+			return
+		}
+		defer dst.Close()
+
+		io.Copy(dst, src)
+		os.Chmod(target, 0755)
+	} else {
+		// Try to get Linux binary from docker
+		image := os.Getenv("FORGE_IMAGE")
+		if image == "" {
+			image = "ghcr.io/jbraunsmajr/forge/forge:latest"
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		// Use dockerutil to extract /forge
+		// Note: we don't log to the agent log here to keep it quiet, but maybe we should?
+		containerID, err := dockerutil.RunDockerCreate(ctx, nil, []string{image, "true"})
+		if err != nil {
+			return
+		}
+		defer dockerutil.DockerStopAndRm(ctx, containerID)
+
+		if err := dockerutil.DockerCp(ctx, containerID+":/forge", target); err != nil {
+			return
+		}
+		os.Chmod(target, 0755)
+	}
 }

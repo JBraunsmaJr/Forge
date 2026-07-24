@@ -93,7 +93,7 @@ func startStack(repoRoot string) error {
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
 	fmt.Println("[integration] pre-building forge image...")
-	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer buildCancel()
 	buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
 	buildCmd.Dir = repoRoot
@@ -159,8 +159,7 @@ func startStack(repoRoot string) error {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized {
 				fmt.Println("[integration] scheduler is ready")
-				waitForInit(repoRoot)
-				return nil
+				return waitForInit(repoRoot)
 			}
 			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
 		}
@@ -225,9 +224,18 @@ func stopStack(repoRoot string) {
 	// Clean up any sibling job containers that weren't part of the compose project.
 	// We do this BEFORE compose down so that job containers are removed before
 	// compose tries to remove the network they might be attached to.
+	//
+	// IMPORTANT: scope by this project's network, not just labels. The
+	// forge.agent_id label is shared by every job running on the same agent,
+	// so a label-only listing also matches *sibling test runs* (e.g. parallel
+	// split shards) — and removing their forge.run_id containers killed them
+	// mid-test. Only containers attached to OUR stack's network belong to us.
 	fmt.Println("[integration] cleaning up dangling job containers...")
 	// We use --format to get labels for filtering.
-	out, _ := exec.Command("docker", "ps", "-a", "--filter", "label=forge.managed=true", "--format", "{{.ID}}|{{.Labels}}").Output()
+	out, _ := exec.Command("docker", "ps", "-a",
+		"--filter", "label=forge.managed=true",
+		"--filter", "network="+composeProjectName+"_forge",
+		"--format", "{{.ID}}|{{.Labels}}").Output()
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) > 0 && lines[0] != "" {
 		self, _ := os.Hostname()
@@ -565,29 +573,36 @@ func stripPrefix(s, prefix string) string {
 	return strings.TrimPrefix(s, prefix)
 }
 
-func waitForInit(repoRoot string) {
+func waitForInit(repoRoot string) error {
 	fmt.Println("[integration] waiting for init service to complete...")
+	name := composeProjectName + "-init-1"
 	deadline := time.Now().Add(3 * time.Minute)
+	var err error
 	for time.Now().Before(deadline) {
-		args := composeArgs("ps", "init", "--format", "json")
-		cmd := exec.Command("docker", args...)
+		err = nil // reset for current duration
+		cmd := exec.Command("docker", "inspect",
+			"--format", "{{.State.Status}}:{{.State.ExitCode}}", name)
 		cmd.Dir = repoRoot
-		out, _ := cmd.Output()
-		s := string(out)
-		if s == "" {
-			// Possibly still creating
-		} else if strings.Contains(s, `"State":"exited"`) {
-			if strings.Contains(s, `"ExitCode":0`) {
-				fmt.Println("[integration] init service completed")
-				return
+		out, err := cmd.Output()
+		if err == nil {
+			s := strings.TrimSpace(string(out))
+			if status, code, ok := strings.Cut(s, ":"); ok && status == "exited" {
+				if code == "0" {
+					fmt.Println("[integration] init service completed")
+					return nil
+				}
+				fmt.Printf("[integration] init service failed (exit %s), check logs if tests fail\n", code)
+				dumpLogs(repoRoot, "init", 50)
+				return nil
 			}
-			fmt.Println("[integration] init service failed, check logs if tests fail")
-			dumpLogs(repoRoot, "init", 50)
-			return
 		}
+		// err != nil: container not created yet, or not visible through the
+		// proxy — keep polling until the deadline either way.
 		time.Sleep(2 * time.Second)
 	}
-	fmt.Println("[integration] init service wait timed out")
+	fmt.Println("[integration] init service wait timed out; dumping init logs:")
+	dumpLogs(repoRoot, "init", 50)
+	return err
 }
 
 func dockerHostAddr() string {

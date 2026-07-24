@@ -1,0 +1,19 @@
+name: Verify Examples
+
+steps:
+  - id: verify-python
+    image: python:3.13-slim-bullseye
+    run: |
+      pip install pytest
+      pytest ./examples
+
+  - id: verify-go
+    image: golang:1.26.5-alpine
+    run: go test ./examples/...
+
+  - id: verify-node
+    image: node:26.5.0-alpine
+    workdir: /workspace/ui
+    run: |
+      npm install
+      npm test

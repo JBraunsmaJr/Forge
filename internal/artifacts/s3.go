@@ -108,7 +108,7 @@ func (s *S3Store) GetArtifact(_ context.Context, runID, name string) (*ArtifactM
 	var m ArtifactMeta
 	var key string
 	err := s.db.QueryRow(`
-		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		SELECT id, run_id, COALESCE(job_id, ''), name, filename, size_bytes, content_type, storage_key, created_at
 		FROM artifacts
 		WHERE run_id=$1 AND name=$2 AND confirmed=true
 		ORDER BY created_at DESC LIMIT 1`,
@@ -127,7 +127,7 @@ func (s *S3Store) GetArtifact(_ context.Context, runID, name string) (*ArtifactM
 
 func (s *S3Store) ListArtifacts(_ context.Context, runID string) ([]ArtifactMeta, error) {
 	rows, err := s.db.Query(`
-		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		SELECT id, run_id, COALESCE(job_id, ''), name, filename, size_bytes, content_type, storage_key, created_at
 		FROM artifacts
 		WHERE run_id=$1 AND confirmed=true
 		ORDER BY created_at`,
@@ -203,7 +203,7 @@ func (s *S3Store) ServeDownload(ctx context.Context, artifactID string) (io.Read
 	var m ArtifactMeta
 	var key string
 	err := s.db.QueryRow(`
-		SELECT id, run_id, job_id, name, filename, size_bytes, content_type, storage_key, created_at
+		SELECT id, run_id, COALESCE(job_id, ''), name, filename, size_bytes, content_type, storage_key, created_at
 		FROM artifacts WHERE id=$1`, artifactID).Scan(&m.ID, &m.RunID, &m.JobID, &m.Name, &m.Filename, &m.SizeBytes, &m.ContentType, &key, &m.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
