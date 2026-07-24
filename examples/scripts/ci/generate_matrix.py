@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-generate-matrix.py — Reads a platform configuration and emits one build + test
+generate_matrix.py — Reads a platform configuration and emits one build + test
 job per platform as a Forge step list.
 
 This replaces GitHub Actions' static matrix: syntax with real code. Benefits:
@@ -11,8 +11,8 @@ This replaces GitHub Actions' static matrix: syntax with real code. Benefits:
 
 platforms.json format:
   [
-    {"os": "linux",   "arch": "amd64", "image": "golang:1.24-alpine"},
-    {"os": "linux",   "arch": "arm64", "image": "golang:1.24-alpine"},
+    {"os": "linux",   "arch": "amd64", "image": "golang:1.26-alpine"},
+    {"os": "linux",   "arch": "arm64", "image": "golang:1.26-alpine"},
     {"os": "windows", "arch": "amd64", "image": "golang:1.24-windowsservercore-ltsc2022"}
   ]
 
@@ -24,22 +24,23 @@ import sys
 
 
 PLATFORMS_FILE = "/workspace/.forge/platforms.json"
+ARTIFACT_MANIFEST = "/workspace/.forge/artifact-manifest.json"
 
 
 DEFAULT_PLATFORMS = [
-    {"os": "linux",   "arch": "amd64",  "image": "golang:1.24-alpine"},
-    {"os": "linux",   "arch": "arm64",  "image": "golang:1.24-alpine"},
-    {"os": "windows", "arch": "amd64",  "image": "golang:1.24-alpine"},  # cross-compile
-    {"os": "darwin",  "arch": "amd64",  "image": "golang:1.24-alpine"},  # cross-compile
-    {"os": "darwin",  "arch": "arm64",  "image": "golang:1.24-alpine"},  # cross-compile
+    {"os": "linux",   "arch": "amd64",  "image": "golang:1.26-alpine"},
+    {"os": "linux",   "arch": "arm64",  "image": "golang:1.26-alpine"},
+    {"os": "windows", "arch": "amd64",  "image": "golang:1.26-alpine"},  # cross-compile
+    {"os": "darwin",  "arch": "amd64",  "image": "golang:1.26-alpine"},  # cross-compile
+    {"os": "darwin",  "arch": "arm64",  "image": "golang:1.26-alpine"},  # cross-compile
 ]
 
 
-def load_platforms() -> list[dict]:
-    if os.path.exists(PLATFORMS_FILE):
-        with open(PLATFORMS_FILE) as f:
+def load_platforms(path: str) -> list[dict]:
+    if os.path.exists(path):
+        with open(path) as f:
             platforms = json.load(f)
-        print(f"[info] Loaded {len(platforms)} platforms from {PLATFORMS_FILE}", file=sys.stderr)
+        print(f"[info] Loaded {len(platforms)} platforms from {path}", file=sys.stderr)
         return platforms
     print(f"[info] No platforms.json found — using defaults", file=sys.stderr)
     return DEFAULT_PLATFORMS
@@ -97,27 +98,49 @@ def steps_for_platform(p: dict) -> list[dict]:
     return [build_step, test_step]
 
 
-def main():
-    platforms = load_platforms()
-
-    # Optional: skip platforms based on env flags.
-    # e.g. SKIP_WINDOWS=1 to speed up draft PRs.
-    if os.environ.get("SKIP_WINDOWS"):
+def generate_matrix(platforms: list[dict], skip_windows: bool = False) -> list[dict]:
+    """Pure logic: transform platform list into Forge steps."""
+    if skip_windows:
         platforms = [p for p in platforms if p["os"] != "windows"]
-        print("[info] SKIP_WINDOWS set — skipping Windows builds", file=sys.stderr)
-
-    print(f"[info] Generating steps for {len(platforms)} platforms", file=sys.stderr)
 
     steps = []
     for p in platforms:
         steps.extend(steps_for_platform(p))
+    return steps
 
-    # Write artifact manifest so the release step knows all artifact names.
+
+def write_manifest(path: str, platforms: list[dict]):
+    """Side effect: write artifact manifest for downstream steps."""
     artifact_names = [f"binary-{p['os']}-{p['arch']}" for p in platforms]
-    manifest_path = "/workspace/.forge/artifact-manifest.json"
-    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-    with open(manifest_path, "w") as f:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
         json.dump({"artifacts": artifact_names, "platforms": platforms}, f, indent=2)
+
+
+def main():
+    # 1. Collect inputs (stdin, env and files)
+    # Generators receive context on stdin as JSON.
+    try:
+        if not sys.stdin.isatty():
+            input_data = json.load(sys.stdin)
+            print(f"[info] Read generator context from stdin (pipeline: {input_data.get('pipeline_name')})", file=sys.stderr)
+        else:
+            input_data = {}
+    except Exception as e:
+        input_data = {}
+        print(f"[info] No stdin context found or error: {e}", file=sys.stderr)
+
+    platforms = load_platforms(PLATFORMS_FILE)
+    
+    # Check for skip flag in env or the new stdin context.
+    skip_windows = os.environ.get("SKIP_WINDOWS") == "1" or input_data.get("env", {}).get("SKIP_WINDOWS") == "1"
+
+    # 2. Run core logic
+    steps = generate_matrix(platforms, skip_windows)
+
+    # 3. Handle side effects (printing and writing files)
+    print(f"[info] Generating steps for {len(platforms)} platforms", file=sys.stderr)
+    write_manifest(ARTIFACT_MANIFEST, platforms)
 
     print(json.dumps(steps, indent=2))
 

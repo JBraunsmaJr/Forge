@@ -318,6 +318,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/runs/prune", s.handlePruneRuns)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/waiting", s.handleJobWaiting)
+	mux.HandleFunc("POST /api/v1/test-reports", s.handleRecordTestReport)
+	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.handleGetFlakyTests)
 
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
@@ -491,6 +494,25 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleJobWaiting(w http.ResponseWriter, r *http.Request) {
+	if !agentOnly(r) {
+		writeError(w, http.StatusForbidden, "agent permission required")
+		return
+	}
+	jobID := r.PathValue("id")
+	waiting := r.URL.Query().Get("waiting") == "true"
+	if err := s.store.UpdateJobWaiting(jobID, waiting); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	runID := s.store.GetJobRunID(jobID)
+	if runID != "" {
+		s.publishRunDetail(runID)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleDenyJob(w http.ResponseWriter, r *http.Request) {
 	if !requireOperator(w, r) {
 		return
@@ -539,6 +561,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := fs.Stat(distFS, path); err != nil {
+		// SPA fallback for route paths — but never for hashed assets: serving
+		// index.html as a stale bundle's JS makes browsers execute HTML and
+		// mask deploys behind cached pages.
+		if strings.HasPrefix(path, "assets/") {
+			http.NotFound(w, r)
+			return
+		}
 		path = "index.html"
 	}
 
@@ -550,6 +579,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	fi, _ := f.Stat()
+
+	// Vite emits content-hashed filenames under assets/, so those are safe
+	// to cache forever; index.html must revalidate on every load or a
+	// browser keeps referencing the previous deploy's bundle — the UI then
+	// silently lags the image ("I deployed but the new tab isn't there").
+	if strings.HasPrefix(path, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 
 	http.ServeContent(w, r, path, fi.ModTime(), f.(io.ReadSeeker))
 }
@@ -1179,7 +1218,7 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 					tmpDir, err := os.MkdirTemp("", "forge-policy-*")
 					if err == nil {
 						defer os.RemoveAll(tmpDir)
-						if err := s.gitCache.Sync(proj.RepoURL, scmToken); err == nil {
+						if err := s.gitCache.SyncCommit(proj.RepoURL, scmToken, commitSHA); err == nil {
 							if err := s.extractSourceToDir(proj.RepoURL, commitSHA, tmpDir); err == nil {
 								workspaceDir = tmpDir
 							} else {
@@ -1238,7 +1277,21 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	runID, err := s.store.SubmitRun(req.PipelineName, req.WorkspaceDir, req.OrgID, req.ProjectID, req.Ref, req.CommitSHA, "", req.PreferredAgentID, steps, appliedStepIDs, "")
+	runID, err := s.store.SubmitRun(SubmitRunParams{
+		Name:             req.PipelineName,
+		PipelineName:     req.PipelineName,
+		WorkspaceDir:     req.WorkspaceDir,
+		OrgID:            req.OrgID,
+		ProjectID:        req.ProjectID,
+		Ref:              req.Ref,
+		CommitSHA:        req.CommitSHA,
+		PreferredAgentID: req.PreferredAgentID,
+		Steps:            steps,
+		AppliedStepIDs:   appliedStepIDs,
+		ParentRunID:      req.ParentRunID,
+		ParentJobID:      req.ParentJobID,
+		ArtifactsSend:    req.ArtifactsSend,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1632,7 +1685,7 @@ func (s *Server) triggerProject(projectID, branch, commit string) (string, error
 		return "", fmt.Errorf("project not found")
 	}
 
-	if err := s.gitCache.Sync(proj.RepoURL, scmToken); err != nil {
+	if err := s.gitCache.SyncCommit(proj.RepoURL, scmToken, branch); err != nil {
 		return "", fmt.Errorf("failed to sync repo: %w", err)
 	}
 
@@ -1665,6 +1718,31 @@ func (s *Server) triggerProject(projectID, branch, commit string) (string, error
 	return s.triggerWebhookRun(proj, proj.RepoURL, branch, commitSHA, "", scmToken, meta, true)
 }
 
+func (s *Server) handleRecordTestReport(w http.ResponseWriter, r *http.Request) {
+	var req api.RecordTestReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.RecordTestReport(req); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) handleGetFlakyTests(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	results, err := s.store.GetFlakyByDuration(projectID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
 func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	if !requireOperator(w, r) {
 		return
@@ -1686,11 +1764,20 @@ func (s *Server) handleManualTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"run_id": runID})
 }
 
-// handleAppendJobLogs receives a batch of log events from the agent and
-// broadcasts to any browser matching this job's log stream.
-// We do NOT write to the database here - Complete() already stores the full canonical log
-// set when the job finishes. Writing here AND in Complete was
-// causing each event to appear twice in GetJobLogs.
+// handleAppendJobLogs receives a batch of log events from the agent,
+// persists them, and broadcasts to any browser following this job's log
+// stream.
+//
+// Logs are intentionally written twice over the job's lifetime:
+//   - here, incrementally, so viewers connecting mid-run get catch-up from
+//     the DB and logs survive an agent crash; and
+//   - in Complete(), which DELETEs and re-inserts the canonical set read
+//     from the log file (streaming is fire-and-forget over gRPC, so this
+//     is the delivery guarantee).
+//
+// The final stored state is therefore never duplicated. The one remaining
+// overlap — an SSE client receiving an event both from DB catch-up and from
+// the broker buffer — is deduplicated in handleJobLogStream.
 func (s *Server) handleAppendJobLogs(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("id")
 
@@ -1735,16 +1822,27 @@ func (s *Server) handleJobLogStream(w http.ResponseWriter, r *http.Request) {
 
 	/*
 		Subscribe first, THEN send existing logs.
-		This order pevents a race condition where a new event arrives between
-		"fetch existing" and "subscribe" and get silently dropped.
+		This order prevents a race condition where a new event arrives between
+		"fetch existing" and "subscribe" and gets silently dropped.
+
+		The flip side of that ordering: any batch persisted between Subscribe
+		and GetJobLogs is delivered twice — once from the DB catch-up and once
+		from the broker buffer. We track the newest timestamp sent during
+		catch-up and skip buffered events at or before it. Timestamps come
+		from a single agent per job with nanosecond precision and arrive in
+		order, so this boundary is safe.
 	*/
 	ch := s.broker.Subscribe("log:" + jobID)
 	defer s.broker.Unsubscribe("log:"+jobID, ch)
 
+	var lastSent time.Time
 	if logs, ok := s.store.GetJobLogs(jobID); ok {
 		for i, e := range logs {
 			data, _ := json.Marshal(e)
 			fmt.Fprintf(w, "data: %s\n\n", data)
+			if e.Timestamp.After(lastSent) {
+				lastSent = e.Timestamp
+			}
 			if (i+1)%100 == 0 {
 				flusher.Flush()
 			}
@@ -1752,12 +1850,21 @@ func (s *Server) handleJobLogStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Stream new events as they arrive from the agent.
+	// Stream new events as they arrive from the agent, dropping any that the
+	// catch-up above already delivered.
+	caughtUp := lastSent.IsZero()
 	for {
 		select {
 		case event, open := <-ch:
 			if !open {
 				return
+			}
+			if !caughtUp {
+				var e api.LogEvent
+				if err := json.Unmarshal([]byte(event), &e); err == nil && !e.Timestamp.After(lastSent) {
+					continue // already sent during catch-up
+				}
+				caughtUp = true // events arrive in order; stop inspecting
 			}
 			fmt.Fprintf(w, "data: %s\n\n", event)
 			flusher.Flush()
@@ -1787,33 +1894,51 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int64{"canceled_jobs": n})
 }
 
+// rerunParams builds submission parameters for rerunning parentRunID.
+// The display name is prefixed with "rerun: " (without stacking prefixes)
+// while the stable PipelineName is carried over unchanged so historical
+// data such as test-split timings keeps accumulating under one key.
+func rerunParams(info RerunInfo, parentRunID string) SubmitRunParams {
+	displayName := info.Name
+	for strings.HasPrefix(displayName, "rerun: ") {
+		displayName = strings.TrimPrefix(displayName, "rerun: ")
+	}
+	return SubmitRunParams{
+		Name:             "rerun: " + displayName,
+		PipelineName:     info.PipelineName,
+		WorkspaceDir:     info.WorkspaceDir,
+		OrgID:            info.OrgID,
+		ProjectID:        info.ProjectID,
+		Ref:              info.Ref,
+		CommitSHA:        info.CommitSHA,
+		PreferredAgentID: info.PreferredAgentID,
+		Steps:            info.Steps,
+		AppliedStepIDs:   info.AppliedStepIDs,
+		ParentRunID:      parentRunID,
+	}
+}
+
 func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 	if !requireAdmin(w, r) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
+	info, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	if err := validateSteps(steps); err != nil {
+	if err := validateSteps(info.Steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
 		return
 	}
 
-	newName := name
-	for strings.HasPrefix(newName, "rerun: ") {
-		newName = strings.TrimPrefix(newName, "rerun: ")
-	}
-	newName = "rerun: " + newName
-
-	for i := range steps {
-		steps[i].Status = ""
+	for i := range info.Steps {
+		info.Steps[i].Status = ""
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
+	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1828,30 +1953,24 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("id")
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
+	info, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	if err := validateSteps(steps); err != nil {
+	if err := validateSteps(info.Steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
 		return
 	}
 
-	newName := name
-	for strings.HasPrefix(newName, "rerun: ") {
-		newName = strings.TrimPrefix(newName, "rerun: ")
-	}
-	newName = "rerun: " + newName
-
-	for i := range steps {
-		if steps[i].Status != api.JobStatusPassed {
-			steps[i].Status = "" // Rerun
+	for i := range info.Steps {
+		if info.Steps[i].Status != api.JobStatusPassed {
+			info.Steps[i].Status = "" // Rerun
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
+	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1873,7 +1992,7 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 	}
 	runID := detail.RunID
 
-	name, steps, workspaceDir, orgID, projectID, ref, commitSHA, preferredAgentID, appliedStepIDs, err := s.store.RerunSteps(runID)
+	info, err := s.store.RerunSteps(runID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1887,23 +2006,17 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := validateSteps(steps); err != nil {
+	if err := validateSteps(info.Steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline for rerun: %v", err))
 		return
 	}
-
-	newName := name
-	for strings.HasPrefix(newName, "rerun: ") {
-		newName = strings.TrimPrefix(newName, "rerun: ")
-	}
-	newName = "rerun: " + newName
 
 	toRerun := make(map[string]bool)
 	toRerun[targetStepID] = true
 	changed := true
 	for changed {
 		changed = false
-		for _, step := range steps {
+		for _, step := range info.Steps {
 			if toRerun[step.ID] {
 				continue
 			}
@@ -1917,13 +2030,13 @@ func (s *Server) handleRerunJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for i := range steps {
-		if toRerun[steps[i].ID] {
-			steps[i].Status = ""
+	for i := range info.Steps {
+		if toRerun[info.Steps[i].ID] {
+			info.Steps[i].Status = ""
 		}
 	}
 
-	newRunID, err := s.store.SubmitRun(newName, workspaceDir, orgID, projectID, ref, commitSHA, "", preferredAgentID, steps, appliedStepIDs, runID)
+	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -2167,7 +2280,7 @@ func (s *Server) resolveRemoteSteps(steps []api.StepDef, scmToken string, visite
 		}
 
 		// Fetch via gitcache
-		if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
+		if err := s.gitCache.SyncCommit(repoURL, scmToken, ref); err != nil {
 			return nil, fmt.Errorf("fetching remote template %s: %w", repoURL, err)
 		}
 

@@ -44,7 +44,7 @@ Forge is built around one principle: **pipeline logic belongs in source code, no
 - id: detect-changes
   type: generator
   image: python:3.12-slim
-  script: scripts/ci/detect-changes.py  # a real Python file in your repo
+  script: scripts/ci/detect_changes.py  # a real Python file in your repo
 ```
 
 Your CI scripts get syntax highlighting, IDE support, independent testing, and proper version control diffs — not a wall of escaped YAML.
@@ -57,7 +57,7 @@ No other CI system has this. A generator step runs code and emits new step defin
 - id: matrix-generator
   type: generator
   image: python:3.12-slim
-  script: scripts/ci/generate-matrix.py   # reads platforms.json, emits steps
+  script: scripts/ci/generate_matrix.py   # reads platforms.json, emits steps
 ```
 
 ### Pipeline chaining with artifact handoff
@@ -269,11 +269,11 @@ name: my-first-pipeline
 
 steps:
   - id: test
-    image: golang:1.24-alpine
+    image: golang:1.26-alpine
     run: go test ./...
 
   - id: build
-    image: golang:1.24-alpine
+    image: golang:1.26-alpine
     depends_on: [test]
     run: go build -o dist/myapp ./cmd/myapp
     artifacts:
@@ -330,6 +330,7 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 | Scheduled Pipelines                 | ✅ `on: schedule`                | ✅                         | ✅ Project-level Cron           |
 | Release Artifacts to SCM            | ❌ Action required               | ❌ Action required         | ✅ `type: release`              |
 | Debug failing jobs                  | ❌ Re-run and add echo           | ❌                         | ✅ Live terminal                |
+| Timing-based test splitting         | ❌ Third-party actions           | ⚠️ `parallel:` (manual)   | ✅ `split:` + timing history    |
 | Policy injection                    | ❌                               | ❌                         | ✅ Org-level policies           |
 | Scoped secrets (project/org/global) | ❌                               | ⚠️ Group variables        | ✅                              |
 | Self-hosted                         | ✅ Runners                       | ✅ Runners                 | ✅ Full stack                   |

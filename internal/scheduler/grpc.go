@@ -223,6 +223,9 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					AppliedStepIds: spec.AppliedStepIDs,
 					WorkspaceDir:   spec.WorkspaceDir,
 					Ref:            spec.Ref,
+					TestReport:     spec.TestReport,
+					PipelineName:   spec.PipelineName,
+					With:           spec.With,
 				}
 
 				if spec.PipelineRef != nil {
@@ -246,6 +249,11 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 						Name: d.Name,
 						Dest: d.Dest,
 					})
+				}
+
+				if spec.TestReport != "" {
+					fmt.Printf("[grpc] dispatching job %.8s step=%s test_report=%q pipeline=%q to agent %.8s\n",
+						spec.JobID, spec.StepID, spec.TestReport, spec.PipelineName, agentID)
 				}
 
 				out <- &pb.SchedulerMessage{

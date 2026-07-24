@@ -3,6 +3,8 @@ package pipeline
 import (
 	"fmt"
 	"time"
+
+	"github.com/JBraunsmaJr/forge/internal/api"
 )
 
 // Pipeline is the compiled, canonical representation of a pipeline.
@@ -67,6 +69,11 @@ type Step struct {
 	DockerSocket bool
 	// AlwaysRun ensures the step runs even if dependencies fail.
 	AlwaysRun bool
+
+	// Split is non-nil when this step should be fanned out into parallel shards.
+	Split *api.SplitConfig
+	// TestReport is the path to the test report file produced by this step.
+	TestReport string
 }
 
 // PipelineRef holds chaining configuration for pipeline steps.
@@ -96,6 +103,84 @@ type ReleaseConfig struct {
 	Tag       string   // Git tag name
 	Body      string   // Release description
 	Artifacts []string // Names of artifacts to attach to the release
+}
+
+func (p *Pipeline) ToAPISteps(variables map[string]string) []api.StepDef {
+	steps := make([]api.StepDef, len(p.Steps))
+	for i, s := range p.Steps {
+		steps[i] = s.ToAPIStep(variables)
+	}
+	return steps
+}
+
+func (s *Step) ToAPIStep(variables map[string]string) api.StepDef {
+	var uploads []api.ArtifactUploadSpec
+	for _, u := range s.ArtifactUploads {
+		uploads = append(uploads, api.ArtifactUploadSpec{
+			Path: u.Path,
+			Name: u.Name,
+		})
+	}
+	var downloads []api.ArtifactDownloadSpec
+	for _, d := range s.ArtifactDownloads {
+		downloads = append(downloads, api.ArtifactDownloadSpec{
+			Name: d.Name,
+			Dest: d.Dest,
+		})
+	}
+
+	var pipelineRef *api.PipelineRef
+	if s.PipelineRef != nil {
+		pipelineRef = &api.PipelineRef{
+			Path:             s.PipelineRef.Path,
+			Wait:             s.PipelineRef.Wait,
+			Variables:        s.PipelineRef.Variables,
+			ArtifactsSend:    s.PipelineRef.ArtifactsSend,
+			ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
+		}
+	}
+
+	var release *api.ReleaseConfig
+	if s.Release != nil {
+		release = &api.ReleaseConfig{
+			Name:      s.Release.Name,
+			Tag:       s.Release.Tag,
+			Body:      s.Release.Body,
+			Artifacts: s.Release.Artifacts,
+		}
+	}
+
+	env := make(map[string]string)
+	for k, v := range s.Env {
+		env[k] = v
+	}
+	for k, v := range variables {
+		env[k] = v
+	}
+
+	return api.StepDef{
+		ID:                s.ID,
+		Image:             s.Image,
+		Entrypoint:        s.Entrypoint,
+		Command:           s.Command,
+		WorkDir:           s.WorkDir,
+		Env:               env,
+		DependsOn:         s.DependsOn,
+		Inputs:            s.Inputs,
+		Timeout:           s.Timeout,
+		SecretNames:       s.Secrets,
+		DockerSocket:      s.DockerSocket,
+		Condition:         s.Condition,
+		AlwaysRun:         s.AlwaysRun,
+		Type:              s.Type,
+		ArtifactUploads:   uploads,
+		ArtifactDownloads: downloads,
+		PipelineRef:       pipelineRef,
+		Release:           release,
+		Split:             s.Split,
+		TestReport:        s.TestReport,
+		With:              s.With,
+	}
 }
 
 // StepStatus represents where a step is in its lifecycle.

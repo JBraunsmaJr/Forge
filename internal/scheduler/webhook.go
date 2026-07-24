@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -321,7 +320,7 @@ func (s *Server) triggerWebhookRun(
 ) (string, error) {
 
 	if !skipSync {
-		if err := s.gitCache.Sync(repoURL, scmToken); err != nil {
+		if err := s.gitCache.SyncCommit(repoURL, scmToken, commitSHA); err != nil {
 			return "", fmt.Errorf("syncing repo: %w", err)
 		}
 	}
@@ -361,67 +360,8 @@ func (s *Server) triggerWebhookRun(
 
 	steps := make([]api.StepDef, len(pipeline.Steps))
 	for i, s := range pipeline.Steps {
-		env := make(map[string]string)
-		maps.Copy(env, s.Env)
-
-		injectSCMMetadata(env, meta)
-
-		var pipelineRef *api.PipelineRef
-		if s.PipelineRef != nil {
-			pipelineRef = &api.PipelineRef{
-				Path:             s.PipelineRef.Path,
-				Wait:             s.PipelineRef.Wait,
-				Variables:        s.PipelineRef.Variables,
-				ArtifactsSend:    s.PipelineRef.ArtifactsSend,
-				ArtifactsReceive: s.PipelineRef.ArtifactsReceive,
-			}
-		}
-
-		var release *api.ReleaseConfig
-		if s.Release != nil {
-			release = &api.ReleaseConfig{
-				Name:      s.Release.Name,
-				Tag:       s.Release.Tag,
-				Body:      s.Release.Body,
-				Artifacts: s.Release.Artifacts,
-			}
-		}
-
-		var uploads []api.ArtifactUploadSpec
-		for _, u := range s.ArtifactUploads {
-			uploads = append(uploads, api.ArtifactUploadSpec{
-				Path: u.Path,
-				Name: u.Name,
-			})
-		}
-		var downloads []api.ArtifactDownloadSpec
-		for _, d := range s.ArtifactDownloads {
-			downloads = append(downloads, api.ArtifactDownloadSpec{
-				Name: d.Name,
-				Dest: d.Dest,
-			})
-		}
-
-		steps[i] = api.StepDef{
-			ID:                s.ID,
-			Image:             s.Image,
-			Entrypoint:        s.Entrypoint,
-			Command:           s.Command,
-			WorkDir:           s.WorkDir,
-			Env:               env,
-			DependsOn:         s.DependsOn,
-			Inputs:            s.Inputs,
-			Timeout:           s.Timeout,
-			SecretNames:       s.Secrets,
-			DockerSocket:      s.DockerSocket,
-			Condition:         s.Condition,
-			AlwaysRun:         s.AlwaysRun,
-			Type:              s.Type,
-			ArtifactUploads:   uploads,
-			ArtifactDownloads: downloads,
-			PipelineRef:       pipelineRef,
-			Release:           release,
-		}
+		steps[i] = s.ToAPIStep(nil)
+		injectSCMMetadata(steps[i].Env, meta)
 	}
 
 	runID := newID()
@@ -476,7 +416,20 @@ func (s *Server) triggerWebhookRun(
 		appliedStepIDs = append(appliedStepIDs, s.ID)
 	}
 
-	submittedID, err := s.store.SubmitRunWithID(runID, runName, "", proj.OrgID, proj.ID, meta.Ref, commitSHA, meta.Provider, "", steps, appliedStepIDs, "")
+	submittedID, err := s.store.SubmitRun(SubmitRunParams{
+		RunID: runID,
+		Name:  runName,
+		// pipeline.Name (not runName) so test-duration history and shard
+		// planning correlate across commits — runName embeds the SHA.
+		PipelineName:   pipeline.Name,
+		OrgID:          proj.OrgID,
+		ProjectID:      proj.ID,
+		Ref:            meta.Ref,
+		CommitSHA:      commitSHA,
+		SCMProvider:    meta.Provider,
+		Steps:          steps,
+		AppliedStepIDs: appliedStepIDs,
+	})
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)
 	}

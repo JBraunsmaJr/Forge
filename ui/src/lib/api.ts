@@ -65,6 +65,7 @@ export interface Job {
     finished_at?: string;
     depends_on: string[];
     policy_source?: string;
+    child_run_id?: string;
 }
 
 export interface Run {
@@ -86,6 +87,14 @@ export interface RunComparison {
 
 export interface RunDetail extends Run {
     jobs: Job[];
+    shard_assignments?: Record<string, ShardAssignmentDetail[]>;
+}
+
+export interface ShardAssignmentDetail {
+    shard_index: number;
+    total_shards: number;
+    file_paths: string[];
+    estimated_ms: number;
 }
 
 export interface LogEvent {

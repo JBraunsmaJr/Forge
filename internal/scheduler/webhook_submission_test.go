@@ -22,9 +22,18 @@ func TestSubmitWebhookRun_EmptyWorkspace(t *testing.T) {
 
 	st.db.Exec(`INSERT INTO orgs (id, name) VALUES ($1, $2)`, proj.OrgID, "Test Org")
 
-	id, err := st.SubmitRunWithID(runID, "Test Run", "", proj.OrgID, proj.ID, "refs/heads/main", "deadbeef", "github", "", steps, nil, "")
+	id, err := st.SubmitRun(SubmitRunParams{
+		RunID:       runID,
+		Name:        "Test Run",
+		OrgID:       proj.OrgID,
+		ProjectID:   proj.ID,
+		Ref:         "refs/heads/main",
+		CommitSHA:   "deadbeef",
+		SCMProvider: "github",
+		Steps:       steps,
+	})
 	if err != nil {
-		t.Fatalf("SubmitRunWithID failed: %v", err)
+		t.Fatalf("SubmitRun failed: %v", err)
 	}
 
 	// Verify the workspace in the DB

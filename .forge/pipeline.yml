@@ -2,6 +2,10 @@ name: Forge-Testing
 
 steps:
 
+  - id: verify-examples
+    type: pipeline
+    pipeline: .forge/examples.yml
+
   - id: build-ui
     name: Build UI
     image: node:22-alpine
@@ -50,7 +54,17 @@ steps:
       download:
         - name: ui-dist.tar.gz
     timeout: 10m
+    split:
+      strategy: duration
+      shards: 3
+      history_days: 14
+      min_history_runs: 2
+      fallback: single
+    test_report: .forge/test-report.json
     run: |
+      # pipefail: without it, `go test | tee | ...` exits with the LAST
+      # command's status and test failures would not fail the step.
+      set -eo pipefail
       apk add --no-cache docker-cli docker-cli-compose iproute2
       # Debug: check if artifact was downloaded
       ls -la
@@ -58,7 +72,20 @@ steps:
       tar -xzf ui-dist.tar.gz -C internal/scheduler/web
       # Debug: verify extraction
       ls -la internal/scheduler/web/dist
-      go test -v ./tests/integration/...
+      if [ "$FORGE_TEST_SHARD_EMPTY" = "1" ]; then
+        echo "no timing history yet; shard $FORGE_SHARD_INDEX deferring to shard 0 (fallback: single)"
+        exit 0
+      fi
+      go build -o /usr/local/bin/forge ./cmd/forge
+      TEST_PKGS=""
+      for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do TEST_PKGS="$TEST_PKGS ./$p"; done
+      if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
+      set +e
+      go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json | forge report stream-go-test
+      test_status=$?
+      set -e
+      forge report from-go-test /tmp/go-test-output.json .forge/test-report.json
+      exit $test_status
 
   - id: main-pipeline
     condition: branch(main)
