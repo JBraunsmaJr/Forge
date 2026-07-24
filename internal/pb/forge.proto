@@ -115,6 +115,11 @@ message JobSpec {
   // PipelineName is the stable pipeline identity used to correlate history
   // (test durations, shard planning) across runs.
   string pipeline_name = 28;
+  // With holds `with:` template parameters for this step. Consumed by
+  // generator steps (see GeneratorInput.With in internal/api/types.go) so
+  // a remote agent's generator process gets the same inputs a local one
+  // would.
+  map<string, string> with = 29;
 }
 
 message PipelineRef {

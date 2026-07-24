@@ -339,6 +339,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				Ref:            pbSpec.Ref,
 				TestReport:     pbSpec.TestReport,
 				PipelineName:   pbSpec.PipelineName,
+				With:           pbSpec.With,
 			}
 
 			if info, ok := a.activeJobs.Load(spec.JobID); ok {
@@ -761,6 +762,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		Command:      spec.Command,
 		WorkDir:      spec.WorkDir,
 		Env:          spec.Env,
+		With:         spec.With,
 		Inputs:       spec.Inputs,
 		Timeout:      spec.Timeout,
 		Secrets:      spec.SecretNames,
@@ -2390,12 +2392,26 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 
 	if !ref.Wait {
 		logs = append(logs, pipelineLog("INFO", "fire-and-forget — not waiting for child run")...)
+		if jobBaseDir != "" {
+			childRunID := runResp.RunID
+			baseDir := jobBaseDir
+			go func() {
+				waitCtx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
+				defer cancel()
+				status, _ := a.waitForChildRun(waitCtx, childRunID)
+				fmt.Printf("[agent %s] fire-and-forget child run %s finished (%s); cleaning up workspace %s\n",
+					a.id[:8], childRunID[:8], status, baseDir)
+				os.RemoveAll(baseDir)
+			}()
+		}
 		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "", false)
 	}
 
-	// Release the concurrency slot while waiting for the child pipeline to finish.
-	// This prevents deadlocks if the child pipeline jobs have affinity to this agent
-	// and the agent's concurrency limit is reached.
+	/*
+		Release the concurrency slot while waiting for the child pipeline to finish.
+		This prevents deadlocks if the child pipeline jobs have affinity to this agent
+		and the agent's concurrency limit is reached.
+	*/
 	if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=true", a.schedulerURL, spec.JobID), "", nil); err == nil {
 		resp.Body.Close()
 	}
@@ -2406,12 +2422,6 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	logs = append(logs, pollLogs...)
 
 	// Re-acquire the slot and flip waiting off BEFORE reporting completion.
-	// This used to live in a defer, which ran AFTER reportComplete — so the
-	// waiting=false request raced in behind the terminal status, and if the
-	// semaphore was contended the job showed "passed" while this goroutine
-	// was still blocked here, then snapped back to "running". Doing it in
-	// order means: waiting -> running (slot held again) -> terminal, and the
-	// terminal status is the last word.
 	a.semaphore <- struct{}{}
 	if resp, err := a.authPost(fmt.Sprintf("%s/api/v1/jobs/%s/waiting?waiting=false", a.schedulerURL, spec.JobID), "", nil); err == nil {
 		resp.Body.Close()

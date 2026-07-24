@@ -206,6 +206,9 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS docker_socket BOOLEAN NOT NULL DEFAULT
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS entrypoint JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS test_report TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS split JSONB;
+-- Quoted: WITH is a reserved SQL keyword (CTEs), so every reference to this
+-- column elsewhere must also quote it as "with".
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "with" JSONB NOT NULL DEFAULT '{}';
 
 -- ── Test Split History ───────────────────────────────────────────────────────
 

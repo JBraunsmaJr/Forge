@@ -25,6 +25,9 @@ const (
 // The agent uses this to know what to run.
 type JobSpec struct {
 	Env map[string]string `json:"env"`
+	// With holds `with:` template parameters for this step, consumed by
+	// generator steps (see GeneratorInput.With below). Mirrors StepDef.With.
+	With map[string]string `json:"with,omitempty"`
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 	// Release is populated when Type == "release".
