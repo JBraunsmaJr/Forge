@@ -26,6 +26,9 @@
         always_run: boolean;
         pipeline_ref: { name: string, path: string };
         matrix: { key: string, values: string[] }[];
+        with: { key: string, value: string }[];
+        split: { enabled: boolean, shards: number, historyDays: number, minHistoryRuns: number, fallback: 'single' | 'round-robin' };
+        testReport: string;
         expanded: boolean;
     }
 
@@ -37,7 +40,9 @@
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
             condition: '', docker_socket: false, 
             timeout: '5m', workdir: '', always_run: false,
-            pipeline_ref: { name: '', path: '' }, matrix: [], expanded: true 
+            pipeline_ref: { name: '', path: '' }, matrix: [], with: [],
+            split: { enabled: false, shards: 3, historyDays: 14, minHistoryRuns: 3, fallback: 'single' },
+            testReport: '', expanded: true
         },
         { 
             id: 'test', type: 'command', image: 'golang:1.26', command: 'go test ./...', depends_on: ['lint'], 
@@ -45,7 +50,9 @@
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
             condition: '', docker_socket: false, 
             timeout: '10m', workdir: '', always_run: false,
-            pipeline_ref: { name: '', path: '' }, matrix: [], expanded: false 
+            pipeline_ref: { name: '', path: '' }, matrix: [], with: [],
+            split: { enabled: false, shards: 3, historyDays: 14, minHistoryRuns: 3, fallback: 'single' },
+            testReport: '', expanded: false
         }
     ];
 
@@ -57,7 +64,9 @@
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
             condition: '', docker_socket: false, 
             timeout: '', workdir: '', always_run: false,
-            pipeline_ref: { name: '', path: '' }, matrix: [], expanded: true 
+            pipeline_ref: { name: '', path: '' }, matrix: [], with: [],
+            split: { enabled: false, shards: 3, historyDays: 14, minHistoryRuns: 3, fallback: 'single' },
+            testReport: '', expanded: true
         }];
     }
 
@@ -96,6 +105,14 @@
 
     function removeEnv(stepIndex: number, envIndex: number) {
         steps[stepIndex].env = steps[stepIndex].env.filter((_, i) => i !== envIndex);
+    }
+
+    function addWith(stepIndex: number) {
+        steps[stepIndex].with = [...steps[stepIndex].with, { key: '', value: '' }];
+    }
+
+    function removeWith(stepIndex: number, withIndex: number) {
+        steps[stepIndex].with = steps[stepIndex].with.filter((_, i) => i !== withIndex);
     }
 
     function addUpload(stepIndex: number) {
@@ -202,6 +219,24 @@
                 s.env.forEach(e => {
                     if (e.key) lines.push(`      ${e.key}: ${e.value}`);
                 });
+            }
+
+            if (s.with.length > 0) {
+                lines.push(`    with:`);
+                s.with.forEach(w => {
+                    if (w.key) lines.push(`      ${w.key}: ${w.value}`);
+                });
+            }
+
+            if (s.testReport) lines.push(`    test_report: ${s.testReport}`);
+
+            if (s.split.enabled && s.type !== 'generator') {
+                const shards = Math.max(2, Math.floor(Number(s.split.shards)) || 2);
+                lines.push(`    split:`);
+                lines.push(`      shards: ${shards}`);
+                if (s.split.historyDays !== 14) lines.push(`      history_days: ${s.split.historyDays}`);
+                if (s.split.minHistoryRuns !== 3) lines.push(`      min_history_runs: ${s.split.minHistoryRuns}`);
+                if (s.split.fallback !== 'single') lines.push(`      fallback: ${s.split.fallback}`);
             }
 
             if (s.artifact_uploads.length > 0 || s.artifact_downloads.length > 0) {
@@ -470,6 +505,109 @@
                                     {/if}
                                 </div>
 
+                                {#if step.type === 'command'}
+                                    <div class="section">
+                                        <div class="section-header">
+                                            <Layers size={14} />
+                                            <span>Test Splitting</span>
+                                        </div>
+                                        <label class="checkbox-label" style="margin-bottom: 8px;">
+                                            <input type="checkbox" bind:checked={step.split.enabled} />
+                                            Split this step across parallel shards, balanced by historical test runtime
+                                        </label>
+                                        {#if step.split.enabled}
+                                            <div class="advanced-grid">
+                                                <div class="field">
+                                                    <label for="step-report-{step.id}">Test Report Path</label>
+                                                    <input id="step-report-{step.id}" type="text" bind:value={step.testReport} placeholder="e.g. .forge/test-report.json" />
+                                                    <span class="field-hint">Required — this is the file your command must write (see `forge report` in the CLI reference) for shard timing history to exist at all. Without it, splitting has nothing to balance and falls back to running everything on one shard.</span>
+                                                </div>
+                                                <div class="field">
+                                                    <label for="step-shards-{step.id}">Shards</label>
+                                                    <input id="step-shards-{step.id}" type="number" min="2" bind:value={step.split.shards} />
+                                                    <span class="field-hint">Minimum 2 — the compiler rejects anything lower.</span>
+                                                </div>
+                                            </div>
+                                            <div class="advanced-grid">
+                                                <div class="field">
+                                                    <label for="step-hist-days-{step.id}">History Window (days)</label>
+                                                    <input id="step-hist-days-{step.id}" type="number" min="1" bind:value={step.split.historyDays} />
+                                                    <span class="field-hint">Default 14. How far back to look for per-file timing.</span>
+                                                </div>
+                                                <div class="field">
+                                                    <label for="step-min-runs-{step.id}">Min History Runs</label>
+                                                    <input id="step-min-runs-{step.id}" type="number" min="1" bind:value={step.split.minHistoryRuns} />
+                                                    <span class="field-hint">Default 3. A file needs this many recorded runs before its timing is trusted for balancing.</span>
+                                                </div>
+                                            </div>
+                                            <div class="field">
+                                                <label for="step-fallback-{step.id}">Cold-Start Fallback</label>
+                                                <select id="step-fallback-{step.id}" bind:value={step.split.fallback}>
+                                                    <option value="single">Single — one shard runs everything, others no-op (default)</option>
+                                                    <option value="round-robin">Round-robin — every shard runs everything until history exists</option>
+                                                </select>
+                                                <span class="field-hint">Applies only when no shard has any timing history yet. "Single" avoids every shard redundantly running the full suite on the first run.</span>
+                                            </div>
+                                        {/if}
+                                    </div>
+                                {/if}
+
+                                {#if step.type === 'command'}
+                                    <div class="section">
+                                        <div class="section-header">
+                                            <Layers size={14} />
+                                            <span>Test Splitting</span>
+                                        </div>
+                                        <label class="checkbox-label" style="margin-bottom: 8px;">
+                                            <input type="checkbox" bind:checked={step.split.enabled} />
+                                            Split this step across parallel shards, balanced by historical test runtime
+                                        </label>
+                                        {#if step.split.enabled}
+                                            <div class="advanced-grid">
+                                                <div class="field">
+                                                    <label for="step-report-{step.id}">Test Report Path</label>
+                                                    <input id="step-report-{step.id}" type="text" bind:value={step.testReport} placeholder="e.g. .forge/test-report.json" />
+                                                    <span class="field-hint">Required — this is the file your command must write (see `forge report` in the CLI reference) for shard timing history to exist at all. Without it, splitting has nothing to balance and falls back to running everything on one shard.</span>
+                                                </div>
+                                                <div class="field">
+                                                    <label for="step-shards-{step.id}">Shards</label>
+                                                    <input
+                                                        id="step-shards-{step.id}"
+                                                        type="number"
+                                                        min="2"
+                                                        bind:value={step.split.shards}
+                                                        on:blur={() => {
+                                                            const n = Math.floor(Number(step.split.shards));
+                                                            step.split.shards = Number.isFinite(n) && n >= 2 ? n : 2;
+                                                        }}
+                                                    />
+                                                    <span class="field-hint">Minimum 2 — the compiler rejects anything lower.</span>
+                                                </div>
+                                            </div>
+                                            <div class="advanced-grid">
+                                                <div class="field">
+                                                    <label for="step-hist-days-{step.id}">History Window (days)</label>
+                                                    <input id="step-hist-days-{step.id}" type="number" min="1" bind:value={step.split.historyDays} />
+                                                    <span class="field-hint">Default 14. How far back to look for per-file timing.</span>
+                                                </div>
+                                                <div class="field">
+                                                    <label for="step-min-runs-{step.id}">Min History Runs</label>
+                                                    <input id="step-min-runs-{step.id}" type="number" min="1" bind:value={step.split.minHistoryRuns} />
+                                                    <span class="field-hint">Default 3. A file needs this many recorded runs before its timing is trusted for balancing.</span>
+                                                </div>
+                                            </div>
+                                            <div class="field">
+                                                <label for="step-fallback-{step.id}">Cold-Start Fallback</label>
+                                                <select id="step-fallback-{step.id}" bind:value={step.split.fallback}>
+                                                    <option value="single">Single — one shard runs everything, others no-op (default)</option>
+                                                    <option value="round-robin">Round-robin — every shard runs everything until history exists</option>
+                                                </select>
+                                                <span class="field-hint">Applies only when no shard has any timing history yet. "Single" avoids every shard redundantly running the full suite on the first run.</span>
+                                            </div>
+                                        {/if}
+                                    </div>
+                                {/if}
+
                                 <div class="grid-2">
                                     <div class="section">
                                         <div class="section-header">
@@ -575,6 +713,25 @@
                                                 />
                                             </div>
                                         </div>
+                                    </div>
+
+                                    <div class="sub-section" style="margin-top: 12px;">
+                                        <span class="label">
+                                            With Parameters
+                                            {#if step.type === 'generator'}
+                                                <span class="label-hint">— passed to the generator's stdin as structured input</span>
+                                            {:else}
+                                                <span class="label-hint">— used for ${'{{'} inputs.NAME {'}}'} substitution in step templates, or by generator steps</span>
+                                            {/if}
+                                        </span>
+                                        {#each step.with as w, wi}
+                                            <div class="inline-fields">
+                                                <input type="text" bind:value={w.key} placeholder="KEY" aria-label="With Key" />
+                                                <input type="text" bind:value={w.value} placeholder="VALUE" aria-label="With Value" />
+                                                <button class="btn-icon danger" on:click={() => removeWith(i, wi)} title="Remove Parameter"><Trash2 size={12} /></button>
+                                            </div>
+                                        {/each}
+                                        <button class="btn-text" on:click={() => addWith(i)}>+ Add Parameter</button>
                                     </div>
 
                                     <div class="sub-section" style="margin-top: 12px;">
@@ -831,7 +988,13 @@
         color: #8b949e;
     }
 
-    input[type="text"], textarea, select {
+    .field-hint {
+        font-size: 0.7rem;
+        color: #6e7681;
+        line-height: 1.4;
+    }
+
+    input[type="text"], input[type="number"], textarea, select {
         background: #0d1117;
         border: 1px solid #30363d;
         border-radius: 6px;
@@ -964,6 +1127,12 @@
         font-size: 0.75rem;
         color: #8b949e;
         font-weight: 600;
+    }
+
+    .label-hint {
+        font-weight: 400;
+        font-style: italic;
+        color: #6e7681;
     }
 
     .btn-text {

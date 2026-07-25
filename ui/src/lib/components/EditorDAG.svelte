@@ -3,10 +3,13 @@
 
     interface Step {
         id: string;
-        type: 'command' | 'generator' | 'pipeline' | 'release';
+        type: 'command' | 'generator' | 'pipeline' | 'release' | 'approval';
         depends_on: string[];
         image?: string;
         pipeline_ref?: { name: string };
+        // Optional: present when the full editor's richer Step type is
+        // passed in. Used only to show a small "N shards" indicator.
+        split?: { enabled: boolean; shards: number };
     }
 
     export let steps: Step[] = [];
@@ -14,11 +17,20 @@
 
     const NODE_W = 180, NODE_H = 60, COL_GAP = 40, ROW_GAP = 80, PAD = 40;
 
+    function truncate(text: string, maxChars: number): string {
+        if (text.length <= maxChars) return text;
+        return text.slice(0, Math.max(1, maxChars - 1)) + '…';
+    }
+
+    const LABEL_MAX_CHARS = Math.max(4, Math.floor((NODE_W - 45 - 10) / 8.5));
+    const SUB_MAX_CHARS = Math.max(4, Math.floor((NODE_W - 45 - 10) / 6));
+
     const TYPE_COLORS: Record<string, any> = {
         command:   { fill: '#0d1117', stroke: '#3fb950', text: '#3fb950', icon: Cpu },
         generator: { fill: '#0d1117', stroke: '#d29922', text: '#d29922', icon: Layers },
         pipeline:  { fill: '#0d1117', stroke: '#58a6ff', text: '#58a6ff', icon: Play },
         release:   { fill: '#0d1117', stroke: '#a78bfa', text: '#a78bfa', icon: Package },
+        approval:  { fill: '#0d1117', stroke: '#f59e0b', text: '#f59e0b', icon: Globe },
     };
 
     function computeLayout(stepsInput: Step[]) {
@@ -103,6 +115,14 @@
             >
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="#30363d" />
             </marker>
+            {#each steps as s}
+                {#if layout.positions[s.id]}
+                    {@const pos = layout.positions[s.id]}
+                    <clipPath id="node-clip-{s.id}">
+                        <rect x={pos.x} y={pos.y} width={NODE_W} height={NODE_H} rx="8" />
+                    </clipPath>
+                {/if}
+            {/each}
         </defs>
 
         <rect width="100%" height="100%" fill="url(#grid-editor)" />
@@ -139,7 +159,12 @@
                 {#if layout.positions[s.id]}
                     {@const pos = layout.positions[s.id]}
                     {@const color = TYPE_COLORS[s.type] || TYPE_COLORS.command}
-                    <g class="node" on:click={() => onSelectStep(s.id)}>
+                    {@const subtitle = s.type === 'pipeline'
+                        ? `Trigger: ${s.pipeline_ref?.name || '...'}`
+                        : s.type === 'release'
+                            ? 'SCM Release'
+                            : (s.image || 'no image') + (s.split?.enabled ? ` · ${s.split.shards} shards` : '')}
+                    <g class="node" on:click={() => onSelectStep(s.id)} clip-path="url(#node-clip-{s.id})">
                         <rect 
                             x={pos.x} y={pos.y} 
                             width={NODE_W} height={NODE_H} 
@@ -154,7 +179,8 @@
                             fill="#e6edf3"
                             class="node-id"
                         >
-                            {s.id}
+                            {truncate(s.id, LABEL_MAX_CHARS)}
+                            <title>{s.id}</title>
                         </text>
 
                         <text 
@@ -162,13 +188,8 @@
                             fill="#8b949e"
                             class="node-type"
                         >
-                            {#if s.type === 'pipeline'}
-                                Trigger: {s.pipeline_ref?.name || '...'}
-                            {:else if s.type === 'release'}
-                                SCM Release
-                            {:else}
-                                {s.image || 'no image'}
-                            {/if}
+                            {truncate(subtitle, SUB_MAX_CHARS)}
+                            <title>{subtitle}</title>
                         </text>
 
                         <g transform="translate({pos.x + 12}, {pos.y + 18})">
