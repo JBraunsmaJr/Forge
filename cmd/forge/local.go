@@ -145,12 +145,50 @@ func runRun(cmd *cobra.Command, args []string) {
 func runValidate(cmd *cobra.Command, args []string) {
 	pipelinePath := getPipelinePath(args)
 	fmt.Printf("📋 Validating %s\n", pipelinePath)
-	_, err := compiler.Compile(pipelinePath)
+
+	report, err := compiler.Lint(pipelinePath)
 	if err != nil {
+		// Couldn't even read the file — not a lint finding, a hard failure.
 		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ pipeline is valid")
+
+	if report.CompileFailed {
+		for _, f := range report.Findings {
+			fmt.Printf("✗ %s\n", f.Message)
+		}
+		os.Exit(1)
+	}
+
+	fmt.Printf("✓ Parsed successfully (%d steps)\n", report.StepCount)
+
+	errorCount, warnCount := 0, 0
+	for _, f := range report.Findings {
+		switch f.Severity {
+		case compiler.SeverityError:
+			errorCount++
+			if f.Step != "" {
+				fmt.Printf("✗ Step %q %s\n", f.Step, f.Message)
+			} else {
+				fmt.Printf("✗ %s\n", f.Message)
+			}
+		case compiler.SeverityWarning:
+			warnCount++
+			if f.Step != "" {
+				fmt.Printf("⚠ Step %q %s\n", f.Step, f.Message)
+			} else {
+				fmt.Printf("⚠ %s\n", f.Message)
+			}
+		}
+	}
+
+	if errorCount == 0 && warnCount == 0 {
+		fmt.Println("✓ No issues found")
+	}
+
+	if report.HasErrors() {
+		os.Exit(1)
+	}
 }
 
 func runGeneratePreview(cmd *cobra.Command, args []string) {
