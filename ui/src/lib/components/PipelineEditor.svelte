@@ -524,53 +524,6 @@
                                                 </div>
                                                 <div class="field">
                                                     <label for="step-shards-{step.id}">Shards</label>
-                                                    <input id="step-shards-{step.id}" type="number" min="2" bind:value={step.split.shards} />
-                                                    <span class="field-hint">Minimum 2 — the compiler rejects anything lower.</span>
-                                                </div>
-                                            </div>
-                                            <div class="advanced-grid">
-                                                <div class="field">
-                                                    <label for="step-hist-days-{step.id}">History Window (days)</label>
-                                                    <input id="step-hist-days-{step.id}" type="number" min="1" bind:value={step.split.historyDays} />
-                                                    <span class="field-hint">Default 14. How far back to look for per-file timing.</span>
-                                                </div>
-                                                <div class="field">
-                                                    <label for="step-min-runs-{step.id}">Min History Runs</label>
-                                                    <input id="step-min-runs-{step.id}" type="number" min="1" bind:value={step.split.minHistoryRuns} />
-                                                    <span class="field-hint">Default 3. A file needs this many recorded runs before its timing is trusted for balancing.</span>
-                                                </div>
-                                            </div>
-                                            <div class="field">
-                                                <label for="step-fallback-{step.id}">Cold-Start Fallback</label>
-                                                <select id="step-fallback-{step.id}" bind:value={step.split.fallback}>
-                                                    <option value="single">Single — one shard runs everything, others no-op (default)</option>
-                                                    <option value="round-robin">Round-robin — every shard runs everything until history exists</option>
-                                                </select>
-                                                <span class="field-hint">Applies only when no shard has any timing history yet. "Single" avoids every shard redundantly running the full suite on the first run.</span>
-                                            </div>
-                                        {/if}
-                                    </div>
-                                {/if}
-
-                                {#if step.type === 'command'}
-                                    <div class="section">
-                                        <div class="section-header">
-                                            <Layers size={14} />
-                                            <span>Test Splitting</span>
-                                        </div>
-                                        <label class="checkbox-label" style="margin-bottom: 8px;">
-                                            <input type="checkbox" bind:checked={step.split.enabled} />
-                                            Split this step across parallel shards, balanced by historical test runtime
-                                        </label>
-                                        {#if step.split.enabled}
-                                            <div class="advanced-grid">
-                                                <div class="field">
-                                                    <label for="step-report-{step.id}">Test Report Path</label>
-                                                    <input id="step-report-{step.id}" type="text" bind:value={step.testReport} placeholder="e.g. .forge/test-report.json" />
-                                                    <span class="field-hint">Required — this is the file your command must write (see `forge report` in the CLI reference) for shard timing history to exist at all. Without it, splitting has nothing to balance and falls back to running everything on one shard.</span>
-                                                </div>
-                                                <div class="field">
-                                                    <label for="step-shards-{step.id}">Shards</label>
                                                     <input
                                                         id="step-shards-{step.id}"
                                                         type="number"
