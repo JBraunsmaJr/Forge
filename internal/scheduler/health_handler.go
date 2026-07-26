@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -37,6 +38,8 @@ func (s *Server) handleGetProjectHealth(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, s.buildHealthResponse(projectID, latest, previous))
 }
 
+var healthCheckInProgress sync.Map // map[string]struct{}
+
 // handleTriggerProjectHealth lets a user request a fresh health check
 // immediately instead of waiting for the next scheduled run (the
 // scheduled interval defaults to a week — see healthCheckInterval).
@@ -50,18 +53,24 @@ func (s *Server) handleTriggerProjectHealth(w http.ResponseWriter, r *http.Reque
 	}
 	projectID := r.PathValue("id")
 
+	if _, loaded := healthCheckInProgress.LoadOrStore(projectID, struct{}{}); loaded {
+		writeError(w, http.StatusTooManyRequests, "a health check is already in progress for this project")
+		return
+	}
+
+	defer healthCheckInProgress.Delete(projectID)
+
+	if latest, _, err := s.store.LatestHealthSnapshots(projectID); err == nil && latest != nil {
+		if wait := healthTriggerCooldown - time.Since(latest.ComputedAt); wait > 0 {
+			writeError(w, http.StatusTooManyRequests, "a health check ran too recently; try again in "+wait.Round(time.Second).String())
+			return
+		}
+	}
+
 	proj, _, _, ok := s.projects.GetProject(projectID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
-	}
-
-	if latest, _, err := s.store.LatestHealthSnapshots(projectID); err == nil && latest != nil {
-		if wait := healthTriggerCooldown - time.Since(latest.ComputedAt); wait > 0 {
-			writeError(w, http.StatusTooManyRequests,
-				"a health check ran too recently; try again in "+wait.Round(time.Second).String())
-			return
-		}
 	}
 
 	snap, err := s.checkProjectHealth(*proj)

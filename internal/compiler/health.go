@@ -103,6 +103,16 @@ func Score(path string, rawSource []byte, lastModified *time.Time) (*HealthRepor
 			report.addCritical(fmt.Sprintf("Step %q %s", f.Step, f.Message))
 		case strings.Contains(f.Message, "no timeout set"):
 			noTimeout++
+		default:
+			msg := f.Message
+			if f.Step != "" {
+				msg = fmt.Sprintf("Step %q %s", f.Step, f.Message)
+			}
+			if f.Severity == SeverityError {
+				report.addCritical(msg)
+			} else {
+				report.addWarning(msg)
+			}
 		}
 	}
 	if noTimeout > 0 {
