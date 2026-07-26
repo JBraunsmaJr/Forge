@@ -224,11 +224,11 @@
             if (s.with.length > 0) {
                 lines.push(`    with:`);
                 s.with.forEach(w => {
-                    if (w.key) lines.push(`      ${w.key}: ${w.value}`);
+                    if (w.key) lines.push(`      ${JSON.stringify(w.key)}: ${JSON.stringify(w.value)}`);
                 });
             }
 
-            if (s.testReport) lines.push(`    test_report: ${s.testReport}`);
+            if (s.testReport) lines.push(`    test_report: ${JSON.stringify(s.testReport)}`);
 
             if (s.split.enabled && s.type !== 'generator') {
                 const shards = Math.max(2, Math.floor(Number(s.split.shards)) || 2);
