@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { api, type Project, type Org, type ProjectHealth } from '../api';
     import { currentView } from '../stores';
-    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings, RefreshCw } from '@lucide/svelte';
+    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings, RefreshCw, TriangleAlert, CircleX, Info } from '@lucide/svelte';
     import SecretsManager from './SecretsManager.svelte';
 
     let projects: Project[] = [];
@@ -421,7 +421,10 @@
                                         <div class="health-group">
                                             <div class="health-group-title health-group-critical">CRITICAL</div>
                                             {#each critical as f}
-                                                <div class="health-finding">✗ {f.message}</div>
+                                                <div class="health-finding">
+                                                    <span class="color-bad"><CircleX size={12}/></span>
+                                                    {f.message}
+                                                </div>
                                             {/each}
                                         </div>
                                     {/if}
@@ -429,7 +432,10 @@
                                         <div class="health-group">
                                             <div class="health-group-title health-group-warning">WARNINGS</div>
                                             {#each warnings as f}
-                                                <div class="health-finding">⚠ {f.message}</div>
+                                                <div class="health-finding">
+                                                    <span class="color-warning"><TriangleAlert size={12}/></span>
+                                                    {f.message}
+                                                </div>
                                             {/each}
                                         </div>
                                     {/if}
@@ -437,7 +443,10 @@
                                         <div class="health-group">
                                             <div class="health-group-title health-group-suggestion">SUGGESTIONS</div>
                                             {#each suggestions as f}
-                                                <div class="health-finding">ℹ {f.message}</div>
+                                                <div class="health-finding">
+                                                    <span class="color-info"><Info size={12}/></span>
+                                                    {f.message}
+                                                </div>
                                             {/each}
                                         </div>
                                     {/if}
@@ -520,7 +529,7 @@
     }
     .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
         gap: 16px;
     }
     .card {
@@ -640,9 +649,9 @@
         font-family: inherit;
     }
     .health-badge:hover { filter: brightness(1.2); }
-    .health-good { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
-    .health-ok   { background: #9e6a0322; color: #d29922; border: 1px solid #9e6a0344; }
-    .health-bad  { background: #f8514922; color: #f85149; border: 1px solid #f8514944; }
+    .color-warning { color: #e79504;}
+    .color-bad { color: #f85149; }
+    .color-info { color: #478bea;}
     .health-delta { font-weight: 500; opacity: 0.85; }
     .health-check-btn {
         display: inline-flex;
@@ -706,6 +715,7 @@
     .health-group-suggestion { color: #8b949e; }
     .health-finding {
         line-height: 1.5;
+        margin-top: 8px;
         color: var(--text);
         padding-left: 2px;
         word-break: break-word;
