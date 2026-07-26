@@ -68,7 +68,12 @@ func (s *Server) runHealthChecks(interval time.Duration) {
 
 		sem <- struct{}{}
 		go func(p api.ProjectInfo) {
-			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Printf("[health] panic while checking %s: %v\n", p.Name, r)
+				}
+				<-sem
+			}()
 			if _, err := s.checkProjectHealth(p); err != nil {
 				fmt.Printf("[health] %s: %v\n", p.Name, err)
 			}
