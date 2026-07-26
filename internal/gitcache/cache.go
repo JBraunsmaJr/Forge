@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Cache struct {
@@ -163,6 +165,32 @@ func (c *Cache) ReadFile(repoURL, commit, path string) ([]byte, error) {
 	// git show <commit>:<path>
 	cmd := exec.Command("git", "-C", dir, "show", fmt.Sprintf("%s:%s", commit, path))
 	return cmd.Output()
+}
+
+// LastCommitTime returns the commit time of the most recent change to
+// path at or before commit. Used by the health monitor (issue #46) for
+// the "hasn't been updated in N months" staleness check — best-effort:
+// callers treat a non-nil error as "unknown," not as a hard failure.
+func (c *Cache) LastCommitTime(repoURL, commit, path string) (time.Time, error) {
+	lock := c.getLock(repoURL)
+	lock.Lock()
+	defer lock.Unlock()
+
+	dir := c.RepoDir(repoURL)
+	cmd := exec.Command("git", "-C", dir, "log", "-1", "--format=%ct", commit, "--", path)
+	out, err := cmd.Output()
+	if err != nil {
+		return time.Time{}, err
+	}
+	ts := strings.TrimSpace(string(out))
+	if ts == "" {
+		return time.Time{}, fmt.Errorf("no commit history for %s", path)
+	}
+	sec, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(sec, 0), nil
 }
 
 func (c *Cache) ResolveCommit(repoURL, branch string) (string, error) {

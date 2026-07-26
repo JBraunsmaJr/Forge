@@ -75,6 +75,22 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS org_id TEXT REFERENCES orgs(id) ON DELETE SET NULL;
+
+-- project_health_snapshots: one row per scheduled pipeline health check
+-- (issue #46). Score and findings are computed by compiler.Score against
+-- the project's pipeline file at the time of the check; history here is
+-- what drives the "↓ from N last week" trend and org-average comparison —
+-- neither is knowable from a single point-in-time score alone.
+CREATE TABLE IF NOT EXISTS project_health_snapshots (
+    id             TEXT        PRIMARY KEY,
+    project_id     TEXT        NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    pipeline_name  TEXT        NOT NULL DEFAULT '',
+    score          INTEGER     NOT NULL,
+    findings       JSONB       NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_health_snapshots_project_time
+    ON project_health_snapshots (project_id, computed_at DESC);
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS scm_token TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS branch_filter JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS pipeline_path TEXT NOT NULL DEFAULT '';

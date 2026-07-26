@@ -254,6 +254,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
 	go s.cronMonitor(ctx)
+	go s.healthMonitor(ctx)
 
 	// Web UI - public (must load before the user can authenticate).
 	mux.HandleFunc("GET /", s.handleIndex)
@@ -321,6 +322,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/waiting", s.handleJobWaiting)
 	mux.HandleFunc("POST /api/v1/test-reports", s.handleRecordTestReport)
 	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.handleGetFlakyTests)
+	mux.HandleFunc("GET /api/v1/projects/{id}/health", s.handleGetProjectHealth)
+	mux.HandleFunc("POST /api/v1/projects/{id}/health/check", s.handleTriggerProjectHealth)
 
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
