@@ -115,7 +115,7 @@
 
     function healthBand(score: number): 'good' | 'ok' | 'bad' {
         if (score >= 90) return 'good';
-        if (score >= 70) return 'ok';
+        if (score >= 80) return 'ok';
         return 'bad';
     }
 
