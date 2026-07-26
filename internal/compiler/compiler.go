@@ -105,6 +105,21 @@ func Compile(path string) (*pipeline.Pipeline, error) {
 // CompileData parses pipeline data (JSON or YAML) and returns the canonical IR.
 // The filename is used to determine the format (via extension).
 func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
+	p, err := compileDataNoValidate(data, filename)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// compileDataNoValidate does everything CompileData does — YAML/JSON
+// parsing, uses: template resolution, matrix expansion, With substitution,
+// per-step compilation — except the final p.Validate() gate (duplicate
+// IDs, dangling depends_on, cycles).
+func compileDataNoValidate(data []byte, filename string) (*pipeline.Pipeline, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == ".yml" || ext == ".yaml" {
 		var err error
@@ -165,15 +180,34 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 		}
 	}
 
-	// Post-process dependencies to handle matrix expansion
+	// Post-process dependencies to handle matrix expansion.
+	//
+	// expandedMap is keyed by the original (pre-expansion) step ID, and
+	// collects every compiled step that came from it — which is exactly
+	// right for a matrix step (one ID legitimately expands into several).
+	// But the same map entry also gets populated when two UNRELATED steps
+	// happen to share an ID (an authoring mistake, not a matrix), and in
+	// that case appending the whole slice silently duplicates the
+	// dependency for every step that referenced it. Dedupe on the way out
+	// so a dependency list can never contain the same entry twice,
+	// regardless of which case produced the expansion.
 	for _, step := range steps {
 		var newDeps []string
+		seen := make(map[string]bool, len(step.DependsOn))
+		add := func(id string) {
+			if !seen[id] {
+				seen[id] = true
+				newDeps = append(newDeps, id)
+			}
+		}
 		for _, dep := range step.DependsOn {
 			if expanded, ok := expandedMap[dep]; ok {
-				newDeps = append(newDeps, expanded...)
+				for _, e := range expanded {
+					add(e)
+				}
 			} else {
 				// Keep it as is, might be a non-existent step which p.Validate() will catch
-				newDeps = append(newDeps, dep)
+				add(dep)
 			}
 		}
 		step.DependsOn = newDeps
@@ -182,10 +216,6 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 	p := &pipeline.Pipeline{
 		Name:  jp.Name,
 		Steps: steps,
-	}
-
-	if err := p.Validate(); err != nil {
-		return nil, err
 	}
 
 	return p, nil

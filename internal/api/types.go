@@ -431,6 +431,28 @@ type ProjectInfo struct {
 }
 
 // ProjectBranchesResponse returns the list of branches for a project.
+// HealthFinding mirrors compiler.HealthFinding for JSON transport.
+type HealthFinding struct {
+	Severity string `json:"severity"` // "critical" | "warning" | "suggestion"
+	Message  string `json:"message"`
+}
+
+// ProjectHealthResponse is the latest health snapshot for a project, plus
+// the trend and org-comparison data that only the scheduler (with access
+// to snapshot history and other projects) can compute — a single
+// point-in-time score alone can't know either (issue #46).
+type ProjectHealthResponse struct {
+	ProjectID       string          `json:"project_id"`
+	PipelineName    string          `json:"pipeline_name"`
+	Score           int             `json:"score"`
+	ComputedAt      time.Time       `json:"computed_at"`
+	Findings        []HealthFinding `json:"findings"`
+	PreviousScore   *int            `json:"previous_score,omitempty"` // null if this is the first snapshot
+	PreviousAt      *time.Time      `json:"previous_at,omitempty"`
+	OrgAverage      *float64        `json:"org_average,omitempty"` // null if the project has no org, or the org has no other scored projects
+	OrgProjectCount int             `json:"org_project_count,omitempty"`
+}
+
 type ProjectBranchesResponse struct {
 	Branches []string `json:"branches"`
 	Default  string   `json:"default"`
