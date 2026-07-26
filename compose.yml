@@ -44,7 +44,7 @@ services:
       test: [ "CMD-SHELL", "PGPASSWORD=forge psql -h localhost -U forge -d forge -c 'SELECT 1' -q 2>/dev/null || exit 1" ]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 10 
     restart: unless-stopped
     networks: [ forge ]
 

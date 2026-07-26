@@ -90,12 +90,33 @@ var recognizedTypes = map[string]bool{
 // Known limitation: the raw pass only sees the main pipeline file. A
 // script: or type: typo inside a `uses:` template file isn't caught here.
 func Lint(path string) (*LintReport, error) {
-	report := &LintReport{Path: path}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading pipeline file %s: %w", path, err)
 	}
+	workspaceDir, _ := os.Getwd()
+	return lintData(path, data, workspaceDir)
+}
+
+// LintData is Lint, but for content already in memory instead of on disk
+// — for callers (like Score, below) that fetched the pipeline file from
+// somewhere other than the local filesystem (e.g. a server-side git
+// cache) and would have nothing at `path` for os.ReadFile to find. path
+// is still used: for its file extension (YAML vs JSON) and in finding
+// labels.
+//
+// The script: existence check is skipped here (not run against the wrong
+// directory): there's no "current working directory" that means anything
+// for a caller with no real local checkout, and silently checking against
+// os.Getwd() would flag every real script as missing rather than doing
+// nothing. Lint (the disk-reading entry point above) keeps checking it,
+// since a real CLI invocation does have a meaningful workspace root.
+func LintData(path string, data []byte) (*LintReport, error) {
+	return lintData(path, data, "")
+}
+
+func lintData(path string, data []byte, workspaceDir string) (*LintReport, error) {
+	report := &LintReport{Path: path}
 
 	// Deliberately compileDataNoValidate, not CompileData: the latter is
 	// fail-fast (returns on the very first duplicate ID / dangling
@@ -118,7 +139,6 @@ func Lint(path string) (*LintReport, error) {
 	checkRedundantDependsOn(report, p.Steps)
 
 	if raw, err := parseRawPipeline(data, path); err == nil {
-		workspaceDir, _ := os.Getwd()
 		checkRawSteps(report, raw.Steps, workspaceDir)
 	}
 
@@ -360,6 +380,10 @@ func checkRedundantDependsOn(report *LintReport, steps []*pipeline.Step) {
 // checkRawSteps runs the checks that need the author's literal, pre-
 // normalization YAML: unrecognized type:, missing timeout, :latest images,
 // long inline run: blocks, and script: files that don't exist on disk.
+//
+// workspaceDir == "" skips the script: existence check specifically (the
+// other checks don't need a filesystem and still run) — used by callers
+// with no meaningful local checkout to check paths against.
 func checkRawSteps(report *LintReport, steps []JSONStep, workspaceDir string) {
 	const longRunThreshold = 15
 
@@ -387,7 +411,7 @@ func checkRawSteps(report *LintReport, steps []JSONStep, workspaceDir string) {
 			}
 		}
 
-		if js.Script != "" {
+		if js.Script != "" && workspaceDir != "" {
 			scriptPath := filepath.Join(workspaceDir, filepath.FromSlash(strings.TrimPrefix(js.Script, "/")))
 			if _, err := os.Stat(scriptPath); err != nil {
 				report.errorf(label, "script %q not found at %s (script: paths are resolved relative to the workspace root — where you run `forge validate`/`forge run` from — not the pipeline file's own directory)", js.Script, scriptPath)

@@ -145,6 +145,23 @@ export interface Project {
     created_at: string;
 }
 
+export interface HealthFinding {
+    severity: 'critical' | 'warning' | 'suggestion';
+    message: string;
+}
+
+export interface ProjectHealth {
+    project_id: string;
+    pipeline_name: string;
+    score: number;
+    computed_at: string;
+    findings: HealthFinding[];
+    previous_score?: number;
+    previous_at?: string;
+    org_average?: number;
+    org_project_count?: number;
+}
+
 export interface Policy {
     id: string;
     org_id: string;
@@ -253,6 +270,20 @@ export const api = {
     },
     listBranches: (id: string): Promise<{ branches: string[], default: string } | null> =>
         fetchAuth(`/api/v1/projects/${id}/branches`).then(r => r?.ok ? r.json() : null),
+    // null means "never checked yet" (backend returns 404) — a normal
+    // state for a newly registered project, not an error to surface.
+    projectHealth: (id: string): Promise<ProjectHealth | null> =>
+        fetchAuth(`/api/v1/projects/${id}/health`).then(r => r?.ok ? r.json() : null),
+    // Runs synchronously server-side and returns the fresh result. May
+    // 429 if a check ran too recently (see healthTriggerCooldown
+    // server-side) — callers should surface response.status on failure,
+    // not just treat any non-ok response as "never checked."
+    triggerProjectHealth: (id: string): Promise<{ ok: boolean, status: number, data: ProjectHealth | null }> =>
+        fetchAuth(`/api/v1/projects/${id}/health/check`, { method: 'POST' }).then(async (r) => ({
+            ok: !!r?.ok,
+            status: r?.status ?? 0,
+            data: r?.ok ? await r.json() : null,
+        })),
     createProject: (req: { name: string, repo_url: string, org_id?: string, scm_token?: string, pipeline_path?: string }): Promise<Project | null> => {
         let url = '/api/v1/projects';
         if (req.org_id) url += `?org_id=${req.org_id}`;

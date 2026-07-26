@@ -1,14 +1,17 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { api, type Project, type Org } from '../api';
+    import { api, type Project, type Org, type ProjectHealth } from '../api';
     import { currentView } from '../stores';
-    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings } from '@lucide/svelte';
+    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings, RefreshCw } from '@lucide/svelte';
     import SecretsManager from './SecretsManager.svelte';
 
     let projects: Project[] = [];
     let orgs: Org[] = [];
     let loading = true;
     let error = '';
+    let healthByProject: Record<string, ProjectHealth | null> = {};
+    let checkingHealth: Record<string, boolean> = {};
+    let openHealthId: string | null = null;
     let selectedOrgId = '';
     let openSecretsId: string | null = null;
     
@@ -99,11 +102,61 @@
         } finally {
             loading = false;
         }
+        loadHealth();
+    }
+
+    function loadHealth() {
+        for (const project of projects) {
+            api.projectHealth(project.id)
+                .then((h) => { healthByProject = { ...healthByProject, [project.id]: h }; })
+                .catch(() => { healthByProject = { ...healthByProject, [project.id]: null }; });
+        }
+    }
+
+    function healthBand(score: number): 'good' | 'ok' | 'bad' {
+        if (score >= 90) return 'good';
+        if (score >= 70) return 'ok';
+        return 'bad';
+    }
+
+    function relativeTime(iso: string): string {
+        const diffMs = Date.now() - new Date(iso).getTime();
+        const mins = Math.round(diffMs / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return `${mins}m ago`;
+        const hours = Math.round(mins / 60);
+        if (hours < 24) return `${hours}h ago`;
+        const days = Math.round(hours / 24);
+        return `${days}d ago`;
+    }
+
+    async function triggerHealthCheck(projectId: string) {
+        if (checkingHealth[projectId]) return; // already in flight
+        checkingHealth = { ...checkingHealth, [projectId]: true };
+        try {
+            const result = await api.triggerProjectHealth(projectId);
+            if (result.ok && result.data) {
+                healthByProject = { ...healthByProject, [projectId]: result.data };
+                openHealthId = projectId;
+            } else if (result.status === 429) {
+                alert('A health check ran too recently for this project — try again shortly.');
+            } else if (result.status === 401 || result.status === 403) {
+                alert('You need operator access to trigger a health check.');
+            } else {
+                alert('Health check failed. Please try again.');
+            }
+        } catch (e) {
+            console.error('Failed to trigger health check:', e);
+            alert('Health check failed. Please try again.');
+        } finally {
+            checkingHealth = { ...checkingHealth, [projectId]: false };
+        }
     }
 
     async function refreshProjects() {
         try {
             projects = await api.listProjects(selectedOrgId || undefined);
+            loadHealth();
         } catch (e) {
             console.error("Failed to refresh projects:", e);
         }
@@ -294,6 +347,45 @@
                     <div class="item-content">
                         <div class="item-header">
                             <span class="item-name">{project.name}</span>
+                            {#if healthByProject[project.id]}
+                                {@const h = healthByProject[project.id]}
+                                {@const band = healthBand(h.score)}
+                                {@const delta = h.previous_score !== undefined ? h.score - h.previous_score : null}
+                                <button
+                                    class="health-badge health-{band}"
+                                    title="{h.findings.length} finding{h.findings.length === 1 ? '' : 's'} — click to view{h.org_average !== undefined ? ` · org avg ${h.org_average.toFixed(0)}` : ''}"
+                                    on:click|stopPropagation={() => openHealthId = openHealthId === project.id ? null : project.id}
+                                >
+                                    {h.score}
+                                    {#if delta !== null && delta !== 0}
+                                        <span class="health-delta">{delta > 0 ? '↑' : '↓'}{Math.abs(delta)}</span>
+                                    {/if}
+                                    {#if openHealthId === project.id}
+                                        <ChevronUp size={11} />
+                                    {:else}
+                                        <ChevronDown size={11} />
+                                    {/if}
+                                </button>
+                                <button
+                                    class="health-check-btn"
+                                    title="Check health now"
+                                    disabled={checkingHealth[project.id]}
+                                    on:click|stopPropagation={() => triggerHealthCheck(project.id)}
+                                >
+                                    <span class:spin={checkingHealth[project.id]}><RefreshCw size={12} /></span>
+                                </button>
+                            {:else if project.id in healthByProject}
+                                <!-- Fetched and confirmed never-checked (explicit null), not just
+                                     still loading — only now is "Check now" an honest affordance. -->
+                                <button
+                                    class="health-check-btn health-check-btn-text"
+                                    disabled={checkingHealth[project.id]}
+                                    on:click|stopPropagation={() => triggerHealthCheck(project.id)}
+                                >
+                                    <span class:spin={checkingHealth[project.id]}><RefreshCw size={12} /></span>
+                                    {checkingHealth[project.id] ? 'Checking…' : 'Check health'}
+                                </button>
+                            {/if}
                             {#if project.repo_url}
                                 <a href={project.repo_url} target="_blank" rel="noopener noreferrer" class="repo-link">
                                     <ExternalLink size={12} />
@@ -306,6 +398,52 @@
                             <span>•</span>
                             <span>Created {new Date(project.created_at).toLocaleDateString()}</span>
                         </div>
+
+                        {#if openHealthId === project.id && healthByProject[project.id]}
+                            {@const h = healthByProject[project.id]}
+                            {@const critical = h.findings.filter(f => f.severity === 'critical')}
+                            {@const warnings = h.findings.filter(f => f.severity === 'warning')}
+                            {@const suggestions = h.findings.filter(f => f.severity === 'suggestion')}
+                            <div class="health-panel">
+                                <div class="health-panel-header">
+                                    <span>Checked {relativeTime(h.computed_at)}</span>
+                                    {#if h.previous_score !== undefined && h.previous_at !== undefined}
+                                        <span>· previous {h.previous_score} ({relativeTime(h.previous_at)})</span>
+                                    {/if}
+                                    {#if h.org_average !== undefined}
+                                        <span>· org avg {h.org_average.toFixed(0)} across {h.org_project_count} project{h.org_project_count === 1 ? '' : 's'}</span>
+                                    {/if}
+                                </div>
+                                {#if h.findings.length === 0}
+                                    <div class="health-panel-empty">✓ No issues found</div>
+                                {:else}
+                                    {#if critical.length > 0}
+                                        <div class="health-group">
+                                            <div class="health-group-title health-group-critical">CRITICAL</div>
+                                            {#each critical as f}
+                                                <div class="health-finding">✗ {f.message}</div>
+                                            {/each}
+                                        </div>
+                                    {/if}
+                                    {#if warnings.length > 0}
+                                        <div class="health-group">
+                                            <div class="health-group-title health-group-warning">WARNINGS</div>
+                                            {#each warnings as f}
+                                                <div class="health-finding">⚠ {f.message}</div>
+                                            {/each}
+                                        </div>
+                                    {/if}
+                                    {#if suggestions.length > 0}
+                                        <div class="health-group">
+                                            <div class="health-group-title health-group-suggestion">SUGGESTIONS</div>
+                                            {#each suggestions as f}
+                                                <div class="health-finding">ℹ {f.message}</div>
+                                            {/each}
+                                        </div>
+                                    {/if}
+                                {/if}
+                            </div>
+                        {/if}
 
                         <button class="btn-text" on:click={() => openSecretsId = openSecretsId === project.id ? null : project.id}>
                             <Key size={14} />
@@ -488,6 +626,97 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    .health-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 6px 2px 7px;
+        border-radius: 10px;
+        flex-shrink: 0;
+        cursor: pointer;
+        font-family: inherit;
+    }
+    .health-badge:hover { filter: brightness(1.2); }
+    .health-good { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
+    .health-ok   { background: #9e6a0322; color: #d29922; border: 1px solid #9e6a0344; }
+    .health-bad  { background: #f8514922; color: #f85149; border: 1px solid #f8514944; }
+    .health-delta { font-weight: 500; opacity: 0.85; }
+    .health-check-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 2px 4px;
+        border-radius: 6px;
+        font-size: 11px;
+        flex-shrink: 0;
+    }
+    .health-check-btn:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--accent);
+    }
+    .health-check-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+    }
+    .health-check-btn-text {
+        border: 1px dashed var(--border, #30363d);
+        color: var(--muted);
+    }
+    .health-panel {
+        margin: 8px 0;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--border, #30363d);
+        border-radius: 8px;
+        font-size: 12px;
+    }
+    .health-panel-header {
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+    .health-panel-empty {
+        color: #3fb950;
+        font-weight: 600;
+    }
+    .health-group {
+        margin-bottom: 10px;
+    }
+    .health-group:last-child {
+        margin-bottom: 0;
+    }
+    .health-group-title {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+    }
+    .health-group-critical { color: #f85149; }
+    .health-group-warning { color: #d29922; }
+    .health-group-suggestion { color: #8b949e; }
+    .health-finding {
+        line-height: 1.5;
+        color: var(--text);
+        padding-left: 2px;
+        word-break: break-word;
+    }
+    .spin {
+        display: inline-flex;
+        animation: health-spin 0.8s linear infinite;
+    }
+    @keyframes health-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
     .repo-link {
         color: var(--muted);

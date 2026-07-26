@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,6 +49,14 @@ func init() {
 		Run:   runValidate,
 	}
 	rootCmd.AddCommand(validateCmd)
+
+	healthCmd := &cobra.Command{
+		Use:   "health [pipeline.yml]",
+		Short: "score a pipeline's configuration health (issue #46)",
+		Args:  cobra.MaximumNArgs(1),
+		Run:   runHealth,
+	}
+	rootCmd.AddCommand(healthCmd)
 
 	previewCmd := &cobra.Command{
 		Use:   "generate-preview [pipeline.yml]",
@@ -140,6 +151,84 @@ func runRun(cmd *cobra.Command, args []string) {
 			fmt.Fprintf(os.Stderr, "watcher error: %v\n", err)
 		}
 	}
+}
+
+func runHealth(cmd *cobra.Command, args []string) {
+	pipelinePath := getPipelinePath(args)
+
+	data, err := os.ReadFile(pipelinePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
+	}
+
+	lastModified := gitLastModified(pipelinePath)
+
+	report, err := compiler.Score(pipelinePath, data, lastModified)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
+	}
+
+	name := report.PipelineName
+	if name == "" {
+		name = pipelinePath
+	}
+	fmt.Printf("Pipeline Health — %s\n", name)
+	fmt.Printf("Score: %d/100\n\n", report.Score)
+
+	if len(report.Findings) == 0 {
+		fmt.Println("✓ No issues found")
+		return
+	}
+
+	fmt.Println("Issues found:")
+	if len(report.Critical) > 0 {
+		fmt.Println("  CRITICAL (blocks score above 80):")
+		for _, f := range report.Critical {
+			fmt.Printf("  ✗ %s\n", f.Message)
+		}
+		fmt.Println()
+	}
+	if len(report.Warnings) > 0 {
+		fmt.Println("  WARNINGS (blocks score above 90):")
+		for _, f := range report.Warnings {
+			fmt.Printf("  ⚠ %s\n", f.Message)
+		}
+		fmt.Println()
+	}
+	if len(report.Suggestions) > 0 {
+		fmt.Println("  SUGGESTIONS (informational):")
+		for _, f := range report.Suggestions {
+			fmt.Printf("  ℹ %s\n", f.Message)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("Note: week-over-week trend and org-average comparison are computed by")
+	fmt.Println("the scheduler's weekly health check once this project is registered —")
+	fmt.Println("this local run only has this one snapshot to go on.")
+}
+
+// gitLastModified returns the commit time of the last change to path, or
+// nil if that can't be determined (not in a git repo, path not tracked,
+// git not installed). Best-effort only — Score's staleness check is
+// skipped entirely when this returns nil, not treated as an error.
+func gitLastModified(path string) *time.Time {
+	out, err := exec.Command("git", "log", "-1", "--format=%ct", "--", path).Output()
+	if err != nil {
+		return nil
+	}
+	ts := strings.TrimSpace(string(out))
+	if ts == "" {
+		return nil
+	}
+	sec, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return nil
+	}
+	t := time.Unix(sec, 0)
+	return &t
 }
 
 func runValidate(cmd *cobra.Command, args []string) {
