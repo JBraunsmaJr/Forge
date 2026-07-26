@@ -49,9 +49,12 @@ func (s *Server) healthMonitor(ctx context.Context) {
 	}
 }
 
+const maxConcurrentHealthChecks = 5
+
 func (s *Server) runHealthChecks(interval time.Duration) {
 	projects := s.projects.ListProjects("")
 	now := time.Now()
+	sem := make(chan struct{}, maxConcurrentHealthChecks)
 
 	for _, proj := range projects {
 		latest, _, err := s.store.LatestHealthSnapshots(proj.ID)
@@ -63,7 +66,9 @@ func (s *Server) runHealthChecks(interval time.Duration) {
 			continue // not due yet
 		}
 
+		sem <- struct{}{}
 		go func(p api.ProjectInfo) {
+			defer func() { <-sem }()
 			if _, err := s.checkProjectHealth(p); err != nil {
 				fmt.Printf("[health] %s: %v\n", p.Name, err)
 			}
