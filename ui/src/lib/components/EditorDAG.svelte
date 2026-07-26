@@ -163,7 +163,9 @@
                         ? `Trigger: ${s.pipeline_ref?.name || '...'}`
                         : s.type === 'release'
                             ? 'SCM Release'
-                            : (s.image || 'no image') + (s.split?.enabled ? ` · ${s.split.shards} shards` : '')}
+                            : s.type === 'approval'
+                                ? 'Manual Approval'
+                                : (s.image || 'no image') + (s.split?.enabled ? ` · ${s.split.shards} shards` : '')}
                     <g class="node" on:click={() => onSelectStep(s.id)} clip-path="url(#node-clip-{s.id})">
                         <rect 
                             x={pos.x} y={pos.y} 

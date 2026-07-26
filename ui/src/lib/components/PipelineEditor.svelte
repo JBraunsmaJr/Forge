@@ -234,8 +234,8 @@
                 const shards = Math.max(2, Math.floor(Number(s.split.shards)) || 2);
                 lines.push(`    split:`);
                 lines.push(`      shards: ${shards}`);
-                if (s.split.historyDays !== 14) lines.push(`      history_days: ${s.split.historyDays}`);
-                if (s.split.minHistoryRuns !== 3) lines.push(`      min_history_runs: ${s.split.minHistoryRuns}`);
+                if (s.split.historyDays > 0) lines.push(`      history_days: ${s.split.historyDays}`);
+                if (s.split.minHistoryRuns > 0) lines.push(`      min_history_runs: ${s.split.minHistoryRuns}`);
                 if (s.split.fallback !== 'single') lines.push(`      fallback: ${s.split.fallback}`);
             }
 

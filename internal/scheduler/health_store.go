@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -55,10 +56,15 @@ func (s *Store) LatestHealthSnapshots(projectID string) (latest, previous *Healt
 	for rows.Next() {
 		var h HealthSnapshot
 		var findingsJSON string
+
 		if err := rows.Scan(&h.ID, &h.ProjectID, &h.ComputedAt, &h.PipelineName, &h.Score, &findingsJSON); err != nil {
 			return nil, nil, err
 		}
-		json.Unmarshal([]byte(findingsJSON), &h.Findings)
+
+		if err := json.Unmarshal([]byte(findingsJSON), &h.Findings); err != nil {
+			return nil, nil, fmt.Errorf("decoding findings for snapshot %s: %w", h.ID, err)
+		}
+
 		snaps = append(snaps, &h)
 	}
 	if len(snaps) > 0 {
