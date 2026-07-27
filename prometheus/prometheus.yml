@@ -1,7 +1,14 @@
 global:
   scrape_interval: 5s
 
+rule_files:
+  - "alerts.yml"
+
 scrape_configs:
   - job_name: 'forge-scheduler'
     static_configs:
       - targets: ['scheduler:8080']
+
+  - job_name: 'forge-autoscaler'
+    static_configs:
+      - targets: ['autoscaler:9091']

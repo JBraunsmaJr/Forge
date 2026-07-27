@@ -482,6 +482,12 @@ func (s *Store) ActiveJobsCount(agentID string) (int, error) {
 	return count, err
 }
 
+func (s *Store) QueuedJobsCount() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = 'queued'`).Scan(&count)
+	return count, err
+}
+
 // ReclaimStaleJobs resets running jobs whose heartbeat has expired.
 // Called by the heartbeat monitor goroutine every 15 seconds.
 func (s *Store) ReclaimStaleJobs() int {

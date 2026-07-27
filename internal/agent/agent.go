@@ -90,6 +90,7 @@ type Agent struct {
 	activeJobs       sync.Map // map[string]activeJobInfo
 	cleanupMu        sync.Mutex
 	lastCleanup      time.Time
+	wg               sync.WaitGroup
 }
 
 type activeJobInfo struct {
@@ -247,6 +248,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		Payload: &pb.AgentMessage_Register{
 			Register: &pb.RegisterRequest{
 				Concurrency: int32(a.maxConcurrency),
+				Labels:      a.getLabels(),
 			},
 		},
 	})
@@ -258,11 +260,17 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.pruneLoop(ctx)
 	go a.statusLoop(ctx)
 
+	// Session context for cancellation from within (e.g. spot eviction)
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	defer sessionCancel()
+
+	go a.spotEvictionMonitor(sessionCtx, sessionCancel)
+
 	// Goroutine to send outgoing messages (heartbeats, completions, logs)
 	go func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-sessionCtx.Done():
 				return
 			case msg := <-a.out:
 				msg.AgentId = a.id
@@ -290,13 +298,14 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Receive loop: receive jobs from scheduler
 	for {
+		// Use RecvMsg if we need context, but stream.Recv is fine if we check context error after
 		msg, err := stream.Recv()
 		if err == io.EOF {
 			fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
 			return nil
 		}
 		if err != nil {
-			if ctx.Err() != nil {
+			if sessionCtx.Err() != nil {
 				return nil
 			}
 			fmt.Printf("[agent %s] gRPC receive error: %v\n", a.id[:8], err)
@@ -382,14 +391,17 @@ func (a *Agent) Run(ctx context.Context) error {
 			fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
 				a.id[:8], spec.JobID[:8], spec.StepID)
 
+			a.wg.Add(1)
 			go func(s *api.JobSpec) {
+				defer a.wg.Done()
 				a.semaphore <- struct{}{}
 				defer func() {
 					<-a.semaphore
 					a.checkDiskUsageAndCleanup()
 				}()
 
-				jobCtx, cancel := context.WithCancel(ctx)
+				// Use Background to ensure job can finish even if agent shutdown starts
+				jobCtx, cancel := context.WithCancel(context.Background())
 				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID, LeaseID: s.LeaseID})
 				defer func() {
 					if info, ok := a.activeJobs.Load(s.JobID); ok && info.(activeJobInfo).LeaseID == s.LeaseID {
@@ -404,6 +416,74 @@ func (a *Agent) Run(ctx context.Context) error {
 			}(spec)
 		}
 	}
+	a.wg.Wait()
+	return nil
+}
+
+func (a *Agent) getLabels() map[string]string {
+	labels := make(map[string]string)
+	if p := os.Getenv("FORGE_AGENT_POOL"); p != "" {
+		labels["pool"] = p
+	}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "FORGE_AGENT_LABEL_") {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				key := strings.ToLower(strings.TrimPrefix(parts[0], "FORGE_AGENT_LABEL_"))
+				labels[key] = parts[1]
+			}
+		}
+	}
+	return labels
+}
+
+func (a *Agent) spotEvictionMonitor(ctx context.Context, cancelRun context.CancelFunc) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.isSpotEvicted() {
+				fmt.Printf("[agent %s] spot eviction notice detected, initiating graceful shutdown...\n", a.id[:8])
+				cancelRun()
+				return
+			}
+		}
+	}
+}
+
+func (a *Agent) isSpotEvicted() bool {
+	// Azure Instance Metadata Service endpoint
+	req, _ := http.NewRequest("GET", "http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01", nil)
+	req.Header.Set("Metadata", "true")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var events struct {
+		Events []struct {
+			EventType string `json:"EventType"`
+		} `json:"Events"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		return false
+	}
+
+	for _, e := range events.Events {
+		if e.EventType == "Preempt" || e.EventType == "Terminate" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) pruneLoop(ctx context.Context) {

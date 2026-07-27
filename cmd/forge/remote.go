@@ -172,7 +172,17 @@ func runAgent(cmd *cobra.Command, args []string) {
 	}
 
 	a := agent.New(agentID, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken, apiToken, proxyURL, maxGB, maxPercent, pruneSchedule, concurrency)
-	if err := a.Run(context.Background()); err != nil {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		fmt.Printf("\n[agent %s] received shutdown signal, waiting for jobs to finish...\n", agentID[:8])
+		cancel()
+	}()
+
+	if err := a.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "agent error: %v\n", err)
 		os.Exit(1)
 	}

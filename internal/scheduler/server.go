@@ -232,6 +232,23 @@ func (r *AgentRegistry) Disconnect(id string) {
 	}
 }
 
+func (r *AgentRegistry) Drain(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.agents[id]; ok {
+		a.Draining = true
+	}
+}
+
+func (r *AgentRegistry) IsDraining(id string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if a, ok := r.agents[id]; ok {
+		return a.Draining
+	}
+	return false
+}
+
 func (r *AgentRegistry) List() []api.AgentInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -334,7 +351,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/logs/search", s.handleSearchLogs)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
+	// Agent and queue management
 	mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
+	mux.HandleFunc("POST /api/v1/agents/{id}/drain", s.handleDrainAgent)
+	mux.HandleFunc("GET /api/v1/queue/depth", s.handleQueueDepth)
 	mux.HandleFunc("GET /api/v1/audit", s.handleListAuditLogs)
 	mux.HandleFunc("GET /api/v1/audit/export", s.handleListAuditLogs)
 
@@ -918,6 +938,21 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.agents.List())
 }
 
+func (s *Server) handleDrainAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.agents.Drain(id)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleQueueDepth(w http.ResponseWriter, r *http.Request) {
+	count, err := s.store.QueuedJobsCount()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"count": count})
+}
+
 func validateSteps(steps []api.StepDef) error {
 	pSteps := make([]*pipeline.Step, len(steps))
 	for i, s := range steps {
@@ -1341,6 +1376,12 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
+	if s.agents.IsDraining(req.AgentID) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	spec, ok := s.store.LeaseNext(req.AgentID)
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)

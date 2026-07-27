@@ -693,6 +693,7 @@ type AgentInfo struct {
 	Version         string            `json:"version"`
 	Labels          map[string]string `json:"labels"`
 	Connected       bool              `json:"connected"`
+	Draining        bool              `json:"draining"`
 }
 
 // RunComparison compares a run's duration against historical averages.

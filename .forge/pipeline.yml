@@ -54,7 +54,6 @@ steps:
       fallback: single
     test_report: .forge/test-report.json
     script: .forge/scripts/integration-tests.sh
-      
 
   - id: main-pipeline
     condition: branch(main)

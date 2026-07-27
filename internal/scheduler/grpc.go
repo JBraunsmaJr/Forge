@@ -183,6 +183,11 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 		case <-sessionCtx.Done():
 			return nil
 		case <-ticker.C:
+			// Check if agent is draining
+			if s.scheduler.agents.IsDraining(agentID) {
+				continue
+			}
+
 			// Check if agent has capacity
 			active, err := s.scheduler.store.ActiveJobsCount(agentID)
 			if err != nil {
