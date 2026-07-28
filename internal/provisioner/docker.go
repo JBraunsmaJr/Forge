@@ -13,6 +13,7 @@ type DockerFakeProvisioner struct {
 	Image        string
 	SchedulerURL string
 	Network      string
+	AgentID      string
 }
 
 func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]InstanceID, error) {
@@ -20,6 +21,10 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 	for i := 0; i < n; i++ {
 		args := []string{"run", "-d"}
 		args = append(args, "--label", "forge-pool="+pool)
+		args = append(args, "--label", "forge.managed=true")
+		if p.AgentID != "" {
+			args = append(args, "--label", "forge.agent_id="+p.AgentID)
+		}
 		args = append(args, "-e", "FORGE_SCHEDULER_URL="+p.SchedulerURL)
 		args = append(args, "-e", "FORGE_AGENT_POOL="+pool)
 		// Ensure agent knows its own ID is the container ID

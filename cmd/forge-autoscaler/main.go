@@ -68,10 +68,12 @@ func main() {
 			image = "forge-fake-agent:latest"
 		}
 		network := os.Getenv("FORGE_AUTOSCALER_DOCKER_NETWORK")
+		agentID := os.Getenv("FORGE_PROXY_AGENT_ID")
 		prov = &provisioner.DockerFakeProvisioner{
 			Image:        image,
 			SchedulerURL: schedulerURL,
 			Network:      network,
+			AgentID:      agentID,
 		}
 	}
 

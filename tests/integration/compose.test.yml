@@ -88,6 +88,20 @@ services:
       forge.managed: "true"
       forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
+  autoscaler:
+    image: "${FORGE_IMAGE}"
+    logging: *default-logging
+    labels:
+      forge.managed: "true"
+      forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
+    environment:
+      FORGE_PROXY_AGENT_ID: "${FORGE_PROXY_AGENT_ID}"
+      FORGE_AUTOSCALER_DOCKER_IMAGE: "${FORGE_IMAGE}"
+      FORGE_AUTOSCALER_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME}_forge"
+    depends_on:
+      scheduler:
+        condition: service_started
+
   init:
     image: "${FORGE_IMAGE}"
     entrypoint: ["/bin/bash"]
