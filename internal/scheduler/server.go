@@ -38,6 +38,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"gorm.io/gorm"
 )
 
 //go:embed all:web/dist/*
@@ -45,6 +46,8 @@ var webAssets embed.FS
 
 // Server is the HTTP server for the Forge scheduler.
 type Server struct {
+	db          *sql.DB
+	gdb         *gorm.DB
 	store       *Store
 	orgs        *OrgStore
 	projects    *ProjectStore
@@ -65,7 +68,7 @@ type Server struct {
 }
 
 // NewServer creates a scheduler server backed by the given Postgres database.
-func NewServer(addr string, db *sql.DB, baseURL string) *Server {
+func NewServer(addr string, db *sql.DB, gdb *gorm.DB, baseURL string) *Server {
 	artifactDir := getenv("FORGE_ARTIFACT_DIR", "/data/artifacts")
 	var artStore artifacts.ArtifactStorer
 	if getenv("FORGE_ARTIFACT_STORE", "local") == "s3" {
@@ -127,11 +130,13 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 	}
 
 	return &Server{
+		db:          db,
+		gdb:         gdb,
 		store:       NewStore(db),
-		orgs:        newOrgStore(db),
-		projects:    newProjectStore(db),
+		orgs:        newOrgStore(db, gdb),
+		projects:    newProjectStore(db, gdb),
 		debug:       newDebugStore(),
-		tokens:      newTokenStore(db),
+		tokens:      newTokenStore(db, gdb),
 		cas:         cas,
 		broker:      newSSEBroker(),
 		artifacts:   artStore,

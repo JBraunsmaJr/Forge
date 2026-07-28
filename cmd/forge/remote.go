@@ -111,6 +111,12 @@ func runScheduler(cmd *cobra.Command, args []string) {
 	}
 	defer db.Close()
 
+	gdb, err := store.NewGORM(db)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ GORM: %v\n", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -126,7 +132,7 @@ func runScheduler(cmd *cobra.Command, args []string) {
 		baseURL = "http://localhost" + addr
 	}
 
-	srv := scheduler.NewServer(addr, db, baseURL)
+	srv := scheduler.NewServer(addr, db, gdb, baseURL)
 	if err := srv.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "scheduler error: %v\n", err)
 		os.Exit(1)

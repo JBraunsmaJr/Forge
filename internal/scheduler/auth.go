@@ -14,14 +14,18 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/store"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 type tokenStore struct {
-	db *sql.DB
+	db  *sql.DB
+	gdb *gorm.DB
 }
 
-func newTokenStore(db *sql.DB) *tokenStore {
-	return &tokenStore{db: db}
+func newTokenStore(db *sql.DB, gdb *gorm.DB) *tokenStore {
+	return &tokenStore{db: db, gdb: gdb}
 }
 
 // Create generates a new token, stores its hash, and returns the raw value.
@@ -43,13 +47,21 @@ func (ts *tokenStore) Create(name, role string, orgID, projectID string, expires
 	hash := hashToken(rawToken)
 	id := newID()[:12]
 
-	var createdAt time.Time
-	err = ts.db.QueryRow(
-		`INSERT INTO api_tokens (id, token_hash, name, role, org_id, project_id, expires_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
-		id, hash, name, role, orgID, projectID, expiresAt,
-	).Scan(&createdAt)
-	if err != nil {
+	token := store.APIToken{
+		ID:        id,
+		TokenHash: hash,
+		Name:      name,
+		Role:      role,
+		ExpiresAt: expiresAt,
+	}
+	if orgID != "" {
+		token.OrgID = &orgID
+	}
+	if projectID != "" {
+		token.ProjectID = &projectID
+	}
+
+	if err = ts.gdb.Create(&token).Error; err != nil {
 		return "", nil, fmt.Errorf("creating token: %w", err)
 	}
 
@@ -59,7 +71,7 @@ func (ts *tokenStore) Create(name, role string, orgID, projectID string, expires
 		Role:      role,
 		OrgID:     orgID,
 		ProjectID: projectID,
-		CreatedAt: createdAt,
+		CreatedAt: token.CreatedAt,
 		ExpiresAt: expiresAt,
 	}
 	return
@@ -77,17 +89,27 @@ type tokenRecord struct {
 // Verify looks up a raw token by its hash. Returns (nil, false) if not found or expired.
 func (ts *tokenStore) Verify(rawToken string) (*tokenRecord, bool) {
 	hash := hashToken(rawToken)
-	var rec tokenRecord
-	var expiresAt *time.Time
-	err := ts.db.QueryRow(
-		`SELECT id, name, role, COALESCE(org_id, ''), COALESCE(project_id, ''), expires_at FROM api_tokens WHERE token_hash=$1`, hash,
-	).Scan(&rec.ID, &rec.Name, &rec.Role, &rec.OrgID, &rec.ProjectID, &expiresAt)
-	if err != nil {
+	var token store.APIToken
+	if err := ts.gdb.First(&token, "token_hash = ?", hash).Error; err != nil {
 		return nil, false
 	}
-	if isTokenExpired(expiresAt) {
+
+	if isTokenExpired(token.ExpiresAt) {
 		return nil, false
 	}
+
+	rec := tokenRecord{
+		ID:   token.ID,
+		Name: token.Name,
+		Role: token.Role,
+	}
+	if token.OrgID != nil {
+		rec.OrgID = *token.OrgID
+	}
+	if token.ProjectID != nil {
+		rec.ProjectID = *token.ProjectID
+	}
+
 	return &rec, true
 }
 
@@ -97,30 +119,38 @@ func isTokenExpired(expiresAt *time.Time) bool {
 
 // List returns all tokens (without their hash or raw value).
 func (ts *tokenStore) List() []api.TokenInfo {
-	rows, err := ts.db.Query(
-		`SELECT id, name, role, COALESCE(org_id, ''), COALESCE(project_id, ''), created_at, expires_at FROM api_tokens ORDER BY created_at`)
-	if err != nil {
+	var tokens []store.APIToken
+	if err := ts.gdb.Order("created_at").Find(&tokens).Error; err != nil {
 		return nil
 	}
-	defer rows.Close()
 
 	var result []api.TokenInfo
-	for rows.Next() {
-		var t api.TokenInfo
-		rows.Scan(&t.ID, &t.Name, &t.Role, &t.OrgID, &t.ProjectID, &t.CreatedAt, &t.ExpiresAt)
-		result = append(result, t)
+	for _, t := range tokens {
+		info := api.TokenInfo{
+			ID:        t.ID,
+			Name:      t.Name,
+			Role:      t.Role,
+			CreatedAt: t.CreatedAt,
+			ExpiresAt: t.ExpiresAt,
+		}
+		if t.OrgID != nil {
+			info.OrgID = *t.OrgID
+		}
+		if t.ProjectID != nil {
+			info.ProjectID = *t.ProjectID
+		}
+		result = append(result, info)
 	}
 	return result
 }
 
 // Revoke deletes a token by ID.
 func (ts *tokenStore) Revoke(id string) error {
-	res, err := ts.db.Exec(`DELETE FROM api_tokens WHERE id=$1`, id)
-	if err != nil {
-		return err
+	result := ts.gdb.Delete(&store.APIToken{}, "id = ?", id)
+	if result.Error != nil {
+		return result.Error
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("token %s not found", id)
 	}
 	return nil
@@ -128,9 +158,9 @@ func (ts *tokenStore) Revoke(id string) error {
 
 // Count returns the total number of tokens — used for bootstrap detection.
 func (ts *tokenStore) Count() int {
-	var n int
-	ts.db.QueryRow(`SELECT COUNT(*) FROM api_tokens`).Scan(&n)
-	return n
+	var n int64
+	ts.gdb.Model(&store.APIToken{}).Count(&n)
+	return int(n)
 }
 
 func hashToken(raw string) string {
@@ -179,10 +209,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if len(raw) >= 8 {
 				prefix = raw[:8]
 			}
-			s.store.db.Exec(`
-				INSERT INTO audit_logs (id, action, details, ip_address)
-				VALUES ($1, $2, $3, $4)`,
-				newID(), "auth.failure", []byte(fmt.Sprintf(`{"token_prefix":"%s"}`, prefix)), ip)
+			s.gdb.Create(&store.AuditLog{
+				ID:        newID(),
+				Action:    "auth.failure",
+				Details:   datatypes.JSON(fmt.Sprintf(`{"token_prefix":"%s"}`, prefix)),
+				IPAddress: &ip,
+			})
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -391,8 +423,32 @@ func (s *Server) AuditLog(r *http.Request, action, targetType, targetID string, 
 	}
 
 	detailsJSON, _ := json.Marshal(details)
-	s.store.db.Exec(`
-		INSERT INTO audit_logs (id, actor_id, actor_name, action, target_type, target_id, details, ip_address, org_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		newID(), actorID, actorName, action, targetType, targetID, detailsJSON, ip, orgID)
+	log := store.AuditLog{
+		ID:         newID(),
+		ActorID:    &actorID,
+		ActorName:  &actorName,
+		Action:     action,
+		TargetType: &targetType,
+		TargetID:   &targetID,
+		Details:    datatypes.JSON(detailsJSON),
+		IPAddress:  &ip,
+		OrgID:      &orgID,
+	}
+	if actorID == "" {
+		log.ActorID = nil
+	}
+	if actorName == "" {
+		log.ActorName = nil
+	}
+	if targetType == "" {
+		log.TargetType = nil
+	}
+	if targetID == "" {
+		log.TargetID = nil
+	}
+	if orgID == "" {
+		log.OrgID = nil
+	}
+
+	s.gdb.Create(&log)
 }
