@@ -41,7 +41,7 @@ import (
 	"gorm.io/gorm"
 )
 
-//go:embed all:web/dist/*
+//go:embed all:web/dist
 var webAssets embed.FS
 
 // Server is the HTTP server for the Forge scheduler.
@@ -252,6 +252,15 @@ func (r *AgentRegistry) IsDraining(id string) bool {
 		return a.Draining
 	}
 	return false
+}
+
+func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool)) (*api.JobSpec, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if a, ok := r.agents[id]; ok && a.Draining {
+		return nil, false
+	}
+	return leaseFn()
 }
 
 func (r *AgentRegistry) List() []api.AgentInfo {
@@ -1382,12 +1391,9 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.agents.IsDraining(req.AgentID) {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	spec, ok := s.store.LeaseNext(req.AgentID)
+	spec, ok := s.agents.LeaseNext(req.AgentID, func() (*api.JobSpec, bool) {
+		return s.store.LeaseNext(req.AgentID)
+	})
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
 		return

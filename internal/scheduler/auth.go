@@ -159,7 +159,10 @@ func (ts *tokenStore) Revoke(id string) error {
 // Count returns the total number of tokens — used for bootstrap detection.
 func (ts *tokenStore) Count() int {
 	var n int64
-	ts.gdb.Model(&store.APIToken{}).Count(&n)
+	if err := ts.gdb.Model(&store.APIToken{}).Count(&n).Error; err != nil {
+		fmt.Printf("[auth] failed to count tokens: %v\n", err)
+		return -1 // Indicate error
+	}
 	return int(n)
 }
 
@@ -209,10 +212,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if len(raw) >= 8 {
 				prefix = raw[:8]
 			}
+			detailsJSON, _ := json.Marshal(map[string]string{"token_prefix": prefix})
 			s.gdb.Create(&store.AuditLog{
 				ID:        newID(),
 				Action:    "auth.failure",
-				Details:   datatypes.JSON(fmt.Sprintf(`{"token_prefix":"%s"}`, prefix)),
+				Details:   datatypes.JSON(detailsJSON),
 				IPAddress: &ip,
 			})
 
@@ -292,7 +296,7 @@ func extractToken(r *http.Request) string {
 // reproducible dev/CI environments where the token must be known in advance.
 // Otherwise, a cryptographically random token is generated and printed once.
 func (ts *tokenStore) bootstrapIfEmpty() {
-	if ts.Count() > 0 {
+	if ts.Count() != 0 {
 		return
 	}
 
@@ -309,10 +313,14 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 
 	hash := hashToken(rawToken)
 	id := newID()[:12]
-	ts.db.Exec(
-		`INSERT INTO api_tokens (id, token_hash, name, role, org_id, project_id, expires_at) VALUES ($1,$2,'root','admin', '', '', NULL)`,
-		id, hash,
-	)
+	if err := ts.gdb.Create(&store.APIToken{
+		ID:        id,
+		TokenHash: hash,
+		Name:      "root",
+		Role:      "admin",
+	}).Error; err != nil {
+		fmt.Printf("[auth] failed to bootstrap root token: %v\n", err)
+	}
 
 	// Also bootstrap an agent token if provided via environment.
 	// This ensures that distributed deployments (where init.sh might not run)
@@ -325,10 +333,14 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 	if agentToken != "" && agentToken != rawToken {
 		ahash := hashToken(agentToken)
 		aid := newID()[:12]
-		ts.db.Exec(
-			`INSERT INTO api_tokens (id, token_hash, name, role, org_id, project_id, expires_at) VALUES ($1,$2,'default-agent','agent', '', '', NULL)`,
-			aid, ahash,
-		)
+		if err := ts.gdb.Create(&store.APIToken{
+			ID:        aid,
+			TokenHash: ahash,
+			Name:      "default-agent",
+			Role:      "agent",
+		}).Error; err != nil {
+			fmt.Printf("[auth] failed to bootstrap agent token: %v\n", err)
+		}
 		fmt.Printf("[auth] agent token initialised from environment\n")
 	}
 

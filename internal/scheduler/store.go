@@ -87,7 +87,7 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	_, err = tx.Exec(
 		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), p.ProjectID, p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
+		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), nullable(p.ProjectID), p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)

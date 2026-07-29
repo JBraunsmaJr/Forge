@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,32 +41,47 @@ func TestAzureVMSSProvisioner_ScaleUp(t *testing.T) {
 		burst = "burst-vmss"
 	)
 
-	capacity := int64(1)
+	mu := sync.Mutex{}
+	vms := []*armcompute.VirtualMachineScaleSetVM{
+		{
+			InstanceID: to.Ptr("0"),
+			Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+				TimeCreated: to.Ptr(time.Now()),
+			},
+		},
+	}
 
 	server := armfake.VirtualMachineScaleSetsServer{
 		Get: func(ctx context.Context, resourceGroupName string, vmScaleSetName string, options *armcompute.VirtualMachineScaleSetsClientGetOptions) (resp azfake.Responder[armcompute.VirtualMachineScaleSetsClientGetResponse], errResp azfake.ErrorResponder) {
+			mu.Lock()
+			defer mu.Unlock()
 			resp.SetResponse(http.StatusOK, armcompute.VirtualMachineScaleSetsClientGetResponse{
 				VirtualMachineScaleSet: armcompute.VirtualMachineScaleSet{
 					SKU: &armcompute.SKU{
-						Capacity: to.Ptr(capacity),
+						Capacity: to.Ptr(int64(len(vms))),
 					},
 				},
 			}, nil)
 			return
 		},
 		BeginUpdate: func(ctx context.Context, resourceGroupName string, vmScaleSetName string, parameters armcompute.VirtualMachineScaleSetUpdate, options *armcompute.VirtualMachineScaleSetsClientBeginUpdateOptions) (resp azfake.PollerResponder[armcompute.VirtualMachineScaleSetsClientUpdateResponse], errResp azfake.ErrorResponder) {
-			if parameters.SKU == nil || parameters.SKU.Capacity == nil {
-				t.Errorf("expected capacity info")
-			} else if *parameters.SKU.Capacity != 2 {
-				t.Errorf("expected capacity 2, got %d", *parameters.SKU.Capacity)
-			}
+			mu.Lock()
+			defer mu.Unlock()
 			if parameters.SKU != nil && parameters.SKU.Capacity != nil {
-				capacity = *parameters.SKU.Capacity
+				newCap := *parameters.SKU.Capacity
+				for int64(len(vms)) < newCap {
+					vms = append(vms, &armcompute.VirtualMachineScaleSetVM{
+						InstanceID: to.Ptr(fmt.Sprintf("%d", len(vms))),
+						Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+							TimeCreated: to.Ptr(time.Now()),
+						},
+					})
+				}
 			}
 			resp.SetTerminalResponse(http.StatusOK, armcompute.VirtualMachineScaleSetsClientUpdateResponse{
 				VirtualMachineScaleSet: armcompute.VirtualMachineScaleSet{
 					SKU: &armcompute.SKU{
-						Capacity: to.Ptr(capacity),
+						Capacity: to.Ptr(int64(len(vms))),
 					},
 				},
 			}, nil)
@@ -75,24 +91,24 @@ func TestAzureVMSSProvisioner_ScaleUp(t *testing.T) {
 
 	vmServer := armfake.VirtualMachineScaleSetVMsServer{
 		NewListPager: func(resourceGroupName string, vmScaleSetName string, options *armcompute.VirtualMachineScaleSetVMsClientListOptions) (resp azfake.PagerResponder[armcompute.VirtualMachineScaleSetVMsClientListResponse]) {
+			mu.Lock()
+			defer mu.Unlock()
 			resp.AddPage(http.StatusOK, armcompute.VirtualMachineScaleSetVMsClientListResponse{
 				VirtualMachineScaleSetVMListResult: armcompute.VirtualMachineScaleSetVMListResult{
-					Value: []*armcompute.VirtualMachineScaleSetVM{
-						{
-							InstanceID: to.Ptr("0"),
-							Properties: &armcompute.VirtualMachineScaleSetVMProperties{
-								TimeCreated: to.Ptr(time.Now()),
-							},
-						},
-						{
-							InstanceID: to.Ptr("1"),
-							Properties: &armcompute.VirtualMachineScaleSetVMProperties{
-								TimeCreated: to.Ptr(time.Now()),
-							},
-						},
-					},
+					Value: vms,
 				},
 			}, nil)
+			return
+		},
+		BeginUpdate: func(ctx context.Context, resourceGroupName string, vmScaleSetName string, instanceID string, parameters armcompute.VirtualMachineScaleSetVM, options *armcompute.VirtualMachineScaleSetVMsClientBeginUpdateOptions) (resp azfake.PollerResponder[armcompute.VirtualMachineScaleSetVMsClientUpdateResponse], errResp azfake.ErrorResponder) {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, vm := range vms {
+				if *vm.InstanceID == instanceID {
+					vm.Tags = parameters.Tags
+				}
+			}
+			resp.SetTerminalResponse(http.StatusOK, armcompute.VirtualMachineScaleSetVMsClientUpdateResponse{}, nil)
 			return
 		},
 	}
@@ -114,25 +130,164 @@ func TestAzureVMSSProvisioner_ScaleUp(t *testing.T) {
 		HotVMSS:        hot,
 		BurstVMSS:      burst,
 	}
-	var err error
-	p.client, err = armcompute.NewVirtualMachineScaleSetsClient(subID, &azfake.TokenCredential{}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.vmClient, err = armcompute.NewVirtualMachineScaleSetVMsClient(subID, &azfake.TokenCredential{}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p.client, _ = armcompute.NewVirtualMachineScaleSetsClient(subID, &azfake.TokenCredential{}, options)
+	p.vmClient, _ = armcompute.NewVirtualMachineScaleSetVMsClient(subID, &azfake.TokenCredential{}, options)
 
-	ids, err := p.ScaleUp(context.Background(), "hot", 1, nil)
+	ids, err := p.ScaleUp(context.Background(), "hot", 2, map[string]string{"foo": "bar"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	if len(ids) != 2 {
-		t.Errorf("expected 2 IDs, got %d", len(ids))
+		t.Errorf("expected 2 new IDs, got %d", len(ids))
 	}
-	if ids[0] != InstanceID(fmt.Sprintf("%s/0", hot)) {
-		t.Errorf("expected ID %s/0, got %s", hot, ids[0])
+	for i, id := range ids {
+		expected := InstanceID(fmt.Sprintf("%s/%d", hot, i+1))
+		if id != expected {
+			t.Errorf("expected ID %s, got %s", expected, id)
+		}
+	}
+
+	// Verify labels (tags)
+	for _, vm := range vms {
+		if *vm.InstanceID == "0" {
+			if vm.Tags != nil {
+				t.Errorf("VM 0 should not have tags")
+			}
+			continue
+		}
+		if vm.Tags == nil || *vm.Tags["foo"] != "bar" {
+			t.Errorf("VM %s should have tag foo=bar", *vm.InstanceID)
+		}
+	}
+}
+
+func TestAzureVMSSProvisioner_ScaleDown(t *testing.T) {
+	const (
+		subID = "sub-id"
+		rg    = "rg"
+		hot   = "hot-vmss"
+	)
+
+	deleted := make(map[string]bool)
+	server := armfake.VirtualMachineScaleSetsServer{
+		BeginDeleteInstances: func(ctx context.Context, resourceGroupName string, vmScaleSetName string, parameters armcompute.VirtualMachineScaleSetVMInstanceRequiredIDs, options *armcompute.VirtualMachineScaleSetsClientBeginDeleteInstancesOptions) (resp azfake.PollerResponder[armcompute.VirtualMachineScaleSetsClientDeleteInstancesResponse], errResp azfake.ErrorResponder) {
+			for _, id := range parameters.InstanceIDs {
+				deleted[*id] = true
+			}
+			resp.SetTerminalResponse(http.StatusOK, armcompute.VirtualMachineScaleSetsClientDeleteInstancesResponse{}, nil)
+			return
+		},
+	}
+
+	transport := &dispatchTransport{
+		vmssTransport: armfake.NewVirtualMachineScaleSetsServerTransport(&server),
+	}
+
+	options := &arm.ClientOptions{
+		ClientOptions: azcore.ClientOptions{
+			Transport: transport,
+		},
+	}
+
+	p := &AzureVMSSProvisioner{
+		SubscriptionID: subID,
+		ResourceGroup:  rg,
+		HotVMSS:        hot,
+	}
+	p.client, _ = armcompute.NewVirtualMachineScaleSetsClient(subID, &azfake.TokenCredential{}, options)
+
+	// Test valid scale down
+	err := p.ScaleDown(context.Background(), []InstanceID{InstanceID(hot + "/1"), InstanceID(hot + "/2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted["1"] || !deleted["2"] {
+		t.Errorf("expected instances 1 and 2 to be deleted")
+	}
+
+	// Test invalid ID format
+	err = p.ScaleDown(context.Background(), []InstanceID{InstanceID("invalid-id")})
+	if err == nil || !strings.Contains(err.Error(), "invalid instance ID format") {
+		t.Errorf("expected error for invalid ID format, got %v", err)
+	}
+}
+
+func TestAzureVMSSProvisioner_ListInstances(t *testing.T) {
+	const (
+		subID = "sub-id"
+		rg    = "rg"
+		hot   = "hot-vmss"
+		burst = "burst-vmss"
+	)
+
+	vmServer := armfake.VirtualMachineScaleSetVMsServer{
+		NewListPager: func(resourceGroupName string, vmScaleSetName string, options *armcompute.VirtualMachineScaleSetVMsClientListOptions) (resp azfake.PagerResponder[armcompute.VirtualMachineScaleSetVMsClientListResponse]) {
+			var vms []*armcompute.VirtualMachineScaleSetVM
+			if vmScaleSetName == hot {
+				vms = append(vms, &armcompute.VirtualMachineScaleSetVM{
+					InstanceID: to.Ptr("h1"),
+					Tags:       map[string]*string{"pool": to.Ptr("hot")},
+				})
+			} else {
+				vms = append(vms, &armcompute.VirtualMachineScaleSetVM{
+					InstanceID: to.Ptr("b1"),
+					Tags:       map[string]*string{"pool": to.Ptr("burst")},
+				})
+			}
+			resp.AddPage(http.StatusOK, armcompute.VirtualMachineScaleSetVMsClientListResponse{
+				VirtualMachineScaleSetVMListResult: armcompute.VirtualMachineScaleSetVMListResult{
+					Value: vms,
+				},
+			}, nil)
+			return
+		},
+	}
+
+	transport := &dispatchTransport{
+		vmTransport: armfake.NewVirtualMachineScaleSetVMsServerTransport(&vmServer),
+	}
+
+	options := &arm.ClientOptions{
+		ClientOptions: azcore.ClientOptions{
+			Transport: transport,
+		},
+	}
+
+	p := &AzureVMSSProvisioner{
+		SubscriptionID: subID,
+		ResourceGroup:  rg,
+		HotVMSS:        hot,
+		BurstVMSS:      burst,
+	}
+	p.vmClient, _ = armcompute.NewVirtualMachineScaleSetVMsClient(subID, &azfake.TokenCredential{}, options)
+
+	instances, err := p.ListInstances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(instances) != 2 {
+		t.Errorf("expected 2 instances, got %d", len(instances))
+	}
+
+	foundHot := false
+	foundBurst := false
+	for _, inst := range instances {
+		if inst.ID == InstanceID(hot+"/h1") {
+			foundHot = true
+			if inst.Labels["pool"] != "hot" {
+				t.Errorf("expected label pool=hot, got %s", inst.Labels["pool"])
+			}
+		}
+		if inst.ID == InstanceID(burst+"/b1") {
+			foundBurst = true
+			if inst.Labels["pool"] != "burst" {
+				t.Errorf("expected label pool=burst, got %s", inst.Labels["pool"])
+			}
+		}
+	}
+	if !foundHot || !foundBurst {
+		t.Errorf("did not find both hot and burst instances")
 	}
 }

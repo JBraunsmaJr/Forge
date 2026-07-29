@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/provisioner"
@@ -106,4 +107,67 @@ func TestAutoscaler_BurstScaleUp(t *testing.T) {
 	if prov.scaleUpCalled != 2 {
 		t.Errorf("expected 2 scale-up calls, got %d", prov.scaleUpCalled)
 	}
+}
+
+func TestAutoscaler_IdleTeardownSafety(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
+		agents := []api.AgentInfo{
+			{ID: "burst-1", Connected: true, Concurrency: 1, ActiveJobsCount: 0},
+		}
+		json.NewEncoder(w).Encode(agents)
+	})
+	mux.HandleFunc("/api/v1/queue/depth", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"count": 0}`))
+	})
+	mux.HandleFunc("/api/v1/agents/burst-1/drain", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	prov := &mockProvisioner{
+		instances: []provisioner.Instance{
+			{ID: "burst-1", Pool: "burst"},
+		},
+	}
+
+	cfg := Config{
+		HotPoolSize:  0,
+		MaxBurstSize: 5,
+		IdleTimeout:  -1 * time.Hour, // Always idle
+		SchedulerURL: ts.URL,
+	}
+
+	as := New(cfg, prov)
+
+	// First tick to start idle timer
+	err := as.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second tick to trigger teardown
+	err = as.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	as.mu.Lock()
+	if !as.tearingDown["burst-1"] {
+		t.Errorf("expected tearingDown to be true")
+	}
+	as.mu.Unlock()
+
+	// Third tick should not launch another teardown (would log if it did, but we check tearingDown state)
+	err = as.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	as.mu.Lock()
+	if !as.tearingDown["burst-1"] {
+		t.Errorf("expected tearingDown to still be true")
+	}
+	as.mu.Unlock()
 }

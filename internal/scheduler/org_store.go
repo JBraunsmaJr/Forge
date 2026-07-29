@@ -3,6 +3,7 @@ package scheduler
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -28,7 +29,7 @@ func (o *OrgStore) CreateOrg(name string) (*api.OrgInfo, error) {
 	}
 	err := o.gdb.Create(&org).Error
 	if err != nil {
-		if err == gorm.ErrDuplicatedKey {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			var existing store.Org
 			if o.gdb.Where("name = ?", name).First(&existing).Error == nil {
 				return nil, fmt.Errorf("org %q already exists", name)
@@ -41,7 +42,10 @@ func (o *OrgStore) CreateOrg(name string) (*api.OrgInfo, error) {
 
 func (o *OrgStore) ListOrgs() []api.OrgInfo {
 	var orgs []store.Org
-	o.gdb.Order("created_at").Find(&orgs)
+	if err := o.gdb.Order("created_at").Find(&orgs).Error; err != nil {
+		fmt.Printf("[org_store] failed to list orgs: %v\n", err)
+		return nil
+	}
 	result := make([]api.OrgInfo, len(orgs))
 	for i, org := range orgs {
 		result[i] = api.OrgInfo{ID: org.ID, Name: org.Name, CreatedAt: org.CreatedAt}

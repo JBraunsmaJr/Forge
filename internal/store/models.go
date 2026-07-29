@@ -98,7 +98,8 @@ type Run struct {
 	AppliedStepIDs   datatypes.JSON `gorm:"not null;default:'[]'"`
 	OrgID            *string        `gorm:"index"`
 	Org              *Org           `gorm:"foreignKey:OrgID;constraint:OnDelete:SET NULL"`
-	ProjectID        *string
+	ProjectID        *string        `gorm:"index"`
+	Project          *Project       `gorm:"foreignKey:ProjectID;constraint:OnDelete:SET NULL"`
 	Ref              *string
 	CommitSHA        *string
 	SCMProvider      *string
@@ -150,12 +151,12 @@ type Job struct {
 
 // TestFileDuration represents the test_file_durations table.
 type TestFileDuration struct {
-	ID           uint64 `gorm:"primaryKey;autoIncrement"`
-	RunID        string `gorm:"not null"`
-	Run          Run    `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	JobID        string `gorm:"not null"`
-	Job          Job    `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
-	ProjectID    *string
+	ID           uint64    `gorm:"primaryKey;autoIncrement"`
+	RunID        string    `gorm:"not null;index:test_file_dur_run_idx"`
+	Run          Run       `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	JobID        string    `gorm:"not null;index:test_file_dur_job_id_idx"`
+	Job          Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	ProjectID    *string   `gorm:"index:test_file_dur_step_idx,priority:1"`
 	Project      *Project  `gorm:"foreignKey:ProjectID;constraint:OnDelete:SET NULL"`
 	PipelineName string    `gorm:"not null;index:test_file_dur_step_idx,priority:2"`
 	StepID       string    `gorm:"not null;index:test_file_dur_step_idx,priority:3"`
@@ -207,7 +208,7 @@ type Policy struct {
 // StepResult represents the step_results table.
 type StepResult struct {
 	ID           uint64    `gorm:"primaryKey;autoIncrement"`
-	RunID        string    `gorm:"not null"`
+	RunID        string    `gorm:"not null;index:step_results_run_id_idx"`
 	Run          Run       `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
 	PipelineName string    `gorm:"not null;index:step_results_step_idx,priority:1"`
 	StepID       string    `gorm:"not null;index:step_results_step_idx,priority:2"`

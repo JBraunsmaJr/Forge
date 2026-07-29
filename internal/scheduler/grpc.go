@@ -183,25 +183,21 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 		case <-sessionCtx.Done():
 			return nil
 		case <-ticker.C:
-			// Check if agent is draining
-			if s.scheduler.agents.IsDraining(agentID) {
-				continue
-			}
-
-			// Check if agent has capacity
-			active, err := s.scheduler.store.ActiveJobsCount(agentID)
-			if err != nil {
-				log.Printf("[grpc] error checking active jobs for agent %s: %v", agentID[:8], err)
-				continue
-			}
-
-			if active >= concurrency {
-				// Agent is at capacity, skip leasing for now
-				continue
-			}
-
 			// Try to lease a job for this agent
-			spec, ok := s.scheduler.store.LeaseNext(agentID)
+			spec, ok := s.scheduler.agents.LeaseNext(agentID, func() (*api.JobSpec, bool) {
+				// Check if agent has capacity
+				active, err := s.scheduler.store.ActiveJobsCount(agentID)
+				if err != nil {
+					log.Printf("[grpc] error checking active jobs for agent %s: %v", agentID[:8], err)
+					return nil, false
+				}
+
+				if active >= concurrency {
+					// Agent is at capacity, skip leasing for now
+					return nil, false
+				}
+				return s.scheduler.store.LeaseNext(agentID)
+			})
 			if ok {
 				s.scheduler.publishRunDetail(spec.RunID)
 

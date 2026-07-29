@@ -32,7 +32,8 @@ func NewGORM(db *sql.DB) (*gorm.DB, error) {
 	gdb, err := gorm.Open(postgres.New(postgres.Config{
 		Conn: db,
 	}), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:         logger.Default.LogMode(logger.Silent),
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing gorm: %w", err)

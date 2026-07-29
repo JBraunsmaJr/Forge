@@ -3,6 +3,7 @@ package provisioner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -44,9 +45,9 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 		args = append(args, "agent")
 
 		cmd := exec.CommandContext(ctx, "docker", args...)
-		out, err := cmd.CombinedOutput()
+		out, err := cmd.Output()
 		if err != nil {
-			return ids, fmt.Errorf("docker run failed: %w: %s", err, string(out))
+			return ids, fmt.Errorf("docker run failed: %w", err)
 		}
 		id := strings.TrimSpace(string(out))
 		if len(id) > 12 {
@@ -58,13 +59,14 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 }
 
 func (p *DockerFakeProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) error {
+	var errs []error
 	for _, id := range ids {
 		cmd := exec.CommandContext(ctx, "docker", "rm", "-f", string(id))
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("docker rm failed for %s: %w: %s", id, err, string(out))
+			errs = append(errs, fmt.Errorf("docker rm failed for %s: %w: %s", id, err, string(out)))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (p *DockerFakeProvisioner) ListInstances(ctx context.Context) ([]Instance, error) {
@@ -86,7 +88,7 @@ func (p *DockerFakeProvisioner) ListInstances(ctx context.Context) ([]Instance, 
 		if err != nil {
 			continue
 		}
-		parts := strings.Split(strings.TrimSpace(string(out)), "|")
+		parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 3)
 		if len(parts) < 3 {
 			continue
 		}

@@ -236,9 +236,20 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.grpcClient = pb.NewAgentServiceClient(conn)
 
+	go a.debugLoop(ctx)
+	go a.pruneLoop(ctx)
+	go a.statusLoop(ctx)
+
+	// Session context for cancellation from within (e.g. spot eviction)
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	// Do NOT defer sessionCancel here, we'll call it after wg.Wait()
+
+	go a.spotEvictionMonitor(sessionCtx, sessionCancel)
+
 	// Open bidirectional stream
-	stream, err := a.grpcClient.Session(ctx)
+	stream, err := a.grpcClient.Session(sessionCtx)
 	if err != nil {
+		sessionCancel()
 		return fmt.Errorf("failed to open gRPC session: %w", err)
 	}
 
@@ -253,30 +264,21 @@ func (a *Agent) Run(ctx context.Context) error {
 		},
 	})
 	if err != nil {
+		sessionCancel()
 		return fmt.Errorf("failed to register: %w", err)
 	}
-
-	go a.debugLoop(ctx)
-	go a.pruneLoop(ctx)
-	go a.statusLoop(ctx)
-
-	// Session context for cancellation from within (e.g. spot eviction)
-	sessionCtx, sessionCancel := context.WithCancel(ctx)
-	defer sessionCancel()
-
-	go a.spotEvictionMonitor(sessionCtx, sessionCancel)
 
 	// Goroutine to send outgoing messages (heartbeats, completions, logs)
 	go func() {
 		for {
 			select {
-			case <-sessionCtx.Done():
-				return
 			case msg := <-a.out:
 				msg.AgentId = a.id
 				if err := stream.Send(msg); err != nil {
 					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
 				}
+			case <-sessionCtx.Done():
+				return
 			}
 		}
 	}()
@@ -297,19 +299,20 @@ func (a *Agent) Run(ctx context.Context) error {
 	}()
 
 	// Receive loop: receive jobs from scheduler
+ReceiveLoop:
 	for {
-		// Use RecvMsg if we need context, but stream.Recv is fine if we check context error after
 		msg, err := stream.Recv()
 		if err == io.EOF {
 			fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
-			return nil
+			break ReceiveLoop
 		}
 		if err != nil {
 			if sessionCtx.Err() != nil {
-				return nil
+				fmt.Printf("[agent %s] session closing, stopping receive loop\n", a.id[:8])
+				break ReceiveLoop
 			}
 			fmt.Printf("[agent %s] gRPC receive error: %v\n", a.id[:8], err)
-			return fmt.Errorf("gRPC receive error: %w", err)
+			break ReceiveLoop
 		}
 
 		if ack := msg.GetHeartbeatAck(); ack != nil {
@@ -416,7 +419,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			}(spec)
 		}
 	}
+	fmt.Printf("[agent %s] waiting for active jobs to drain...\n", a.id[:8])
 	a.wg.Wait()
+	sessionCancel()
 	return nil
 }
 

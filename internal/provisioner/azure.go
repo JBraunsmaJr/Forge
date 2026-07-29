@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
@@ -19,6 +20,8 @@ type AzureVMSSProvisioner struct {
 
 	client   *armcompute.VirtualMachineScaleSetsClient
 	vmClient *armcompute.VirtualMachineScaleSetVMsClient
+
+	mu sync.Mutex
 }
 
 func NewAzureVMSSProvisioner(subID, rg, hot, burst string) (*AzureVMSSProvisioner, error) {
@@ -52,6 +55,9 @@ func NewAzureVMSSProvisionerWithOptions(subID, rg, hot, burst string, options *a
 }
 
 func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]InstanceID, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	vmssName := p.HotVMSS
 	if pool == "burst" {
 		vmssName = p.BurstVMSS
@@ -59,6 +65,16 @@ func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, 
 
 	if vmssName == "" {
 		return nil, fmt.Errorf("VMSS name for pool %s is not configured", pool)
+	}
+
+	// 0. Get instances before scale up
+	beforeInstances, err := p.listVMSSInstances(ctx, pool, vmssName)
+	if err != nil {
+		return nil, fmt.Errorf("list instances before scale up: %w", err)
+	}
+	beforeIDs := make(map[InstanceID]bool)
+	for _, inst := range beforeInstances {
+		beforeIDs[inst.ID] = true
 	}
 
 	// 1. Get current capacity
@@ -89,30 +105,64 @@ func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, 
 		return nil, fmt.Errorf("wait for update capacity for %s: %w", vmssName, err)
 	}
 
-	// 3. List instances to return their IDs
-	instances, err := p.listVMSSInstances(ctx, pool, vmssName)
+	// 3. List instances to find the new ones
+	afterInstances, err := p.listVMSSInstances(ctx, pool, vmssName)
 	if err != nil {
 		return nil, err
 	}
 
-	var ids []InstanceID
-	for _, inst := range instances {
-		ids = append(ids, inst.ID)
+	var newIDs []InstanceID
+	for _, inst := range afterInstances {
+		if !beforeIDs[inst.ID] {
+			newIDs = append(newIDs, inst.ID)
+		}
 	}
-	return ids, nil
+
+	// 4. Update tags for new instances if labels provided
+	if len(labels) > 0 {
+		tags := make(map[string]*string)
+		for k, v := range labels {
+			val := v
+			tags[k] = &val
+		}
+		for _, id := range newIDs {
+			parts := strings.Split(string(id), "/")
+			instanceID := parts[1]
+			// We issue the update but don't necessarily need to wait for each one
+			// to complete if we want to be fast, but for reliability we should wait or at least check errors.
+			_, err := p.vmClient.BeginUpdate(ctx, p.ResourceGroup, vmssName, instanceID, armcompute.VirtualMachineScaleSetVM{
+				Tags: tags,
+			}, nil)
+			if err != nil {
+				// Log error but continue?
+				fmt.Printf("[azure] failed to update tags for %s: %v\n", id, err)
+			}
+		}
+	}
+
+	return newIDs, nil
 }
 
 func (p *AzureVMSSProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	// Group IDs by VMSS
 	byVMSS := make(map[string][]string)
+	var invalid []InstanceID
 	for _, id := range ids {
 		parts := strings.Split(string(id), "/")
 		if len(parts) != 2 {
-			continue // Invalid ID format
+			invalid = append(invalid, id)
+			continue
 		}
 		vmssName := parts[0]
 		instanceID := parts[1]
 		byVMSS[vmssName] = append(byVMSS[vmssName], instanceID)
+	}
+
+	if len(invalid) > 0 {
+		return fmt.Errorf("invalid instance ID format: %v", invalid)
 	}
 
 	for vmssName, instanceIDs := range byVMSS {
@@ -169,11 +219,20 @@ func (p *AzureVMSSProvisioner) listVMSSInstances(ctx context.Context, pool, vmss
 				createdAt = *vm.Properties.TimeCreated
 			}
 
+			labels := make(map[string]string)
+			if vm.Tags != nil {
+				for k, v := range vm.Tags {
+					if v != nil {
+						labels[k] = *v
+					}
+				}
+			}
+
 			instances = append(instances, Instance{
 				ID:        InstanceID(id),
 				Pool:      pool,
 				CreatedAt: createdAt,
-				Labels:    make(map[string]string),
+				Labels:    labels,
 			})
 		}
 	}

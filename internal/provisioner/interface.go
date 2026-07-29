@@ -18,9 +18,9 @@ type Instance struct {
 // logic and a specific cloud (or a local fake). Every method must be safe
 // to call concurrently and idempotent where the underlying API allows it.
 type CloudProvisioner interface {
-	// ScaleUp provisions n new instances in the given pool, returning
-	// their IDs once they're created (not necessarily once they're fully
-	// booted and registered — the caller polls the scheduler for that).
+	// ScaleUp provisions n new instances in the given pool, returning only
+	// the IDs of the newly created instances. Every method must be safe
+	// to call concurrently and idempotent where the underlying API allows it.
 	ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]InstanceID, error)
 
 	// ScaleDown terminates specific instances by ID. Targeted, not

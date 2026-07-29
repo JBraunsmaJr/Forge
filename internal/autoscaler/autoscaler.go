@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -29,7 +30,9 @@ type Autoscaler struct {
 	client      *http.Client
 
 	idleTimers  map[provisioner.InstanceID]time.Time
+	tearingDown map[provisioner.InstanceID]bool
 	lastScaleUp time.Time
+	mu          sync.Mutex
 }
 
 func New(cfg Config, prov provisioner.CloudProvisioner) *Autoscaler {
@@ -48,6 +51,7 @@ func New(cfg Config, prov provisioner.CloudProvisioner) *Autoscaler {
 		provisioner: prov,
 		client:      &http.Client{Timeout: 10 * time.Second},
 		idleTimers:  make(map[provisioner.InstanceID]time.Time),
+		tearingDown: make(map[provisioner.InstanceID]bool),
 	}
 }
 
@@ -164,6 +168,7 @@ func (a *Autoscaler) tick(ctx context.Context) error {
 	}
 
 	// 5. Idle tracking and Scale-down (Burst only)
+	a.mu.Lock()
 	activeBurstIDs := make(map[provisioner.InstanceID]bool)
 	for _, inst := range instances {
 		if inst.Pool != "burst" {
@@ -174,8 +179,8 @@ func (a *Autoscaler) tick(ctx context.Context) error {
 		// Find corresponding agent
 		var agent *api.AgentInfo
 		for i := range agents {
-			// Handle potential short vs long ID mismatch if provisioner/agent IDs differ
-			if agents[i].ID == string(inst.ID) || strings.HasPrefix(string(inst.ID), agents[i].ID) || strings.HasPrefix(agents[i].ID, string(inst.ID)) {
+			// Use exact match for canonical ID
+			if agents[i].ID == string(inst.ID) {
 				agent = &agents[i]
 				break
 			}
@@ -185,7 +190,10 @@ func (a *Autoscaler) tick(ctx context.Context) error {
 			// Agent not registered yet, but we shouldn't kill it unless it's very old
 			if time.Since(inst.CreatedAt) > 10*time.Minute {
 				log.Printf("[autoscaler] burst instance %s never registered, tearing down...", inst.ID)
-				a.provisioner.ScaleDown(ctx, []provisioner.InstanceID{inst.ID})
+				if err := a.provisioner.ScaleDown(ctx, []provisioner.InstanceID{inst.ID}); err != nil {
+					provisionerErrors.WithLabelValues("scale_down_orphan").Inc()
+					log.Printf("[autoscaler] failed to scale down orphan instance %s: %v", inst.ID, err)
+				}
 			}
 			continue
 		}
@@ -193,8 +201,9 @@ func (a *Autoscaler) tick(ctx context.Context) error {
 		if agent.ActiveJobsCount == 0 {
 			if _, ok := a.idleTimers[inst.ID]; !ok {
 				a.idleTimers[inst.ID] = time.Now()
-			} else if time.Since(a.idleTimers[inst.ID]) > a.cfg.IdleTimeout {
+			} else if time.Since(a.idleTimers[inst.ID]) > a.cfg.IdleTimeout && !a.tearingDown[inst.ID] {
 				log.Printf("[autoscaler] burst instance %s idle for %v, tearing down...", inst.ID, a.cfg.IdleTimeout)
+				a.tearingDown[inst.ID] = true
 				go a.teardown(ctx, inst.ID)
 				delete(a.idleTimers, inst.ID)
 			}
@@ -209,11 +218,18 @@ func (a *Autoscaler) tick(ctx context.Context) error {
 			delete(a.idleTimers, id)
 		}
 	}
+	a.mu.Unlock()
 
 	return nil
 }
 
 func (a *Autoscaler) teardown(ctx context.Context, id provisioner.InstanceID) {
+	defer func() {
+		a.mu.Lock()
+		delete(a.tearingDown, id)
+		a.mu.Unlock()
+	}()
+
 	// Drain
 	if err := a.drainAgent(ctx, string(id)); err != nil {
 		log.Printf("[autoscaler] failed to drain agent %s: %v", id, err)
@@ -221,16 +237,27 @@ func (a *Autoscaler) teardown(ctx context.Context, id provisioner.InstanceID) {
 
 	// Bounded wait for ActiveJobsCount == 0
 	start := time.Now()
+Loop:
 	for time.Since(start) < 5*time.Minute {
+		select {
+		case <-ctx.Done():
+			break Loop
+		default:
+		}
+
 		agents, err := a.listAgents(ctx)
 		if err != nil {
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				break Loop
+			case <-time.After(5 * time.Second):
+			}
 			continue
 		}
 
 		var agent *api.AgentInfo
 		for i := range agents {
-			if agents[i].ID == string(id) || strings.HasPrefix(string(id), agents[i].ID) || strings.HasPrefix(agents[i].ID, string(id)) {
+			if agents[i].ID == string(id) {
 				agent = &agents[i]
 				break
 			}
@@ -239,7 +266,12 @@ func (a *Autoscaler) teardown(ctx context.Context, id provisioner.InstanceID) {
 		if agent == nil || agent.ActiveJobsCount == 0 {
 			break
 		}
-		time.Sleep(5 * time.Second)
+
+		select {
+		case <-ctx.Done():
+			break Loop
+		case <-time.After(5 * time.Second):
+		}
 	}
 
 	if err := a.provisioner.ScaleDown(ctx, []provisioner.InstanceID{id}); err != nil {

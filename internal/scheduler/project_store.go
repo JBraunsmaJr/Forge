@@ -68,6 +68,11 @@ func (p *ProjectStore) GetProject(projectIDOrName string) (*api.ProjectInfo, str
 		return nil, "", "", false
 	}
 
+	info := projectToInfo(project)
+	return &info, project.WebhookSecret, project.SCMToken, true
+}
+
+func projectToInfo(project store.Project) api.ProjectInfo {
 	info := api.ProjectInfo{
 		ID:            project.ID,
 		Name:          project.Name,
@@ -80,9 +85,8 @@ func (p *ProjectStore) GetProject(projectIDOrName string) (*api.ProjectInfo, str
 	if project.OrgID != nil {
 		info.OrgID = *project.OrgID
 	}
-	json.Unmarshal(project.BranchFilter, &info.BranchFilter)
-
-	return &info, project.WebhookSecret, project.SCMToken, true
+	_ = json.Unmarshal(project.BranchFilter, &info.BranchFilter)
+	return info
 }
 
 // GetProjectByRepo finds a project by its repo URL.
@@ -92,20 +96,7 @@ func (p *ProjectStore) GetProjectByRepo(repoURL string) (*api.ProjectInfo, strin
 		return nil, "", "", false
 	}
 
-	info := api.ProjectInfo{
-		ID:            project.ID,
-		Name:          project.Name,
-		RepoURL:       project.RepoURL,
-		PipelinePath:  project.PipelinePath,
-		CreatedAt:     project.CreatedAt,
-		Cron:          project.Cron,
-		ScheduledPath: project.ScheduledPipelinePath,
-	}
-	if project.OrgID != nil {
-		info.OrgID = *project.OrgID
-	}
-	json.Unmarshal(project.BranchFilter, &info.BranchFilter)
-
+	info := projectToInfo(project)
 	return &info, project.WebhookSecret, project.SCMToken, true
 }
 
@@ -154,7 +145,14 @@ func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) er
 
 // DeleteProject removes a project.
 func (p *ProjectStore) DeleteProject(id string) error {
-	return p.gdb.Where("id = ? OR name = ?", id, id).Delete(&store.Project{}).Error
+	result := p.gdb.Where("id = ? OR name = ?", id, id).Delete(&store.Project{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("project %s not found", id)
+	}
+	return nil
 }
 
 // ListProjects returns all projects for an org.
@@ -171,20 +169,7 @@ func (p *ProjectStore) ListProjects(orgID string) []api.ProjectInfo {
 
 	result := make([]api.ProjectInfo, len(projects))
 	for i, project := range projects {
-		info := api.ProjectInfo{
-			ID:            project.ID,
-			Name:          project.Name,
-			RepoURL:       project.RepoURL,
-			PipelinePath:  project.PipelinePath,
-			CreatedAt:     project.CreatedAt,
-			Cron:          project.Cron,
-			ScheduledPath: project.ScheduledPipelinePath,
-		}
-		if project.OrgID != nil {
-			info.OrgID = *project.OrgID
-		}
-		json.Unmarshal(project.BranchFilter, &info.BranchFilter)
-		result[i] = info
+		result[i] = projectToInfo(project)
 	}
 	return result
 }

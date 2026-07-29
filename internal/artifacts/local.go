@@ -32,6 +32,11 @@ func NewLocal(db *sql.DB, dir, baseURL string) (*LocalStore, error) {
 func (s *LocalStore) PresignUpload(_ context.Context, req PresignRequest) (*PresignResponse, error) {
 	id := newArtifactID()
 
+	var jobID any = req.JobID
+	if req.JobID == "" {
+		jobID = nil
+	}
+
 	b := make([]byte, 16)
 	rand.Read(b)
 	uploadToken := hex.EncodeToString(b)
@@ -45,7 +50,7 @@ func (s *LocalStore) PresignUpload(_ context.Context, req PresignRequest) (*Pres
 		INSERT INTO artifacts
 		  (id, run_id, job_id, name, filename, content_type, storage_key, upload_token, confirmed)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false)`,
-		id, req.RunID, req.JobID, req.Name, req.Filename,
+		id, req.RunID, jobID, req.Name, req.Filename,
 		contentType, s.storageKey(req.RunID, id, req.Filename), uploadToken,
 	)
 	if err != nil {
