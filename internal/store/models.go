@@ -67,7 +67,9 @@ type APIToken struct {
 	Name      string `gorm:"not null"`
 	Role      string `gorm:"not null;default:'admin'"`
 	OrgID     *string
+	Org       *Org `gorm:"foreignKey:OrgID;constraint:OnDelete:SET NULL"`
 	ProjectID *string
+	Project   *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:SET NULL"`
 	UserID    *string
 	User      *User `gorm:"foreignKey:UserID;constraint:OnDelete:SET NULL"`
 	ExpiresAt *time.Time
