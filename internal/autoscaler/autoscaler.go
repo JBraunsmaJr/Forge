@@ -202,7 +202,7 @@ func (a *Autoscaler) tick(ctx context.Context) error {
 			if _, ok := a.idleTimers[inst.ID]; !ok {
 				a.idleTimers[inst.ID] = time.Now()
 			} else if time.Since(a.idleTimers[inst.ID]) > a.cfg.IdleTimeout && !a.tearingDown[inst.ID] {
-				log.Printf("[autoscaler] burst instance %s idle for %v, tearing down...", inst.ID, a.cfg.IdleTimeout)
+				log.Printf("[autoscaler] burst instance %s idle for %v, tearing down...", inst.ID, time.Since(a.idleTimers[inst.ID]).Round(time.Second))
 				a.tearingDown[inst.ID] = true
 				go a.teardown(ctx, inst.ID)
 				delete(a.idleTimers, inst.ID)

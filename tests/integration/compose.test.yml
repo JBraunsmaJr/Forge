@@ -96,8 +96,12 @@ services:
       forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
     environment:
       FORGE_PROXY_AGENT_ID: "${FORGE_PROXY_AGENT_ID}"
+      FORGE_SCHEDULER_URL: http://scheduler:8080
+      FORGE_API_TOKEN: it-admin-token-forge
       FORGE_AUTOSCALER_DOCKER_IMAGE: "${FORGE_IMAGE}"
       FORGE_AUTOSCALER_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME}_forge"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       scheduler:
         condition: service_started

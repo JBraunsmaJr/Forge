@@ -17,21 +17,36 @@ type mockProvisioner struct {
 	instances       []provisioner.Instance
 	scaleUpCalled   int
 	scaleDownCalled int
+	scaleDownBlock  chan struct{}
 }
 
 func (m *mockProvisioner) ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]provisioner.InstanceID, error) {
 	m.scaleUpCalled += n
+	var ids []provisioner.InstanceID
 	for i := 0; i < n; i++ {
+		id := provisioner.InstanceID(fmt.Sprintf("inst-%d", len(m.instances)))
 		m.instances = append(m.instances, provisioner.Instance{
-			ID:   provisioner.InstanceID(fmt.Sprintf("inst-%d", len(m.instances))),
+			ID:   id,
 			Pool: pool,
 		})
+		ids = append(ids, id)
 	}
-	return nil, nil
+	return ids, nil
 }
 
 func (m *mockProvisioner) ScaleDown(ctx context.Context, ids []provisioner.InstanceID) error {
+	if m.scaleDownBlock != nil {
+		<-m.scaleDownBlock
+	}
 	m.scaleDownCalled += len(ids)
+	for _, id := range ids {
+		for i, inst := range m.instances {
+			if inst.ID == id {
+				m.instances = append(m.instances[:i], m.instances[i+1:]...)
+				break
+			}
+		}
+	}
 	return nil
 }
 
@@ -126,10 +141,12 @@ func TestAutoscaler_IdleTeardownSafety(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
+	block := make(chan struct{})
 	prov := &mockProvisioner{
 		instances: []provisioner.Instance{
 			{ID: "burst-1", Pool: "burst"},
 		},
+		scaleDownBlock: block,
 	}
 
 	cfg := Config{
@@ -153,13 +170,16 @@ func TestAutoscaler_IdleTeardownSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Wait a bit to ensure goroutine started and reached ScaleDown
+	time.Sleep(50 * time.Millisecond)
+
 	as.mu.Lock()
 	if !as.tearingDown["burst-1"] {
 		t.Errorf("expected tearingDown to be true")
 	}
 	as.mu.Unlock()
 
-	// Third tick should not launch another teardown (would log if it did, but we check tearingDown state)
+	// Third tick should not launch another teardown because tearingDown is still true
 	err = as.tick(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -170,4 +190,20 @@ func TestAutoscaler_IdleTeardownSafety(t *testing.T) {
 		t.Errorf("expected tearingDown to still be true")
 	}
 	as.mu.Unlock()
+
+	// Release ScaleDown
+	close(block)
+
+	// Give it a moment to finish
+	time.Sleep(50 * time.Millisecond)
+
+	as.mu.Lock()
+	if as.tearingDown["burst-1"] {
+		t.Errorf("expected tearingDown to be false after completion")
+	}
+	as.mu.Unlock()
+
+	if prov.scaleDownCalled != 1 {
+		t.Errorf("expected 1 scale-down call, got %d", prov.scaleDownCalled)
+	}
 }

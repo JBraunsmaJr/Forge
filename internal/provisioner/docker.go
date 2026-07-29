@@ -25,6 +25,7 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 		args = append(args, "--label", "forge.managed=true")
 		if p.AgentID != "" {
 			args = append(args, "--label", "forge.agent_id="+p.AgentID)
+			args = append(args, "-e", "FORGE_PROXY_AGENT_ID="+p.AgentID)
 		}
 		args = append(args, "-e", "FORGE_SCHEDULER_URL="+p.SchedulerURL)
 		args = append(args, "-e", "FORGE_AGENT_POOL="+pool)
