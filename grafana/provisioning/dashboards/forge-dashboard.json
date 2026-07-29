@@ -383,7 +383,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(forge_autoscaler_provisioner_errors_total[5m]))",
+          "expr": "sum by (operation) (rate(forge_autoscaler_provisioner_errors_total[5m]))",
           "format": "time_series",
           "range": true,
           "refId": "A"
