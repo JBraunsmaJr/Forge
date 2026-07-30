@@ -241,7 +241,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.statusLoop(ctx)
 
 	// Session context for cancellation from within (e.g. spot eviction)
-	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	// Do NOT defer sessionCancel here, we'll call it after wg.Wait()
 
 	go a.spotEvictionMonitor(sessionCtx, sessionCancel)
@@ -299,124 +299,153 @@ func (a *Agent) Run(ctx context.Context) error {
 	}()
 
 	// Receive loop: receive jobs from scheduler
+	msgs := make(chan *pb.SchedulerMessage)
+	errs := make(chan error, 1)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				errs <- err
+				return
+			}
+			select {
+			case msgs <- msg:
+			case <-sessionCtx.Done():
+				return
+			}
+		}
+	}()
+
 ReceiveLoop:
 	for {
-		msg, err := stream.Recv()
-		if err == io.EOF {
-			fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
+		select {
+		case <-ctx.Done():
+			fmt.Printf("[agent %s] ctx canceled, initiating graceful shutdown...\n", a.id[:8])
+			// Send drain signal to scheduler
+			a.out <- &pb.AgentMessage{
+				Payload: &pb.AgentMessage_Register{
+					Register: &pb.RegisterRequest{
+						Concurrency: 0,
+						Labels:      a.getLabels(),
+					},
+				},
+			}
 			break ReceiveLoop
-		}
-		if err != nil {
+		case err := <-errs:
+			if err == io.EOF {
+				fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
+				break ReceiveLoop
+			}
 			if sessionCtx.Err() != nil {
 				fmt.Printf("[agent %s] session closing, stopping receive loop\n", a.id[:8])
 				break ReceiveLoop
 			}
 			fmt.Printf("[agent %s] gRPC receive error: %v\n", a.id[:8], err)
 			break ReceiveLoop
-		}
-
-		if ack := msg.GetHeartbeatAck(); ack != nil {
-			if ack.Stop {
-				if info, ok := a.activeJobs.Load(ack.JobId); ok {
-					fmt.Printf("[agent %s] stopping job %s as requested by scheduler\n", a.id[:8], ack.JobId[:8])
-					info.(activeJobInfo).Cancel()
-				}
-			}
-		}
-
-		if pbSpec := msg.GetJob(); pbSpec != nil {
-			// Convert pb.JobSpec back to api.JobSpec
-			spec := &api.JobSpec{
-				JobID:          pbSpec.JobId,
-				RunID:          pbSpec.RunId,
-				LeaseID:        pbSpec.LeaseId,
-				StepID:         pbSpec.StepId,
-				Image:          pbSpec.Image,
-				Entrypoint:     pbSpec.Entrypoint,
-				Command:        pbSpec.Command,
-				WorkDir:        pbSpec.WorkDir,
-				Env:            pbSpec.Env,
-				Inputs:         pbSpec.Inputs,
-				SecretNames:    pbSpec.SecretNames,
-				DockerSocket:   pbSpec.DockerSocket,
-				Timeout:        time.Duration(pbSpec.TimeoutNs),
-				Type:           pbSpec.Type,
-				OrgID:          pbSpec.OrgId,
-				ProjectID:      pbSpec.ProjectId,
-				CommitSHA:      pbSpec.CommitSha,
-				Condition:      pbSpec.Condition,
-				AlwaysRun:      pbSpec.AlwaysRun,
-				AppliedStepIDs: pbSpec.AppliedStepIds,
-				WorkspaceDir:   pbSpec.WorkspaceDir,
-				Ref:            pbSpec.Ref,
-				TestReport:     pbSpec.TestReport,
-				PipelineName:   pbSpec.PipelineName,
-				With:           pbSpec.With,
-			}
-
-			if info, ok := a.activeJobs.Load(spec.JobID); ok {
-				if info.(activeJobInfo).LeaseID != spec.LeaseID {
-					fmt.Printf("[agent %s] received redundant job %s with new lease, canceling old execution\n", a.id[:8], spec.JobID[:8])
-					info.(activeJobInfo).Cancel()
-				} else {
-					fmt.Printf("[agent %s] received redundant job %s with same lease, ignoring\n", a.id[:8], spec.JobID[:8])
-					continue
-				}
-			}
-
-			if pbSpec.PipelineRef != nil {
-				spec.PipelineRef = &api.PipelineRef{
-					Path:             pbSpec.PipelineRef.Path,
-					Wait:             pbSpec.PipelineRef.Wait,
-					Variables:        pbSpec.PipelineRef.Variables,
-					ArtifactsSend:    pbSpec.PipelineRef.ArtifactsSend,
-					ArtifactsReceive: pbSpec.PipelineRef.ArtifactsReceive,
-				}
-			}
-
-			for _, u := range pbSpec.ArtifactUploads {
-				spec.ArtifactUploads = append(spec.ArtifactUploads, api.ArtifactUploadSpec{
-					Path: u.Path,
-					Name: u.Name,
-				})
-			}
-			for _, d := range pbSpec.ArtifactDownloads {
-				spec.ArtifactDownloads = append(spec.ArtifactDownloads, api.ArtifactDownloadSpec{
-					Name: d.Name,
-					Dest: d.Dest,
-				})
-			}
-
-			if spec.TestReport != "" {
-				fmt.Printf("[agent %s] job %.8s carries test_report=%q pipeline=%q\n",
-					a.id[:8], spec.JobID, spec.TestReport, spec.PipelineName)
-			}
-			fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
-				a.id[:8], spec.JobID[:8], spec.StepID)
-
-			a.wg.Add(1)
-			go func(s *api.JobSpec) {
-				defer a.wg.Done()
-				a.semaphore <- struct{}{}
-				defer func() {
-					<-a.semaphore
-					a.checkDiskUsageAndCleanup()
-				}()
-
-				// Use Background to ensure job can finish even if agent shutdown starts
-				jobCtx, cancel := context.WithCancel(context.Background())
-				a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID, LeaseID: s.LeaseID})
-				defer func() {
-					if info, ok := a.activeJobs.Load(s.JobID); ok && info.(activeJobInfo).LeaseID == s.LeaseID {
-						a.activeJobs.Delete(s.JobID)
+		case msg := <-msgs:
+			if ack := msg.GetHeartbeatAck(); ack != nil {
+				if ack.Stop {
+					if info, ok := a.activeJobs.Load(ack.JobId); ok {
+						fmt.Printf("[agent %s] stopping job %s as requested by scheduler\n", a.id[:8], ack.JobId[:8])
+						info.(activeJobInfo).Cancel()
 					}
-				}()
-				defer cancel()
-
-				if err := a.execute(jobCtx, s); err != nil {
-					fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
 				}
-			}(spec)
+			}
+
+			if pbSpec := msg.GetJob(); pbSpec != nil {
+				// Convert pb.JobSpec back to api.JobSpec
+				spec := &api.JobSpec{
+					JobID:          pbSpec.JobId,
+					RunID:          pbSpec.RunId,
+					LeaseID:        pbSpec.LeaseId,
+					StepID:         pbSpec.StepId,
+					Image:          pbSpec.Image,
+					Entrypoint:     pbSpec.Entrypoint,
+					Command:        pbSpec.Command,
+					WorkDir:        pbSpec.WorkDir,
+					Env:            pbSpec.Env,
+					Inputs:         pbSpec.Inputs,
+					SecretNames:    pbSpec.SecretNames,
+					DockerSocket:   pbSpec.DockerSocket,
+					Timeout:        time.Duration(pbSpec.TimeoutNs),
+					Type:           pbSpec.Type,
+					OrgID:          pbSpec.OrgId,
+					ProjectID:      pbSpec.ProjectId,
+					CommitSHA:      pbSpec.CommitSha,
+					Condition:      pbSpec.Condition,
+					AlwaysRun:      pbSpec.AlwaysRun,
+					AppliedStepIDs: pbSpec.AppliedStepIds,
+					WorkspaceDir:   pbSpec.WorkspaceDir,
+					Ref:            pbSpec.Ref,
+					TestReport:     pbSpec.TestReport,
+					PipelineName:   pbSpec.PipelineName,
+					With:           pbSpec.With,
+				}
+
+				if info, ok := a.activeJobs.Load(spec.JobID); ok {
+					if info.(activeJobInfo).LeaseID != spec.LeaseID {
+						fmt.Printf("[agent %s] received redundant job %s with new lease, canceling old execution\n", a.id[:8], spec.JobID[:8])
+						info.(activeJobInfo).Cancel()
+					} else {
+						fmt.Printf("[agent %s] received redundant job %s with same lease, ignoring\n", a.id[:8], spec.JobID[:8])
+						continue
+					}
+				}
+
+				if pbSpec.PipelineRef != nil {
+					spec.PipelineRef = &api.PipelineRef{
+						Path:             pbSpec.PipelineRef.Path,
+						Wait:             pbSpec.PipelineRef.Wait,
+						Variables:        pbSpec.PipelineRef.Variables,
+						ArtifactsSend:    pbSpec.PipelineRef.ArtifactsSend,
+						ArtifactsReceive: pbSpec.PipelineRef.ArtifactsReceive,
+					}
+				}
+
+				for _, u := range pbSpec.ArtifactUploads {
+					spec.ArtifactUploads = append(spec.ArtifactUploads, api.ArtifactUploadSpec{
+						Path: u.Path,
+						Name: u.Name,
+					})
+				}
+				for _, d := range pbSpec.ArtifactDownloads {
+					spec.ArtifactDownloads = append(spec.ArtifactDownloads, api.ArtifactDownloadSpec{
+						Name: d.Name,
+						Dest: d.Dest,
+					})
+				}
+
+				if spec.TestReport != "" {
+					fmt.Printf("[agent %s] job %.8s carries test_report=%q pipeline=%q\n",
+						a.id[:8], spec.JobID, spec.TestReport, spec.PipelineName)
+				}
+				fmt.Printf("[agent %s] received job %s (step: %s) via gRPC\n",
+					a.id[:8], spec.JobID[:8], spec.StepID)
+
+				a.wg.Add(1)
+				go func(s *api.JobSpec) {
+					defer a.wg.Done()
+					a.semaphore <- struct{}{}
+					defer func() {
+						<-a.semaphore
+						a.checkDiskUsageAndCleanup()
+					}()
+
+					// Use Background to ensure job can finish even if agent shutdown starts
+					jobCtx, cancel := context.WithCancel(context.Background())
+					a.activeJobs.Store(s.JobID, activeJobInfo{Cancel: cancel, RunID: s.RunID, LeaseID: s.LeaseID})
+					defer func() {
+						if info, ok := a.activeJobs.Load(s.JobID); ok && info.(activeJobInfo).LeaseID == s.LeaseID {
+							a.activeJobs.Delete(s.JobID)
+						}
+					}()
+					defer cancel()
+
+					if err := a.execute(jobCtx, s); err != nil {
+						fmt.Printf("[agent %s] execute error: %v\n", a.id[:8], err)
+					}
+				}(spec)
+			}
 		}
 	}
 	fmt.Printf("[agent %s] waiting for active jobs to drain...\n", a.id[:8])

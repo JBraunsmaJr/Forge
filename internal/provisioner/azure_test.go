@@ -156,7 +156,8 @@ func TestAzureVMSSProvisioner_ScaleUp(t *testing.T) {
 			}
 			continue
 		}
-		if vm.Tags == nil || *vm.Tags["foo"] != "bar" {
+		v, ok := vm.Tags["foo"]
+		if !ok || v == nil || *v != "bar" {
 			t.Errorf("VM %s should have tag foo=bar", *vm.InstanceID)
 		}
 	}

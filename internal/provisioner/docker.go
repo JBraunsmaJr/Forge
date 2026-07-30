@@ -48,6 +48,10 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 		cmd := exec.CommandContext(ctx, "docker", args...)
 		out, err := cmd.Output()
 		if err != nil {
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
+				return ids, fmt.Errorf("docker run failed: %w: %s", err, strings.TrimSpace(string(exitError.Stderr)))
+			}
 			return ids, fmt.Errorf("docker run failed: %w", err)
 		}
 		id := strings.TrimSpace(string(out))

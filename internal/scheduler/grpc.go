@@ -157,6 +157,10 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 
 				s.scheduler.publishRunDetail(runID)
 				s.scheduler.publishJobLogs(m.Complete.JobId, logs)
+			case *pb.AgentMessage_Register:
+				concurrency = int(m.Register.Concurrency)
+				s.scheduler.agents.Register(msg.AgentId, concurrency, m.Register.Labels)
+				log.Printf("[grpc] agent %s updated registration (concurrency: %d)", msg.AgentId[:8], concurrency)
 			case *pb.AgentMessage_LogBatch:
 				logs := make([]api.LogEvent, len(m.LogBatch.Events))
 				for i, l := range m.LogBatch.Events {

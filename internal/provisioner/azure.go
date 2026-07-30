@@ -3,6 +3,8 @@ package provisioner
 import (
 	"context"
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +23,22 @@ type AzureVMSSProvisioner struct {
 	client   *armcompute.VirtualMachineScaleSetsClient
 	vmClient *armcompute.VirtualMachineScaleSetVMsClient
 
-	mu sync.Mutex
+	mu     sync.Mutex
+	poolMu map[string]*sync.Mutex
+}
+
+func (p *AzureVMSSProvisioner) getMu(vmssName string) *sync.Mutex {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.poolMu == nil {
+		p.poolMu = make(map[string]*sync.Mutex)
+	}
+	if m, ok := p.poolMu[vmssName]; ok {
+		return m
+	}
+	m := &sync.Mutex{}
+	p.poolMu[vmssName] = m
+	return m
 }
 
 func NewAzureVMSSProvisioner(subID, rg, hot, burst string) (*AzureVMSSProvisioner, error) {
@@ -55,9 +72,6 @@ func NewAzureVMSSProvisionerWithOptions(subID, rg, hot, burst string, options *a
 }
 
 func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]InstanceID, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	vmssName := p.HotVMSS
 	if pool == "burst" {
 		vmssName = p.BurstVMSS
@@ -66,6 +80,10 @@ func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, 
 	if vmssName == "" {
 		return nil, fmt.Errorf("VMSS name for pool %s is not configured", pool)
 	}
+
+	mu := p.getMu(vmssName)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// 0. Get instances before scale up
 	beforeInstances, err := p.listVMSSInstances(ctx, pool, vmssName)
@@ -126,16 +144,22 @@ func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, 
 			tags[k] = &val
 		}
 		for _, id := range newIDs {
-			parts := strings.Split(string(id), "/")
-			instanceID := parts[1]
-			// We issue the update but don't necessarily need to wait for each one
-			// to complete if we want to be fast, but for reliability we should wait or at least check errors.
-			_, err := p.vmClient.BeginUpdate(ctx, p.ResourceGroup, vmssName, instanceID, armcompute.VirtualMachineScaleSetVM{
-				Tags: tags,
-			}, nil)
+			_, instanceID, ok := strings.Cut(string(id), "/")
+
+			if !ok {
+				log.Printf("[azure] unexpected instance ID %q, skipping tag update", id)
+				continue
+			}
+
+			poller, err := p.vmClient.BeginUpdate(ctx, p.ResourceGroup, vmssName, instanceID, armcompute.VirtualMachineScaleSetVM{Tags: tags}, nil)
+
 			if err != nil {
-				// Log error but continue?
-				fmt.Printf("[azure] failed to update tags for %s: %v\n", id, err)
+				log.Printf("[azure] failed to begin tag update for %s: %v", id, err)
+				continue
+			}
+
+			if _, err := poller.PollUntilDone(ctx, nil); err != nil {
+				log.Printf("[azure] tag update did not complete for %s: %v", id, err)
 			}
 		}
 	}
@@ -144,9 +168,6 @@ func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, 
 }
 
 func (p *AzureVMSSProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	// Group IDs by VMSS
 	byVMSS := make(map[string][]string)
 	var invalid []InstanceID
@@ -165,21 +186,39 @@ func (p *AzureVMSSProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) 
 		return fmt.Errorf("invalid instance ID format: %v", invalid)
 	}
 
-	for vmssName, instanceIDs := range byVMSS {
-		ptrs := make([]*string, len(instanceIDs))
-		for i := range instanceIDs {
-			ptrs[i] = &instanceIDs[i]
-		}
+	// Sort VMSS names to ensure consistent locking order (though we lock sequentially)
+	vmssNames := make([]string, 0, len(byVMSS))
+	for name := range byVMSS {
+		vmssNames = append(vmssNames, name)
+	}
+	sort.Strings(vmssNames)
 
-		poller, err := p.client.BeginDeleteInstances(ctx, p.ResourceGroup, vmssName, armcompute.VirtualMachineScaleSetVMInstanceRequiredIDs{
-			InstanceIDs: ptrs,
-		}, nil)
+	for _, vmssName := range vmssNames {
+		err := func() error {
+			mu := p.getMu(vmssName)
+			mu.Lock()
+			defer mu.Unlock()
+
+			instanceIDs := byVMSS[vmssName]
+			ptrs := make([]*string, len(instanceIDs))
+			for i := range instanceIDs {
+				ptrs[i] = &instanceIDs[i]
+			}
+
+			poller, err := p.client.BeginDeleteInstances(ctx, p.ResourceGroup, vmssName, armcompute.VirtualMachineScaleSetVMInstanceRequiredIDs{
+				InstanceIDs: ptrs,
+			}, nil)
+			if err != nil {
+				return fmt.Errorf("begin delete instances from %s: %w", vmssName, err)
+			}
+			_, err = poller.PollUntilDone(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("wait for delete instances from %s: %w", vmssName, err)
+			}
+			return nil
+		}()
 		if err != nil {
-			return fmt.Errorf("begin delete instances from %s: %w", vmssName, err)
-		}
-		_, err = poller.PollUntilDone(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("wait for delete instances from %s: %w", vmssName, err)
+			return err
 		}
 	}
 

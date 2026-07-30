@@ -320,6 +320,7 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 		Role:      "admin",
 	}).Error; err != nil {
 		fmt.Printf("[auth] failed to bootstrap root token: %v\n", err)
+		return
 	}
 
 	// Also bootstrap an agent token if provided via environment.
@@ -340,8 +341,9 @@ func (ts *tokenStore) bootstrapIfEmpty() {
 			Role:      "agent",
 		}).Error; err != nil {
 			fmt.Printf("[auth] failed to bootstrap agent token: %v\n", err)
+		} else {
+			fmt.Printf("[auth] agent token initialised from environment\n")
 		}
-		fmt.Printf("[auth] agent token initialised from environment\n")
 	}
 
 	if preset != "" {
