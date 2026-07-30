@@ -93,6 +93,13 @@ type Agent struct {
 	cleanupMu        sync.Mutex
 	lastCleanup      time.Time
 	wg               sync.WaitGroup
+	loopsWg          sync.WaitGroup
+	reliableOut      chan reliableMessage
+}
+
+type reliableMessage struct {
+	msg *pb.AgentMessage
+	ack chan error
 }
 
 type activeJobInfo struct {
@@ -134,6 +141,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
 		out:              make(chan *pb.AgentMessage, 64),
+		reliableOut:      make(chan reliableMessage, 16),
 	}
 }
 
@@ -238,14 +246,15 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.grpcClient = pb.NewAgentServiceClient(conn)
 
-	go a.debugLoop(ctx)
-	go a.pruneLoop(ctx)
-	go a.statusLoop(ctx)
-
 	// Session context for cancellation from within (e.g. spot eviction)
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
 	a.sessionCtx = sessionCtx
 	// Do NOT defer sessionCancel here, we'll call it after wg.Wait()
+
+	a.loopsWg.Add(3)
+	go func() { defer a.loopsWg.Done(); a.debugLoop(sessionCtx) }()
+	go func() { defer a.loopsWg.Done(); a.pruneLoop(sessionCtx) }()
+	go func() { defer a.loopsWg.Done(); a.statusLoop(sessionCtx) }()
 
 	go a.spotEvictionMonitor(sessionCtx, sessionCancel)
 
@@ -277,13 +286,58 @@ func (a *Agent) Run(ctx context.Context) error {
 	senderDone := make(chan struct{})
 	go func() {
 		defer close(senderDone)
-		for msg := range a.out {
-			msg.AgentId = a.id
-			a.grpcMu.Lock()
-			err := stream.Send(msg)
-			a.grpcMu.Unlock()
-			if err != nil {
-				fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
+		defer sessionCancel()
+		var pending []reliableMessage
+		for {
+			var msg *pb.AgentMessage
+			var rm reliableMessage
+			var ok bool
+
+			select {
+			case msg, ok = <-a.out:
+				if !ok {
+					a.out = nil
+				}
+			case rm, ok = <-a.reliableOut:
+				if !ok {
+					a.reliableOut = nil
+				} else {
+					pending = append(pending, rm)
+				}
+			case <-sessionCtx.Done():
+				return
+			}
+
+			// Process pending reliable messages first
+			for len(pending) > 0 {
+				p := pending[0]
+				p.msg.AgentId = a.id
+				a.grpcMu.Lock()
+				err := stream.Send(p.msg)
+				a.grpcMu.Unlock()
+				if err != nil {
+					fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
+					// If send fails, the session is likely dead. Return from loop
+					// and let Recv() or sessionCtx.Done() handle shutdown.
+					// We don't acknowledge, so reportComplete will block until session ctx is done.
+					return
+				}
+				p.ack <- nil
+				pending = pending[1:]
+			}
+
+			if msg != nil {
+				msg.AgentId = a.id
+				a.grpcMu.Lock()
+				err := stream.Send(msg)
+				a.grpcMu.Unlock()
+				if err != nil {
+					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
+				}
+			}
+
+			if a.out == nil && a.reliableOut == nil && len(pending) == 0 {
+				return
 			}
 		}
 	}()
@@ -465,9 +519,12 @@ ReceiveLoop:
 	}
 	fmt.Printf("[agent %s] waiting for active jobs to drain...\n", a.id[:8])
 	a.wg.Wait()
-	close(a.out)
-	<-senderDone
 	sessionCancel()
+	fmt.Printf("[agent %s] joining background loops...\n", a.id[:8])
+	a.loopsWg.Wait()
+	close(a.out)
+	close(a.reliableOut)
+	<-senderDone
 	return nil
 }
 
@@ -548,9 +605,16 @@ func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
 }
 
 func (a *Agent) sendReliable(msg *pb.AgentMessage) error {
+	ack := make(chan error, 1)
+	rm := reliableMessage{msg: msg, ack: ack}
 	select {
-	case a.out <- msg:
-		return nil
+	case a.reliableOut <- rm:
+		select {
+		case err := <-ack:
+			return err
+		case <-a.sessionCtx.Done():
+			return fmt.Errorf("session closed while waiting for ack")
+		}
 	case <-a.sessionCtx.Done():
 		return fmt.Errorf("session closed")
 	}

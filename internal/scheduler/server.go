@@ -191,14 +191,19 @@ func (s *Server) handleCacheStore(w http.ResponseWriter, r *http.Request) {
 }
 
 type AgentRegistry struct {
-	mu     sync.RWMutex
-	agents map[string]*api.AgentInfo
+	mu      sync.RWMutex
+	agents  map[string]*api.AgentInfo
+	pending map[string]int
+	cond    *sync.Cond
 }
 
 func newAgentRegistry() *AgentRegistry {
-	return &AgentRegistry{
-		agents: make(map[string]*api.AgentInfo),
+	r := &AgentRegistry{
+		agents:  make(map[string]*api.AgentInfo),
+		pending: make(map[string]int),
 	}
+	r.cond = sync.NewCond(&r.mu)
+	return r
 }
 
 func (r *AgentRegistry) Register(id string, concurrency int, labels map[string]string) {
@@ -243,6 +248,9 @@ func (r *AgentRegistry) Drain(id string) {
 	if a, ok := r.agents[id]; ok {
 		a.Draining = true
 	}
+	for r.pending[id] > 0 {
+		r.cond.Wait()
+	}
 }
 
 func (r *AgentRegistry) IsDraining(id string) bool {
@@ -254,27 +262,43 @@ func (r *AgentRegistry) IsDraining(id string) bool {
 	return false
 }
 
-func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool), unleaseFn func(string)) (*api.JobSpec, bool) {
+func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool), dispatchFn func(*api.JobSpec) error, unleaseFn func(string)) bool {
+	r.mu.Lock()
+	r.pending[id]++
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.pending[id]--
+		r.cond.Broadcast()
+		r.mu.Unlock()
+	}()
+
 	r.mu.RLock()
 	a, ok := r.agents[id]
 	if !ok || a.Draining {
 		r.mu.RUnlock()
-		return nil, false
+		return false
 	}
 	r.mu.RUnlock()
 
 	spec, ok := leaseFn()
 	if !ok {
-		return nil, false
+		return false
 	}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if a, ok := r.agents[id]; ok && a.Draining {
 		unleaseFn(spec.JobID)
-		return nil, false
+		return false
 	}
-	return spec, true
+
+	if err := dispatchFn(spec); err != nil {
+		unleaseFn(spec.JobID)
+		return false
+	}
+	return true
 }
 
 func (r *AgentRegistry) List() []api.AgentInfo {
@@ -1405,8 +1429,22 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec, ok := s.agents.LeaseNext(req.AgentID, func() (*api.JobSpec, bool) {
+	ok := s.agents.LeaseNext(req.AgentID, func() (*api.JobSpec, bool) {
 		return s.store.LeaseNext(req.AgentID)
+	}, func(spec *api.JobSpec) error {
+		if s.oidc != nil {
+			token, err := s.oidc.GenerateToken(spec.RunID, spec.JobID, spec.OrgID, spec.RepoURL)
+			if err == nil {
+				spec.OIDCToken = token
+			} else {
+				fmt.Printf("[scheduler] failed to generate OIDC token for job %s: %v\n", spec.JobID, err)
+			}
+		}
+
+		fmt.Printf("[scheduler] leased job %s to agent %s\n", spec.JobID[:8], req.AgentID[:8])
+		s.publishRunDetail(spec.RunID)
+		writeJSON(w, http.StatusOK, api.LeaseResponse{Job: spec})
+		return nil
 	}, func(jobID string) {
 		if err := s.store.Unlease(jobID); err != nil {
 			fmt.Printf("[scheduler] failed to unlease job %s: %v\n", jobID[:8], err)
@@ -1416,19 +1454,6 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	if s.oidc != nil {
-		token, err := s.oidc.GenerateToken(spec.RunID, spec.JobID, spec.OrgID, spec.RepoURL)
-		if err == nil {
-			spec.OIDCToken = token
-		} else {
-			fmt.Printf("[scheduler] failed to generate OIDC token for job %s: %v\n", spec.JobID, err)
-		}
-	}
-
-	fmt.Printf("[scheduler] leased job %s to agent %s\n", spec.JobID[:8], req.AgentID[:8])
-	s.publishRunDetail(spec.RunID)
-	writeJSON(w, http.StatusOK, api.LeaseResponse{Job: spec})
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
