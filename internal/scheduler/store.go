@@ -269,6 +269,21 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	return s.scanJobSpec(row, leaseID)
 }
 
+// Unlease returns a job to the queued state, clearing its lease information.
+func (s *Store) Unlease(jobID string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET    status       = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
+		       lease_id     = '',
+		       agent_id     = '',
+		       leased_at    = NULL,
+		       heartbeat_at = NULL,
+		       started_at   = NULL
+		WHERE  id = $1 AND (status = 'running' OR status = 'waiting' OR status = 'queued')
+	`, jobID)
+	return err
+}
+
 // LeaseReleaseJob atomically finds and claims the next release job for the scheduler to process.
 func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 	leaseID := newID()

@@ -163,6 +163,14 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				if m.Register.Concurrency <= 0 {
 					s.scheduler.agents.Drain(msg.AgentId)
 					log.Printf("[grpc] agent %s draining", msg.AgentId[:8])
+					// Send ACK using a special HeartbeatAck as DrainAck
+					out <- &pb.SchedulerMessage{
+						Payload: &pb.SchedulerMessage_HeartbeatAck{
+							HeartbeatAck: &pb.HeartbeatAck{
+								JobId: "DRAIN_ACK",
+							},
+						},
+					}
 					continue
 				}
 				concurrency.Store(m.Register.Concurrency)
@@ -208,6 +216,10 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					return nil, false
 				}
 				return s.scheduler.store.LeaseNext(agentID)
+			}, func(jobID string) {
+				if err := s.scheduler.store.Unlease(jobID); err != nil {
+					log.Printf("[grpc] failed to unlease job %s: %v", jobID[:8], err)
+				}
 			})
 			if ok {
 				s.scheduler.publishRunDetail(spec.RunID)

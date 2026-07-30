@@ -83,6 +83,7 @@ type Agent struct {
 	grpcClient pb.AgentServiceClient
 	out        chan *pb.AgentMessage
 	grpcMu     sync.Mutex
+	sessionCtx context.Context
 
 	// Cleanup configuration
 	maxDockerGB      float64
@@ -243,6 +244,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Session context for cancellation from within (e.g. spot eviction)
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
+	a.sessionCtx = sessionCtx
 	// Do NOT defer sessionCancel here, we'll call it after wg.Wait()
 
 	go a.spotEvictionMonitor(sessionCtx, sessionCancel)
@@ -272,19 +274,16 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Goroutine to send outgoing messages (heartbeats, completions, logs)
+	senderDone := make(chan struct{})
 	go func() {
-		for {
-			select {
-			case msg := <-a.out:
-				msg.AgentId = a.id
-				a.grpcMu.Lock()
-				err := stream.Send(msg)
-				a.grpcMu.Unlock()
-				if err != nil {
-					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
-				}
-			case <-sessionCtx.Done():
-				return
+		defer close(senderDone)
+		for msg := range a.out {
+			msg.AgentId = a.id
+			a.grpcMu.Lock()
+			err := stream.Send(msg)
+			a.grpcMu.Unlock()
+			if err != nil {
+				fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
 			}
 		}
 	}()
@@ -322,10 +321,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}()
 
+	ctxDone := ctx.Done()
 ReceiveLoop:
 	for {
 		select {
-		case <-ctx.Done():
+		case <-ctxDone:
 			fmt.Printf("[agent %s] ctx canceled, initiating graceful shutdown...\n", a.id[:8])
 			// Send drain signal directly to scheduler
 			a.grpcMu.Lock()
@@ -341,7 +341,7 @@ ReceiveLoop:
 				fmt.Printf("[agent %s] drain notification failed: %v\n", a.id[:8], err)
 			}
 			a.grpcMu.Unlock()
-			break ReceiveLoop
+			ctxDone = nil
 		case err := <-errs:
 			if err == io.EOF {
 				fmt.Printf("[agent %s] gRPC stream closed by server\n", a.id[:8])
@@ -355,6 +355,10 @@ ReceiveLoop:
 			break ReceiveLoop
 		case msg := <-msgs:
 			if ack := msg.GetHeartbeatAck(); ack != nil {
+				if ack.JobId == "DRAIN_ACK" {
+					fmt.Printf("[agent %s] drain acknowledged by scheduler\n", a.id[:8])
+					break ReceiveLoop
+				}
 				if ack.Stop {
 					if info, ok := a.activeJobs.Load(ack.JobId); ok {
 						fmt.Printf("[agent %s] stopping job %s as requested by scheduler\n", a.id[:8], ack.JobId[:8])
@@ -461,6 +465,8 @@ ReceiveLoop:
 	}
 	fmt.Printf("[agent %s] waiting for active jobs to drain...\n", a.id[:8])
 	a.wg.Wait()
+	close(a.out)
+	<-senderDone
 	sessionCancel()
 	return nil
 }
@@ -531,11 +537,22 @@ func (a *Agent) isSpotEvicted() bool {
 	return false
 }
 
-func (a *Agent) sendAsync(msg *pb.AgentMessage) {
+func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
 	select {
 	case a.out <- msg:
+		return nil
 	case <-time.After(5 * time.Second):
 		fmt.Printf("[agent %s] warning: message queue full, dropping message\n", a.id[:8])
+		return fmt.Errorf("outgoing message queue is full")
+	}
+}
+
+func (a *Agent) sendReliable(msg *pb.AgentMessage) error {
+	select {
+	case a.out <- msg:
+		return nil
+	case <-a.sessionCtx.Done():
+		return fmt.Errorf("session closed")
 	}
 }
 
@@ -1260,7 +1277,7 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 			Message: l.Message,
 		}
 	}
-	a.sendAsync(&pb.AgentMessage{
+	return a.sendReliable(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Complete{
 			Complete: &pb.CompleteRequest{
 				JobId:            spec.JobID,
@@ -1274,7 +1291,6 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 			},
 		},
 	})
-	return nil
 }
 
 // reportSkipped marks a job as skipped via gRPC.
@@ -1286,7 +1302,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 		Level:   "INFO",
 		Message: fmt.Sprintf("◯ step skipped: condition %q is false", condition),
 	}}
-	a.sendAsync(&pb.AgentMessage{
+	return a.sendReliable(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Complete{
 			Complete: &pb.CompleteRequest{
 				JobId:    spec.JobID,
@@ -1297,7 +1313,6 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 			},
 		},
 	})
-	return nil
 }
 
 // isSchedulerCondition returns true for conditions the scheduler evaluates

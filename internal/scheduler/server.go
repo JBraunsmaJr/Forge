@@ -254,13 +254,27 @@ func (r *AgentRegistry) IsDraining(id string) bool {
 	return false
 }
 
-func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool)) (*api.JobSpec, bool) {
+func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool), unleaseFn func(string)) (*api.JobSpec, bool) {
+	r.mu.RLock()
+	a, ok := r.agents[id]
+	if !ok || a.Draining {
+		r.mu.RUnlock()
+		return nil, false
+	}
+	r.mu.RUnlock()
+
+	spec, ok := leaseFn()
+	if !ok {
+		return nil, false
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if a, ok := r.agents[id]; ok && a.Draining {
+		unleaseFn(spec.JobID)
 		return nil, false
 	}
-	return leaseFn()
+	return spec, true
 }
 
 func (r *AgentRegistry) List() []api.AgentInfo {
@@ -1393,6 +1407,10 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 
 	spec, ok := s.agents.LeaseNext(req.AgentID, func() (*api.JobSpec, bool) {
 		return s.store.LeaseNext(req.AgentID)
+	}, func(jobID string) {
+		if err := s.store.Unlease(jobID); err != nil {
+			fmt.Printf("[scheduler] failed to unlease job %s: %v\n", jobID[:8], err)
+		}
 	})
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
