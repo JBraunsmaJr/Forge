@@ -288,24 +288,26 @@ func (a *Agent) Run(ctx context.Context) error {
 		defer close(senderDone)
 		defer sessionCancel()
 		var pending []reliableMessage
+		outCh, relCh := a.out, a.reliableOut
+		doneCh := sessionCtx.Done()
 		for {
 			var msg *pb.AgentMessage
 			var rm reliableMessage
 			var ok bool
 
 			select {
-			case msg, ok = <-a.out:
+			case msg, ok = <-outCh:
 				if !ok {
-					a.out = nil
+					outCh = nil
 				}
-			case rm, ok = <-a.reliableOut:
+			case rm, ok = <-relCh:
 				if !ok {
-					a.reliableOut = nil
+					relCh = nil
 				} else {
 					pending = append(pending, rm)
 				}
-			case <-sessionCtx.Done():
-				return
+			case <-doneCh:
+				doneCh = nil
 			}
 
 			// Process pending reliable messages first
@@ -336,7 +338,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				}
 			}
 
-			if a.out == nil && a.reliableOut == nil && len(pending) == 0 {
+			if outCh == nil && relCh == nil && len(pending) == 0 {
 				return
 			}
 		}

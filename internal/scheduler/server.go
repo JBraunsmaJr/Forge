@@ -270,6 +270,9 @@ func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool)
 	defer func() {
 		r.mu.Lock()
 		r.pending[id]--
+		if r.pending[id] <= 0 {
+			delete(r.pending, id)
+		}
 		r.cond.Broadcast()
 		r.mu.Unlock()
 	}()
@@ -288,8 +291,13 @@ func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool)
 	}
 
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if a, ok := r.agents[id]; ok && a.Draining {
+	draining := false
+	if a, ok := r.agents[id]; ok {
+		draining = a.Draining
+	}
+	r.mu.RUnlock()
+
+	if draining {
 		unleaseFn(spec.JobID)
 		return false
 	}
