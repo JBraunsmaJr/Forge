@@ -82,6 +82,7 @@ type Agent struct {
 	// gRPC communication
 	grpcClient pb.AgentServiceClient
 	out        chan *pb.AgentMessage
+	grpcMu     sync.Mutex
 
 	// Cleanup configuration
 	maxDockerGB      float64
@@ -254,6 +255,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Register agent
+	a.grpcMu.Lock()
 	err = stream.Send(&pb.AgentMessage{
 		AgentId: a.id,
 		Payload: &pb.AgentMessage_Register{
@@ -263,6 +265,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			},
 		},
 	})
+	a.grpcMu.Unlock()
 	if err != nil {
 		sessionCancel()
 		return fmt.Errorf("failed to register: %w", err)
@@ -274,7 +277,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			select {
 			case msg := <-a.out:
 				msg.AgentId = a.id
-				if err := stream.Send(msg); err != nil {
+				a.grpcMu.Lock()
+				err := stream.Send(msg)
+				a.grpcMu.Unlock()
+				if err != nil {
 					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
 				}
 			case <-sessionCtx.Done():
@@ -321,15 +327,20 @@ ReceiveLoop:
 		select {
 		case <-ctx.Done():
 			fmt.Printf("[agent %s] ctx canceled, initiating graceful shutdown...\n", a.id[:8])
-			// Send drain signal to scheduler
-			a.out <- &pb.AgentMessage{
+			// Send drain signal directly to scheduler
+			a.grpcMu.Lock()
+			if err := stream.Send(&pb.AgentMessage{
+				AgentId: a.id,
 				Payload: &pb.AgentMessage_Register{
 					Register: &pb.RegisterRequest{
 						Concurrency: 0,
 						Labels:      a.getLabels(),
 					},
 				},
+			}); err != nil {
+				fmt.Printf("[agent %s] drain notification failed: %v\n", a.id[:8], err)
 			}
+			a.grpcMu.Unlock()
 			break ReceiveLoop
 		case err := <-errs:
 			if err == io.EOF {
@@ -518,6 +529,14 @@ func (a *Agent) isSpotEvicted() bool {
 		}
 	}
 	return false
+}
+
+func (a *Agent) sendAsync(msg *pb.AgentMessage) {
+	select {
+	case a.out <- msg:
+	case <-time.After(5 * time.Second):
+		fmt.Printf("[agent %s] warning: message queue full, dropping message\n", a.id[:8])
+	}
 }
 
 func (a *Agent) pruneLoop(ctx context.Context) {
@@ -1132,13 +1151,13 @@ func (a *Agent) statusLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.out <- &pb.AgentMessage{
+			a.sendAsync(&pb.AgentMessage{
 				Payload: &pb.AgentMessage_Heartbeat{
 					Heartbeat: &pb.HeartbeatRequest{
 						Status: a.collectStatus(),
 					},
 				},
-			}
+			})
 		}
 	}
 }
@@ -1219,7 +1238,7 @@ func (a *Agent) lease(ctx context.Context) (*api.JobSpec, bool, error) {
 
 // heartbeat notifies the scheduler that this agent is still alive via gRPC.
 func (a *Agent) heartbeat(jobID, leaseID string) error {
-	a.out <- &pb.AgentMessage{
+	a.sendAsync(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Heartbeat{
 			Heartbeat: &pb.HeartbeatRequest{
 				JobId:   jobID,
@@ -1227,7 +1246,7 @@ func (a *Agent) heartbeat(jobID, leaseID string) error {
 				Status:  a.collectStatus(),
 			},
 		},
-	}
+	})
 	return nil
 }
 
@@ -1241,7 +1260,7 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 			Message: l.Message,
 		}
 	}
-	a.out <- &pb.AgentMessage{
+	a.sendAsync(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Complete{
 			Complete: &pb.CompleteRequest{
 				JobId:            spec.JobID,
@@ -1254,7 +1273,7 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 				TimedOut:         timedOut,
 			},
 		},
-	}
+	})
 	return nil
 }
 
@@ -1267,7 +1286,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 		Level:   "INFO",
 		Message: fmt.Sprintf("◯ step skipped: condition %q is false", condition),
 	}}
-	a.out <- &pb.AgentMessage{
+	a.sendAsync(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_Complete{
 			Complete: &pb.CompleteRequest{
 				JobId:    spec.JobID,
@@ -1277,7 +1296,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 				Skipped:  true,
 			},
 		},
-	}
+	})
 	return nil
 }
 
@@ -1959,7 +1978,7 @@ func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
 			Message: e.Message,
 		}
 	}
-	a.out <- &pb.AgentMessage{
+	a.sendAsync(&pb.AgentMessage{
 		Payload: &pb.AgentMessage_LogBatch{
 			LogBatch: &pb.LogBatch{
 				JobId:   jobID,
@@ -1967,7 +1986,7 @@ func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
 				Events:  pbEvents,
 			},
 		},
-	}
+	})
 }
 
 func (a *Agent) handleTerminalRequest(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {

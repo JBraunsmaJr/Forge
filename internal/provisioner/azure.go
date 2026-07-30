@@ -2,6 +2,7 @@ package provisioner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -151,7 +152,10 @@ func (p *AzureVMSSProvisioner) ScaleUp(ctx context.Context, pool string, n int, 
 				continue
 			}
 
-			poller, err := p.vmClient.BeginUpdate(ctx, p.ResourceGroup, vmssName, instanceID, armcompute.VirtualMachineScaleSetVM{Tags: tags}, nil)
+			poller, err := p.vmClient.BeginUpdate(ctx, p.ResourceGroup, vmssName, instanceID, armcompute.VirtualMachineScaleSetVM{
+				Location: vmss.Location,
+				Tags:     tags,
+			}, nil)
 
 			if err != nil {
 				log.Printf("[azure] failed to begin tag update for %s: %v", id, err)
@@ -193,6 +197,7 @@ func (p *AzureVMSSProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) 
 	}
 	sort.Strings(vmssNames)
 
+	var errs []error
 	for _, vmssName := range vmssNames {
 		err := func() error {
 			mu := p.getMu(vmssName)
@@ -218,11 +223,11 @@ func (p *AzureVMSSProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) 
 			return nil
 		}()
 		if err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func (p *AzureVMSSProvisioner) ListInstances(ctx context.Context) ([]Instance, error) {

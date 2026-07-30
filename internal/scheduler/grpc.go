@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
@@ -54,15 +55,16 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 		return err
 	}
 	var agentID string
-	var concurrency int
+	var concurrency atomic.Int32
 	if reg := msg.GetRegister(); reg != nil {
 		agentID = msg.AgentId
-		concurrency = int(reg.Concurrency)
-		if concurrency <= 0 {
-			concurrency = 1
+		c := reg.Concurrency
+		if c <= 0 {
+			c = 1
 		}
-		s.scheduler.agents.Register(agentID, concurrency, msg.GetRegister().Labels)
-		log.Printf("[grpc] agent %s registered from %s (concurrency: %d)", agentID[:8], addr, concurrency)
+		concurrency.Store(c)
+		s.scheduler.agents.Register(agentID, int(c), reg.Labels)
+		log.Printf("[grpc] agent %s registered from %s (concurrency: %d)", agentID[:8], addr, c)
 	} else {
 		return fmt.Errorf("first message must be register")
 	}
@@ -158,9 +160,14 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				s.scheduler.publishRunDetail(runID)
 				s.scheduler.publishJobLogs(m.Complete.JobId, logs)
 			case *pb.AgentMessage_Register:
-				concurrency = int(m.Register.Concurrency)
-				s.scheduler.agents.Register(msg.AgentId, concurrency, m.Register.Labels)
-				log.Printf("[grpc] agent %s updated registration (concurrency: %d)", msg.AgentId[:8], concurrency)
+				if m.Register.Concurrency <= 0 {
+					s.scheduler.agents.Drain(msg.AgentId)
+					log.Printf("[grpc] agent %s draining", msg.AgentId[:8])
+					continue
+				}
+				concurrency.Store(m.Register.Concurrency)
+				s.scheduler.agents.Register(msg.AgentId, int(m.Register.Concurrency), m.Register.Labels)
+				log.Printf("[grpc] agent %s updated registration (concurrency: %d)", msg.AgentId[:8], m.Register.Concurrency)
 			case *pb.AgentMessage_LogBatch:
 				logs := make([]api.LogEvent, len(m.LogBatch.Events))
 				for i, l := range m.LogBatch.Events {
@@ -196,7 +203,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					return nil, false
 				}
 
-				if active >= concurrency {
+				if active >= int(concurrency.Load()) {
 					// Agent is at capacity, skip leasing for now
 					return nil, false
 				}

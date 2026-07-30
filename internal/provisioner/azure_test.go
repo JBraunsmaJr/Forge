@@ -57,6 +57,7 @@ func TestAzureVMSSProvisioner_ScaleUp(t *testing.T) {
 			defer mu.Unlock()
 			resp.SetResponse(http.StatusOK, armcompute.VirtualMachineScaleSetsClientGetResponse{
 				VirtualMachineScaleSet: armcompute.VirtualMachineScaleSet{
+					Location: to.Ptr("eastus"),
 					SKU: &armcompute.SKU{
 						Capacity: to.Ptr(int64(len(vms))),
 					},
@@ -103,6 +104,10 @@ func TestAzureVMSSProvisioner_ScaleUp(t *testing.T) {
 		BeginUpdate: func(ctx context.Context, resourceGroupName string, vmScaleSetName string, instanceID string, parameters armcompute.VirtualMachineScaleSetVM, options *armcompute.VirtualMachineScaleSetVMsClientBeginUpdateOptions) (resp azfake.PollerResponder[armcompute.VirtualMachineScaleSetVMsClientUpdateResponse], errResp azfake.ErrorResponder) {
 			mu.Lock()
 			defer mu.Unlock()
+			if parameters.Location == nil || *parameters.Location != "eastus" {
+				errResp.SetError(fmt.Errorf("missing or incorrect location"))
+				return
+			}
 			for _, vm := range vms {
 				if *vm.InstanceID == instanceID {
 					vm.Tags = parameters.Tags
@@ -290,5 +295,51 @@ func TestAzureVMSSProvisioner_ListInstances(t *testing.T) {
 	}
 	if !foundHot || !foundBurst {
 		t.Errorf("did not find both hot and burst instances")
+	}
+}
+
+func TestAzureVMSSProvisioner_ScaleDown_AggregateErrors(t *testing.T) {
+	const (
+		subID = "sub-id"
+		rg    = "rg"
+		hot   = "hot-vmss"
+		burst = "burst-vmss"
+	)
+
+	server := armfake.VirtualMachineScaleSetsServer{
+		BeginDeleteInstances: func(ctx context.Context, resourceGroupName string, vmScaleSetName string, parameters armcompute.VirtualMachineScaleSetVMInstanceRequiredIDs, options *armcompute.VirtualMachineScaleSetsClientBeginDeleteInstancesOptions) (resp azfake.PollerResponder[armcompute.VirtualMachineScaleSetsClientDeleteInstancesResponse], errResp azfake.ErrorResponder) {
+			errResp.SetError(fmt.Errorf("failed to delete from %s", vmScaleSetName))
+			return
+		},
+	}
+
+	transport := &dispatchTransport{
+		vmssTransport: armfake.NewVirtualMachineScaleSetsServerTransport(&server),
+	}
+
+	options := &arm.ClientOptions{
+		ClientOptions: azcore.ClientOptions{
+			Transport: transport,
+		},
+	}
+
+	p := &AzureVMSSProvisioner{
+		SubscriptionID: subID,
+		ResourceGroup:  rg,
+		HotVMSS:        hot,
+		BurstVMSS:      burst,
+	}
+	p.client, _ = armcompute.NewVirtualMachineScaleSetsClient(subID, &azfake.TokenCredential{}, options)
+
+	err := p.ScaleDown(context.Background(), []InstanceID{InstanceID(hot + "/1"), InstanceID(burst + "/2")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "failed to delete from "+hot) {
+		t.Errorf("expected error from hot VMSS, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed to delete from "+burst) {
+		t.Errorf("expected error from burst VMSS, got: %v", err)
 	}
 }
