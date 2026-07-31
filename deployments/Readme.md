@@ -6,6 +6,7 @@ This folder contains predefined Docker Compose files for deploying Forge in a di
 
 - `scheduler/`: Contains the compose file for the Forge Scheduler and its dependencies (Postgres, Vault, MinIO).
 - `agent/`: Contains the compose file for deploying one or more Forge Agents on a node.
+- `autoscaler/`: Contains the compose file for deploying the Forge Autoscaler against a cloud provisioner (Azure VM Scale Sets).
 
 #### 1. Scheduler Deployment
 
@@ -72,6 +73,39 @@ You can scale the number of agents on a node using the `--scale` flag. Since age
 # Scale to 5 agent containers on one host
 docker compose up -d --scale agent=5
 ```
+
+#### 3. Autoscaler Deployment (Cloud Provisioner)
+
+The autoscaler deployment runs `forge-autoscaler` against a real cloud provisioner (Azure VM Scale Sets) rather than the local Docker-based fake used by the root `compose.yml` dev stack. It provisions and tears down agents automatically based on scheduler queue depth, so it does not run any agents itself and does not need access to a Docker socket.
+
+**Quick Start:**
+
+```bash
+cd deployments/autoscaler
+cp .env.example .env
+# Fill in FORGE_SCHEDULER_URL, FORGE_AGENT_TOKEN, and the FORGE_AZURE_* / AZURE_* values
+docker compose up -d
+```
+
+**Environment Variables:**
+
+| Variable                     | Description                                                                    | Default                 |
+|-------------------------------|------------------------------------------------------------------------------------|----------------------------|
+| `FORGE_SCHEDULER_URL`         | The URL of the Forge Scheduler this autoscaler manages agents for.                 | `http://localhost:8080`   |
+| `FORGE_AGENT_TOKEN`           | Token used to call the scheduler's agent/queue endpoints. Must match a token configured on the scheduler. | `forge-dev-agent-token`   |
+| `FORGE_AUTOSCALER_HOT_POOL_SIZE` | Minimum number of always-on agents.                                              | `0`                        |
+| `FORGE_AUTOSCALER_MAX_BURST_SIZE` | Maximum number of burst agents running at once.                                | `10`                       |
+| `FORGE_AZURE_SUBSCRIPTION_ID` | Azure subscription containing the VM Scale Sets.                                   | -                          |
+| `FORGE_AZURE_RESOURCE_GROUP`  | Resource group containing the VM Scale Sets.                                       | -                          |
+| `FORGE_AZURE_HOT_VMSS`        | VM Scale Set name backing the `hot` pool.                                          | -                          |
+| `FORGE_AZURE_BURST_VMSS`      | VM Scale Set name backing the `burst` pool.                                        | -                          |
+| `AZURE_CLIENT_ID`             | Service principal client ID (Azure SDK default credential chain).                  | -                          |
+| `AZURE_CLIENT_SECRET`         | Service principal client secret.                                                   | -                          |
+| `AZURE_TENANT_ID`             | Azure AD tenant ID.                                                                | -                          |
+
+See the [Cloud Autoscaling guide](../docs/Cloud-Autoscaling.md) for the full variable reference, the hot/burst pool model, and Prometheus metrics exposed on port `9091`.
+
+---
 
 #### Communication in Distributed Environment
 

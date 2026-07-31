@@ -1,0 +1,17 @@
+FROM golang:1.26.5-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+# Copy the entire project to build the binary
+COPY . .
+RUN go build -o forge ./cmd/forge
+
+FROM alpine:3.20.1
+RUN apk add --no-cache ca-certificates \
+ && adduser -D -H forge
+COPY --from=builder /app/forge /usr/local/bin/forge
+USER forge
+# Default command to run the agent. 
+# The provisioner will override arguments as needed.
+ENTRYPOINT ["forge"]
+CMD ["agent"]

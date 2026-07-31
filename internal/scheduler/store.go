@@ -87,7 +87,7 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	_, err = tx.Exec(
 		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), p.ProjectID, p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
+		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), nullable(p.ProjectID), p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -267,6 +267,21 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 	)
 
 	return s.scanJobSpec(row, leaseID)
+}
+
+// Unlease returns a job to the queued state, clearing its lease information.
+func (s *Store) Unlease(jobID string) error {
+	_, err := s.db.Exec(`
+		UPDATE jobs
+		SET    status       = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
+		       lease_id     = '',
+		       agent_id     = '',
+		       leased_at    = NULL,
+		       heartbeat_at = NULL,
+		       started_at   = NULL
+		WHERE  id = $1 AND (status = 'running' OR status = 'waiting' OR status = 'queued')
+	`, jobID)
+	return err
 }
 
 // LeaseReleaseJob atomically finds and claims the next release job for the scheduler to process.
@@ -479,6 +494,12 @@ func (s *Store) UpdateJobWaiting(jobID string, waiting bool) error {
 func (s *Store) ActiveJobsCount(agentID string) (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE agent_id = $1 AND status = 'running'`, agentID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) QueuedJobsCount() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = 'queued'`).Scan(&count)
 	return count, err
 }
 

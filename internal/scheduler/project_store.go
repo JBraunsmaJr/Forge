@@ -4,18 +4,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/store"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 // ProjectStore manages source repo registrations.
 type ProjectStore struct {
-	db *sql.DB
+	db  *sql.DB
+	gdb *gorm.DB
 }
 
-func newProjectStore(db *sql.DB) *ProjectStore {
-	return &ProjectStore{db: db}
+func newProjectStore(db *sql.DB, gdb *gorm.DB) *ProjectStore {
+	return &ProjectStore{db: db, gdb: gdb}
 }
 
 // CreateProject registers a new project and generates a webhook secret.
@@ -23,27 +26,26 @@ func (p *ProjectStore) CreateProject(orgID string, req api.CreateProjectRequest)
 	id := newID()[:12]
 	secret := newID()
 
-	pipelinePath := req.PipelinePath
-
-	// Use nil for org_id when empty — the column allows NULL.
-	// Passing an empty string would violate the foreign-key constraint.
-	var orgIDParam any
-	if orgID != "" {
-		orgIDParam = orgID
-	}
-
-	var createdAt time.Time
 	branchFilterJSON, _ := json.Marshal(req.BranchFilter)
 	if len(req.BranchFilter) == 0 {
 		branchFilterJSON = []byte("[]")
 	}
-	err := p.db.QueryRow(`
-		INSERT INTO projects (id, org_id, name, repo_url, pipeline_path, webhook_secret, scm_token, branch_filter)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		RETURNING created_at`,
-		id, orgIDParam, req.Name, req.RepoURL, pipelinePath, secret, req.SCMToken, branchFilterJSON,
-	).Scan(&createdAt)
-	if err != nil {
+
+	project := store.Project{
+		ID:            id,
+		Name:          req.Name,
+		RepoURL:       req.RepoURL,
+		PipelinePath:  req.PipelinePath,
+		WebhookSecret: secret,
+		SCMToken:      req.SCMToken,
+		BranchFilter:  datatypes.JSON(branchFilterJSON),
+	}
+
+	if orgID != "" {
+		project.OrgID = &orgID
+	}
+
+	if err := p.gdb.Create(&project).Error; err != nil {
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
 
@@ -52,138 +54,122 @@ func (p *ProjectStore) CreateProject(orgID string, req api.CreateProjectRequest)
 		OrgID:         orgID,
 		Name:          req.Name,
 		RepoURL:       req.RepoURL,
-		PipelinePath:  pipelinePath,
+		PipelinePath:  req.PipelinePath,
 		BranchFilter:  req.BranchFilter,
 		WebhookSecret: secret,
-		CreatedAt:     createdAt,
+		CreatedAt:     project.CreatedAt,
 	}, nil
 }
 
 // GetProject returns a project by ID or Name, including its webhook secret (for verification).
 func (p *ProjectStore) GetProject(projectIDOrName string) (*api.ProjectInfo, string, string, bool) {
-	var info api.ProjectInfo
-	var secret, scmToken, branchFilterJSON string
-	err := p.db.QueryRow(`
-		SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, webhook_secret, scm_token,
-		       COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path
-		FROM projects WHERE id=$1 OR name=$1
-		LIMIT 1`, projectIDOrName,
-	).Scan(&info.ID, &info.OrgID, &info.Name, &info.RepoURL, &info.PipelinePath,
-		&secret, &scmToken, &branchFilterJSON, &info.CreatedAt, &info.Cron, &info.ScheduledPath)
-	if err != nil {
+	var project store.Project
+	if err := p.gdb.Where("id = ? OR name = ?", projectIDOrName, projectIDOrName).First(&project).Error; err != nil {
 		return nil, "", "", false
 	}
-	json.Unmarshal([]byte(branchFilterJSON), &info.BranchFilter)
-	return &info, secret, scmToken, true
+
+	info := projectToInfo(project)
+	return &info, project.WebhookSecret, project.SCMToken, true
+}
+
+func projectToInfo(project store.Project) api.ProjectInfo {
+	info := api.ProjectInfo{
+		ID:            project.ID,
+		Name:          project.Name,
+		RepoURL:       project.RepoURL,
+		PipelinePath:  project.PipelinePath,
+		CreatedAt:     project.CreatedAt,
+		Cron:          project.Cron,
+		ScheduledPath: project.ScheduledPipelinePath,
+	}
+	if project.OrgID != nil {
+		info.OrgID = *project.OrgID
+	}
+	_ = json.Unmarshal(project.BranchFilter, &info.BranchFilter)
+	return info
 }
 
 // GetProjectByRepo finds a project by its repo URL.
 func (p *ProjectStore) GetProjectByRepo(repoURL string) (*api.ProjectInfo, string, string, bool) {
-	var info api.ProjectInfo
-	var secret, scmToken, branchFilterJSON string
-	err := p.db.QueryRow(`
-		SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, webhook_secret, scm_token,
-		       COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path
-		FROM projects WHERE repo_url=$1`, repoURL,
-	).Scan(&info.ID, &info.OrgID, &info.Name, &info.RepoURL, &info.PipelinePath,
-		&secret, &scmToken, &branchFilterJSON, &info.CreatedAt, &info.Cron, &info.ScheduledPath)
-	if err != nil {
+	var project store.Project
+	if err := p.gdb.Where("repo_url = ?", repoURL).First(&project).Error; err != nil {
 		return nil, "", "", false
 	}
-	json.Unmarshal([]byte(branchFilterJSON), &info.BranchFilter)
-	return &info, secret, scmToken, true
+
+	info := projectToInfo(project)
+	return &info, project.WebhookSecret, project.SCMToken, true
 }
 
 // UpdateProject updates an existing project.
 func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) error {
-	// First resolve the actual ID if a name was provided
-	var actualID string
-	err := p.db.QueryRow(`SELECT id FROM projects WHERE id=$1 OR name=$1 LIMIT 1`, id).Scan(&actualID)
-	if err != nil {
-		if err == sql.ErrNoRows {
+	var project store.Project
+	if err := p.gdb.Where("id = ? OR name = ?", id, id).First(&project).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
 			return fmt.Errorf("project not found")
 		}
 		return err
 	}
 
+	updates := make(map[string]any)
 	if req.Name != nil {
-		_, err := p.db.Exec(`UPDATE projects SET name=$1 WHERE id=$2`, *req.Name, actualID)
-		if err != nil {
-			return err
-		}
+		updates["name"] = *req.Name
 	}
 	if req.RepoURL != nil {
-		_, err := p.db.Exec(`UPDATE projects SET repo_url=$1 WHERE id=$2`, *req.RepoURL, actualID)
-		if err != nil {
-			return err
-		}
+		updates["repo_url"] = *req.RepoURL
 	}
 	if req.PipelinePath != nil {
-		_, err := p.db.Exec(`UPDATE projects SET pipeline_path=$1 WHERE id=$2`, *req.PipelinePath, actualID)
-		if err != nil {
-			return err
-		}
+		updates["pipeline_path"] = *req.PipelinePath
 	}
 	if req.Cron != nil {
-		_, err := p.db.Exec(`UPDATE projects SET cron=$1 WHERE id=$2`, *req.Cron, actualID)
-		if err != nil {
-			return err
-		}
+		updates["cron"] = *req.Cron
 	}
 	if req.ScheduledPath != nil {
-		_, err := p.db.Exec(`UPDATE projects SET scheduled_pipeline_path=$1 WHERE id=$2`, *req.ScheduledPath, actualID)
-		if err != nil {
-			return err
-		}
+		updates["scheduled_pipeline_path"] = *req.ScheduledPath
 	}
 	if req.SCMToken != nil {
-		_, err := p.db.Exec(`UPDATE projects SET scm_token=$1 WHERE id=$2`, *req.SCMToken, actualID)
-		if err != nil {
-			return err
-		}
+		updates["scm_token"] = *req.SCMToken
 	}
 	if req.BranchFilter != nil {
 		branchFilterJSON, _ := json.Marshal(req.BranchFilter)
 		if len(req.BranchFilter) == 0 {
 			branchFilterJSON = []byte("[]")
 		}
-		_, err := p.db.Exec(`UPDATE projects SET branch_filter=$1 WHERE id=$2`, branchFilterJSON, actualID)
-		if err != nil {
-			return err
-		}
+		updates["branch_filter"] = datatypes.JSON(branchFilterJSON)
+	}
+
+	if len(updates) > 0 {
+		return p.gdb.Model(&project).Updates(updates).Error
 	}
 	return nil
 }
 
 // DeleteProject removes a project.
 func (p *ProjectStore) DeleteProject(id string) error {
-	_, err := p.db.Exec(`DELETE FROM projects WHERE id=$1 OR name=$1`, id)
-	return err
+	result := p.gdb.Where("id = ? OR name = ?", id, id).Delete(&store.Project{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("project %s not found", id)
+	}
+	return nil
 }
 
 // ListProjects returns all projects for an org.
 func (p *ProjectStore) ListProjects(orgID string) []api.ProjectInfo {
-	q := `SELECT id, COALESCE(org_id, ''), name, repo_url, pipeline_path, COALESCE(branch_filter::text,'[]'), created_at, cron, scheduled_pipeline_path FROM projects`
-	args := []any{}
+	var projects []store.Project
+	query := p.gdb.Order("created_at DESC")
 	if orgID != "" {
-		q += ` WHERE org_id=$1`
-		args = append(args, orgID)
+		query = query.Where("org_id = ?", orgID)
 	}
-	q += ` ORDER BY created_at DESC`
 
-	rows, err := p.db.Query(q, args...)
-	if err != nil {
+	if err := query.Find(&projects).Error; err != nil {
 		return nil
 	}
-	defer rows.Close()
 
-	result := []api.ProjectInfo{}
-	for rows.Next() {
-		var proj api.ProjectInfo
-		var branchFilterJSON string
-		rows.Scan(&proj.ID, &proj.OrgID, &proj.Name, &proj.RepoURL, &proj.PipelinePath, &branchFilterJSON, &proj.CreatedAt, &proj.Cron, &proj.ScheduledPath)
-		json.Unmarshal([]byte(branchFilterJSON), &proj.BranchFilter)
-		result = append(result, proj)
+	result := make([]api.ProjectInfo, len(projects))
+	for i, project := range projects {
+		result[i] = projectToInfo(project)
 	}
 	return result
 }
