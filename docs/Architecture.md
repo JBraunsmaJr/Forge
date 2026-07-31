@@ -35,6 +35,8 @@ graph TD
             Agent2["Agent 2 (:8083)"]
             AgentN[...]
         end
+
+        Autoscaler["Autoscaler (optional)"]
     end
 
     IG --> Scheduler
@@ -43,6 +45,10 @@ graph TD
     
     Agent1 -- "Polls" --> Scheduler
     Agent2 -- "Polls" --> Scheduler
+
+    Autoscaler -- "Queue depth, agent status, drain" --> Scheduler
+    Autoscaler -. "ScaleUp/ScaleDown" .-> Cloud[(Docker or Azure VMSS)]
+    Cloud -. "provisions" .-> AgentN
     
     Agent1 -- "Proxied Docker" --> Proxy1[Docker Proxy]
     Agent2 -- "Proxied Docker" --> Proxy2[Docker Proxy]
@@ -159,6 +165,14 @@ To prevent an agent or a job from interfering with other jobs or the host system
 ### Heartbeat and failure recovery
 
 If an agent crashes mid-job, the scheduler detects the missing heartbeat after 30 seconds and resets the job to `queued` for another agent to claim.
+
+---
+
+## The Autoscaler
+
+Agents don't have to be a fixed pool. The optional `forge-autoscaler` service polls the scheduler's queue depth and agent registry, then calls a pluggable **cloud provisioner** (a local Docker-based fake for development, or Azure VM Scale Sets in production) to provision new agents when the queue backs up and tear them down once they've been idle.
+
+It maintains two pools — a `hot` floor of always-on agents to absorb the first job without a cold boot, and a `burst` pool that scales with demand — and coordinates teardown through the scheduler's agent-draining endpoint so an idle instance is never removed mid-job. See [Cloud Autoscaling](Cloud-Autoscaling.md) for the full configuration reference.
 
 ---
 

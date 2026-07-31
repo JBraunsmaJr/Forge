@@ -67,6 +67,31 @@ Forge uses gRPC keepalives (10s pings) to maintain connections through proxies a
 
 ---
 
+## Autoscaler
+
+| Variable                          | Default                | Description                                                                                 |
+|--------------------------------------|--------------------------|---------------------------------------------------------------------------------------------------|
+| `FORGE_SCHEDULER_URL`                | `http://localhost:8080` | The scheduler the autoscaler reports to and reads queue/agent state from.                         |
+| `FORGE_API_TOKEN`                    | —                        | Token for scheduler agent/queue endpoints. Use a token with the `agent` role.                     |
+| `FORGE_AUTOSCALER_PROVIDER`          | `docker-fake`            | Which cloud provisioner to use: `docker-fake` (local dev only) or `azure`.                        |
+| `FORGE_AUTOSCALER_HOT_POOL_SIZE`     | `0`                      | Minimum number of always-on agents.                                                               |
+| `FORGE_AUTOSCALER_MAX_BURST_SIZE`    | `10`                     | Maximum number of burst agents running at once.                                                   |
+| `FORGE_AUTOSCALER_IDLE_TIMEOUT`      | `5m`                     | How long a burst agent must be idle before it's drained and torn down.                            |
+| `FORGE_AUTOSCALER_POLL_INTERVAL`     | `10s`                    | How often the control loop runs.                                                                  |
+| `FORGE_AUTOSCALER_SCALE_UP_DELAY`    | `1m`                     | Cooldown between burst scale-up events.                                                           |
+| `FORGE_AUTOSCALER_METRICS_PORT`      | `9091`                   | Port the Prometheus `/metrics` endpoint listens on.                                               |
+| `FORGE_AZURE_SUBSCRIPTION_ID`        | —                        | Azure subscription containing the VM Scale Sets (`azure` provider only).                          |
+| `FORGE_AZURE_RESOURCE_GROUP`         | —                        | Resource group containing the VM Scale Sets (`azure` provider only).                              |
+| `FORGE_AZURE_HOT_VMSS`               | —                        | VM Scale Set name for the `hot` pool (`azure` provider only).                                     |
+| `FORGE_AZURE_BURST_VMSS`             | —                        | VM Scale Set name for the `burst` pool (`azure` provider only).                                   |
+| `AZURE_CLIENT_ID`                    | —                        | Service principal client ID, read by the Azure SDK's default credential chain.                    |
+| `AZURE_CLIENT_SECRET`                | —                        | Service principal client secret.                                                                   |
+| `AZURE_TENANT_ID`                    | —                        | Azure AD tenant ID.                                                                                |
+
+See the [Cloud Autoscaling guide](Cloud-Autoscaling.md) for the hot/burst pool model, provisioner details, and a production deployment example.
+
+---
+
 ## CLI
 
 | Variable              | Default                 | Description                                                                                                       |
@@ -134,6 +159,7 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 | 8200 | Vault      | Secrets storage          |
 | 9000 | MinIO      | S3 API                   |
 | 9001 | MinIO      | Web console              |
+| 9091 | Autoscaler | Prometheus `/metrics`    |
 
 ---
 
