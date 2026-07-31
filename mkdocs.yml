@@ -59,6 +59,7 @@ nav:
   - Pipeline Reference: Pipeline-Reference.md
   - Testing CI Logic: Testing-CI-Logic.md
   - Examples: Examples.md
+  - Cloud Autoscaling: Cloud-Autoscaling.md
   - Secrets: Secrets.md
   - Policies: Policies.md
   - Debugging: Debugging.md

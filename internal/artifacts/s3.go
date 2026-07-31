@@ -65,6 +65,11 @@ func (s *S3Store) PresignUpload(_ context.Context, req PresignRequest) (*Presign
 	id := newArtifactID()
 	key := s.objectKey(req.RunID, id, req.Filename)
 
+	var jobID any = req.JobID
+	if req.JobID == "" {
+		jobID = nil
+	}
+
 	contentType := req.ContentType
 	if contentType == "" {
 		contentType = "application/octet-stream"
@@ -74,7 +79,7 @@ func (s *S3Store) PresignUpload(_ context.Context, req PresignRequest) (*Presign
 		INSERT INTO artifacts
 		  (id, run_id, job_id, name, filename, content_type, storage_key, confirmed)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,false)`,
-		id, req.RunID, req.JobID, req.Name, req.Filename, contentType, key,
+		id, req.RunID, jobID, req.Name, req.Filename, contentType, key,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating artifact record: %w", err)

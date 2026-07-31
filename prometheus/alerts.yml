@@ -1,0 +1,11 @@
+groups:
+  - name: forge_autoscaler
+    rules:
+      - alert: BurstPoolPinnedAtMax
+        expr: forge_autoscaler_pool_size{pool="burst"} >= forge_autoscaler_max_pool_size{pool="burst"} and forge_autoscaler_observed_queue_depth > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Burst pool pinned at max capacity"
+          description: "The burst pool has reached its maximum size of {{ $value }} instances and there is still queued work. Consider increasing FORGE_AUTOSCALER_MAX_BURST_SIZE."

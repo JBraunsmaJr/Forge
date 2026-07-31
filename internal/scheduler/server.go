@@ -38,13 +38,16 @@ import (
 	"github.com/robfig/cron/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"gorm.io/gorm"
 )
 
-//go:embed all:web/dist/*
+//go:embed all:web/dist
 var webAssets embed.FS
 
 // Server is the HTTP server for the Forge scheduler.
 type Server struct {
+	db          *sql.DB
+	gdb         *gorm.DB
 	store       *Store
 	orgs        *OrgStore
 	projects    *ProjectStore
@@ -65,7 +68,7 @@ type Server struct {
 }
 
 // NewServer creates a scheduler server backed by the given Postgres database.
-func NewServer(addr string, db *sql.DB, baseURL string) *Server {
+func NewServer(addr string, db *sql.DB, gdb *gorm.DB, baseURL string) *Server {
 	artifactDir := getenv("FORGE_ARTIFACT_DIR", "/data/artifacts")
 	var artStore artifacts.ArtifactStorer
 	if getenv("FORGE_ARTIFACT_STORE", "local") == "s3" {
@@ -127,11 +130,13 @@ func NewServer(addr string, db *sql.DB, baseURL string) *Server {
 	}
 
 	return &Server{
+		db:          db,
+		gdb:         gdb,
 		store:       NewStore(db),
-		orgs:        newOrgStore(db),
-		projects:    newProjectStore(db),
+		orgs:        newOrgStore(db, gdb),
+		projects:    newProjectStore(db, gdb),
 		debug:       newDebugStore(),
-		tokens:      newTokenStore(db),
+		tokens:      newTokenStore(db, gdb),
 		cas:         cas,
 		broker:      newSSEBroker(),
 		artifacts:   artStore,
@@ -186,14 +191,19 @@ func (s *Server) handleCacheStore(w http.ResponseWriter, r *http.Request) {
 }
 
 type AgentRegistry struct {
-	mu     sync.RWMutex
-	agents map[string]*api.AgentInfo
+	mu      sync.RWMutex
+	agents  map[string]*api.AgentInfo
+	pending map[string]int
+	cond    *sync.Cond
 }
 
 func newAgentRegistry() *AgentRegistry {
-	return &AgentRegistry{
-		agents: make(map[string]*api.AgentInfo),
+	r := &AgentRegistry{
+		agents:  make(map[string]*api.AgentInfo),
+		pending: make(map[string]int),
 	}
+	r.cond = sync.NewCond(&r.mu)
+	return r
 }
 
 func (r *AgentRegistry) Register(id string, concurrency int, labels map[string]string) {
@@ -230,6 +240,73 @@ func (r *AgentRegistry) Disconnect(id string) {
 	if a, ok := r.agents[id]; ok {
 		a.Connected = false
 	}
+}
+
+func (r *AgentRegistry) Drain(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if a, ok := r.agents[id]; ok {
+		a.Draining = true
+	}
+	for r.pending[id] > 0 {
+		r.cond.Wait()
+	}
+}
+
+func (r *AgentRegistry) IsDraining(id string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if a, ok := r.agents[id]; ok {
+		return a.Draining
+	}
+	return false
+}
+
+func (r *AgentRegistry) LeaseNext(id string, leaseFn func() (*api.JobSpec, bool), dispatchFn func(*api.JobSpec) error, unleaseFn func(string)) bool {
+	r.mu.Lock()
+	r.pending[id]++
+	r.mu.Unlock()
+
+	defer func() {
+		r.mu.Lock()
+		r.pending[id]--
+		if r.pending[id] <= 0 {
+			delete(r.pending, id)
+		}
+		r.cond.Broadcast()
+		r.mu.Unlock()
+	}()
+
+	r.mu.RLock()
+	a, ok := r.agents[id]
+	if !ok || a.Draining {
+		r.mu.RUnlock()
+		return false
+	}
+	r.mu.RUnlock()
+
+	spec, ok := leaseFn()
+	if !ok {
+		return false
+	}
+
+	r.mu.RLock()
+	draining := false
+	if a, ok := r.agents[id]; ok {
+		draining = a.Draining
+	}
+	r.mu.RUnlock()
+
+	if draining {
+		unleaseFn(spec.JobID)
+		return false
+	}
+
+	if err := dispatchFn(spec); err != nil {
+		unleaseFn(spec.JobID)
+		return false
+	}
+	return true
 }
 
 func (r *AgentRegistry) List() []api.AgentInfo {
@@ -334,7 +411,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/logs/search", s.handleSearchLogs)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
+	// Agent and queue management
 	mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
+	mux.HandleFunc("POST /api/v1/agents/{id}/drain", s.handleDrainAgent)
+	mux.HandleFunc("GET /api/v1/queue/depth", s.handleQueueDepth)
 	mux.HandleFunc("GET /api/v1/audit", s.handleListAuditLogs)
 	mux.HandleFunc("GET /api/v1/audit/export", s.handleListAuditLogs)
 
@@ -918,6 +998,21 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.agents.List())
 }
 
+func (s *Server) handleDrainAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.agents.Drain(id)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleQueueDepth(w http.ResponseWriter, r *http.Request) {
+	count, err := s.store.QueuedJobsCount()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"count": count})
+}
+
 func validateSteps(steps []api.StepDef) error {
 	pSteps := make([]*pipeline.Step, len(steps))
 	for i, s := range steps {
@@ -1341,24 +1436,32 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	spec, ok := s.store.LeaseNext(req.AgentID)
+
+	ok := s.agents.LeaseNext(req.AgentID, func() (*api.JobSpec, bool) {
+		return s.store.LeaseNext(req.AgentID)
+	}, func(spec *api.JobSpec) error {
+		if s.oidc != nil {
+			token, err := s.oidc.GenerateToken(spec.RunID, spec.JobID, spec.OrgID, spec.RepoURL)
+			if err == nil {
+				spec.OIDCToken = token
+			} else {
+				fmt.Printf("[scheduler] failed to generate OIDC token for job %s: %v\n", spec.JobID, err)
+			}
+		}
+
+		fmt.Printf("[scheduler] leased job %s to agent %s\n", spec.JobID[:8], req.AgentID[:8])
+		s.publishRunDetail(spec.RunID)
+		writeJSON(w, http.StatusOK, api.LeaseResponse{Job: spec})
+		return nil
+	}, func(jobID string) {
+		if err := s.store.Unlease(jobID); err != nil {
+			fmt.Printf("[scheduler] failed to unlease job %s: %v\n", jobID[:8], err)
+		}
+	})
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	if s.oidc != nil {
-		token, err := s.oidc.GenerateToken(spec.RunID, spec.JobID, spec.OrgID, spec.RepoURL)
-		if err == nil {
-			spec.OIDCToken = token
-		} else {
-			fmt.Printf("[scheduler] failed to generate OIDC token for job %s: %v\n", spec.JobID, err)
-		}
-	}
-
-	fmt.Printf("[scheduler] leased job %s to agent %s\n", spec.JobID[:8], req.AgentID[:8])
-	s.publishRunDetail(spec.RunID)
-	writeJSON(w, http.StatusOK, api.LeaseResponse{Job: spec})
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {

@@ -172,6 +172,26 @@ services:
     restart: unless-stopped
     networks: [ forge ]
 
+  autoscaler:
+    build:
+      context: .
+      dockerfile: deployments/autoscaler/Dockerfile
+    environment:
+      FORGE_SCHEDULER_URL: http://scheduler:8080
+      FORGE_API_TOKEN: ${FORGE_AGENT_TOKEN:-forge-dev-agent-token}
+      FORGE_AUTOSCALER_HOT_POOL_SIZE: 1
+      FORGE_AUTOSCALER_MAX_BURST_SIZE: 5
+      FORGE_AUTOSCALER_POLL_INTERVAL: 5s
+      FORGE_AUTOSCALER_PROVIDER: docker-fake
+      FORGE_AUTOSCALER_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      scheduler:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [ forge ]
+
   proxy:
     build:
       context: .

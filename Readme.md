@@ -235,6 +235,10 @@ docker compose -f compose.yml -f compose.metrics.yml up -d
 - **Grafana**: `http://localhost:3000` (Pre-configured with Prometheus datasource)
 - **Tracing**: OpenTelemetry spans are emitted to `stdout` by default for both scheduler and agents.
 
+### Option D: Cloud Autoscaling
+
+Forge can provision and tear down agents automatically instead of running a fixed pool. The dev stack above already includes an `autoscaler` service backed by a local Docker-based provisioner; for a production deployment backed by Azure VM Scale Sets, see the [Cloud Autoscaling guide](docs/Cloud-Autoscaling.md) and [`deployments/autoscaler/`](deployments/autoscaler).
+
 After init completes, the terminal shows:
 
 ```
@@ -312,6 +316,7 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 | [CLI Reference](docs/cli-reference.md)                     | All commands and flags                                              |
 | [Configuration](docs/configuration.md)                     | Environment variables reference                                     |
 | [HTTPS / Proxy](docs/HTTPS.md)                             | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
+| [Cloud Autoscaling](docs/Cloud-Autoscaling.md)              | Hot/burst agent pools provisioned automatically via Docker or Azure |
 | [Architecture](docs/architecture.md)                       | How Forge works under the hood                                      |
 
 ---
