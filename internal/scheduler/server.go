@@ -355,6 +355,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject)
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
+	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.handleGetProjectWebhook)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
 
 	// SCM webhooks - HMAC secured, excempt from token auth
@@ -1778,6 +1779,30 @@ func (s *Server) handleListBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.ProjectBranchesResponse{
 		Branches: branches,
 		Default:  defaultBranch,
+	})
+}
+
+// handleGetProjectWebhook exposes a project's webhook URLs and secret in the
+// UI, admin-only. The CLI already prints this at `forge project add` time;
+// this lets an admin come back and re-view/reconfigure it later (issue #55).
+func (s *Server) handleGetProjectWebhook(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	projectID := r.PathValue("id")
+	_, secret, _, ok := s.projects.GetProject(projectID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	base := s.getPublicURL()
+	s.AuditLog(r, "project.webhook.view", "project", projectID, nil)
+	writeJSON(w, http.StatusOK, api.ProjectWebhookInfo{
+		WebhookSecret: secret,
+		GitHubURL:     fmt.Sprintf("%s/api/v1/webhook/github/%s", base, projectID),
+		GitLabURL:     fmt.Sprintf("%s/api/v1/webhook/gitlab/%s", base, projectID),
+		GenericURL:    fmt.Sprintf("%s/api/v1/webhook/generic/%s", base, projectID),
 	})
 }
 

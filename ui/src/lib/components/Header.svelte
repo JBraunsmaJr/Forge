@@ -42,6 +42,9 @@
                     <UserIcon size={14} />
                 </div>
                 <span class="name">{$currentUser.name}</span>
+                {#if $currentUser.role}
+                    <span class="badge badge-{$currentUser.role}">{$currentUser.role}</span>
+                {/if}
             </div>
             <button class="logout-btn" on:click={handleLogout} title="Logout">
                 <LogOut size={16} />
@@ -127,6 +130,17 @@
         color: var(--text);
         font-weight: 500;
     }
+    .badge {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        text-transform: uppercase;
+        font-weight: 700;
+    }
+    .badge-admin { background: #211a30; color: #a390e4; }
+    .badge-operator { background: #2e1d14; color: #e4a390; }
+    .badge-viewer { background: #142e1d; color: #90e4a3; }
+    .badge-agent { background: #1a2f4a; color: var(--blue); }
     .logout-btn {
         background: none;
         border: none;

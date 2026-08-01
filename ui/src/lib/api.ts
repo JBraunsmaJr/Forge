@@ -145,6 +145,13 @@ export interface Project {
     created_at: string;
 }
 
+export interface ProjectWebhook {
+    webhook_secret: string;
+    github_url: string;
+    gitlab_url: string;
+    generic_url: string;
+}
+
 export interface HealthFinding {
     severity: 'critical' | 'warning' | 'suggestion';
     message: string;
@@ -301,6 +308,14 @@ export const api = {
         }).then(r => r?.status === 204),
     deleteProject: (id: string): Promise<void> =>
         fetchAuth(`/api/v1/projects/${id}`, { method: 'DELETE' }).then(() => {}),
+    // Admin-only: reveals the webhook URLs and secret for a project so it
+    // can be (re-)configured in the SCM provider (issue #55).
+    getProjectWebhook: (id: string): Promise<{ ok: boolean, status: number, data: ProjectWebhook | null }> =>
+        fetchAuth(`/api/v1/projects/${id}/webhook`).then(async (r) => ({
+            ok: !!r?.ok,
+            status: r?.status ?? 0,
+            data: r?.ok ? await r.json() : null,
+        })),
     triggerProject: async (id: string, branch: string, commit?: string): Promise<{ run_id: string }> => {
         const r = await fetchAuth(`/api/v1/projects/${id}/trigger`, {
             method: 'POST',

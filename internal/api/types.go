@@ -458,6 +458,16 @@ type ProjectBranchesResponse struct {
 	Default  string   `json:"default"`
 }
 
+// ProjectWebhookInfo exposes a project's webhook URLs and secret so an
+// admin can (re-)configure the webhook in their SCM provider from the UI,
+// mirroring what the CLI prints on `forge project add` (issue #55).
+type ProjectWebhookInfo struct {
+	WebhookSecret string `json:"webhook_secret"`
+	GitHubURL     string `json:"github_url"`
+	GitLabURL     string `json:"gitlab_url"`
+	GenericURL    string `json:"generic_url"`
+}
+
 // CreateProjectRequest registers a new project.
 type CreateProjectRequest struct {
 	Name         string   `json:"name"`
