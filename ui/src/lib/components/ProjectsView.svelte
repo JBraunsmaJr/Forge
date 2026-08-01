@@ -2,8 +2,9 @@
     import { onMount } from 'svelte';
     import { api, type Project, type Org, type ProjectHealth } from '../api';
     import { currentView } from '../stores';
-    import { Plus, Briefcase, ExternalLink, Play, Key, ChevronDown, ChevronUp, Settings, RefreshCw, TriangleAlert, CircleX, Info } from '@lucide/svelte';
+    import { Plus, Briefcase, ExternalLink, Play, Key, Webhook, ChevronDown, ChevronUp, Settings, RefreshCw, TriangleAlert, CircleX, Info } from '@lucide/svelte';
     import SecretsManager from './SecretsManager.svelte';
+    import WebhookPanel from './WebhookPanel.svelte';
 
     let projects: Project[] = [];
     let orgs: Org[] = [];
@@ -14,6 +15,7 @@
     let openHealthId: string | null = null;
     let selectedOrgId = '';
     let openSecretsId: string | null = null;
+    let openWebhookId: string | null = null;
     
     let showCreate = false;
     let triggeringId: string | null = null;
@@ -464,6 +466,16 @@
                             {/if}
                         </button>
 
+                        <button class="btn-text" on:click={() => openWebhookId = openWebhookId === project.id ? null : project.id}>
+                            <Webhook size={14} />
+                            Webhook
+                            {#if openWebhookId === project.id}
+                                <ChevronUp size={14} />
+                            {:else}
+                                <ChevronDown size={14} />
+                            {/if}
+                        </button>
+
                         <button class="btn-text" on:click={() => startEdit(project)}>
                             <Settings size={14} />
                             Settings
@@ -471,6 +483,10 @@
 
                         {#if openSecretsId === project.id}
                             <SecretsManager scope="project" id={project.id} />
+                        {/if}
+
+                        {#if openWebhookId === project.id}
+                            <WebhookPanel id={project.id} />
                         {/if}
                     </div>
                     <div class="item-actions">

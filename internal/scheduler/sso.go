@@ -294,6 +294,13 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	if err == nil && userID != "" {
 		user, _ = s.store.GetUserByID(userID)
 	}
+	if user == nil {
+		user = &api.UserInfo{
+			ID:   rec.ID,
+			Name: rec.Name,
+			Role: rec.Role,
+		}
+	}
 
 	writeJSON(w, http.StatusOK, api.AuthStatusResponse{
 		Authenticated: true,
