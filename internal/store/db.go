@@ -60,6 +60,7 @@ func autoMigrate(db *gorm.DB) error {
 		&TestFileDuration{},
 		&TestShardAssignment{},
 		&JobLog{},
+		&JobRootCause{},
 		&Policy{},
 		&StepResult{},
 		&Artifact{},

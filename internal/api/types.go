@@ -240,17 +240,48 @@ type ShardAssignmentDetail struct {
 
 // JobDetail carries everything the DAG renderer needs for one node.
 type JobDetail struct {
-	JobID        string     `json:"job_id"`
-	StepID       string     `json:"step_id"`
-	Status       JobStatus  `json:"status"`
-	DependsOn    []string   `json:"depends_on"`
-	DurationMs   int64      `json:"duration_ms"`
-	TimeoutNS    int64      `json:"timeout_ns"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	ExitCode     int        `json:"exit_code"`
-	PolicySource string     `json:"policy_source,omitempty"`
-	ChildRunID   string     `json:"child_run_id,omitempty"`
+	JobID        string         `json:"job_id"`
+	StepID       string         `json:"step_id"`
+	Status       JobStatus      `json:"status"`
+	DependsOn    []string       `json:"depends_on"`
+	DurationMs   int64          `json:"duration_ms"`
+	TimeoutNS    int64          `json:"timeout_ns"`
+	StartedAt    *time.Time     `json:"started_at,omitempty"`
+	FinishedAt   *time.Time     `json:"finished_at,omitempty"`
+	ExitCode     int            `json:"exit_code"`
+	PolicySource string         `json:"policy_source,omitempty"`
+	ChildRunID   string         `json:"child_run_id,omitempty"`
+	RootCause    *RootCauseInfo `json:"root_cause,omitempty"`
+}
+
+// RootCauseInfo is an automatic classification of why a job failed,
+// produced by pattern-matching its logs against a known-signature
+// library. Category is one of: infrastructure, dependency,
+// flaky_test, code_defect, configuration, network. A job with no field
+// present simply hasn't matched anything in the library yet.
+type RootCauseInfo struct {
+	Category     string `json:"category"`
+	PatternID    string `json:"pattern_id,omitempty"`
+	Description  string `json:"description"`
+	MatchedLine  string `json:"matched_line,omitempty"`
+	SuggestedFix string `json:"suggested_fix,omitempty"`
+	// RecentMatches / RecentTotal describe how often this same pattern
+	// has shown up on this step recently, e.g. "8 of the last 10
+	// failures on this step had the same pattern" — RecentMatches=8,
+	// RecentTotal=10. Both are 0 when the job isn't tied to a registered
+	// project (ad-hoc/CLI runs have no stable project+step history).
+	RecentMatches int `json:"recent_matches"`
+	RecentTotal   int `json:"recent_total"`
+}
+
+// FailureBreakdown summarizes root-cause categories for a project over a
+// recent window — powers the "40% infrastructure, 20% flaky tests, 40%
+// real code defects" dashboard callout from issue #44.
+type FailureBreakdown struct {
+	ProjectID     string         `json:"project_id"`
+	WindowDays    int            `json:"window_days"`
+	TotalFailures int            `json:"total_failures"`
+	Categories    map[string]int `json:"categories"`
 }
 
 // CreateDebugRequest asks the scheduler to start a debug session for a job.

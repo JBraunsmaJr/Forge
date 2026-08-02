@@ -6,6 +6,7 @@
     import ArtifactViewer from './ArtifactViewer.svelte';
     import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
+    import RootCauseCard from './RootCauseCard.svelte';
     import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check, TrendingUp } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
@@ -180,6 +181,9 @@
     </div>
     <div id="details-content">
         {#if activeTab === 'logs'}
+            {#if $selectedJob?.root_cause}
+                <RootCauseCard rootCause={$selectedJob.root_cause} />
+            {/if}
             <LogViewer hideHeader={true} />
         {:else if activeTab === 'artifacts'}
             <ArtifactViewer hideHeader={true} />

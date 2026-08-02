@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/rootcause"
 )
 
 // Store is the Postgres-backed implementation of the job store.
@@ -1017,9 +1018,11 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 
 	rows, err := s.db.Query(`
 		SELECT j.id, j.step_id, j.status, j.depends_on,
-		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id
+		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id,
+		       rc.category, rc.pattern_id, rc.description, rc.matched_line, rc.suggested_fix
 		FROM   jobs j
 		LEFT JOIN runs r ON r.parent_job_id = j.id
+		LEFT JOIN job_root_causes rc ON rc.job_id = j.id
 		WHERE  j.run_id=$1`, runID)
 	if err != nil {
 		return nil, false
@@ -1032,14 +1035,29 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		var j api.JobDetail
 		var depsJSON []byte
 		var childRunID sql.NullString
+		var rcCategory, rcPatternID, rcDescription, rcMatchedLine, rcSuggestedFix sql.NullString
 		rows.Scan(&j.JobID, &j.StepID, &j.Status, &depsJSON,
-			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID)
+			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID,
+			&rcCategory, &rcPatternID, &rcDescription, &rcMatchedLine, &rcSuggestedFix)
 		json.Unmarshal(depsJSON, &j.DependsOn)
 		if j.DependsOn == nil {
 			j.DependsOn = []string{}
 		}
 		if childRunID.Valid {
 			j.ChildRunID = childRunID.String
+		}
+		if rcCategory.Valid {
+			rc := &api.RootCauseInfo{
+				Category:     rcCategory.String,
+				PatternID:    rcPatternID.String,
+				Description:  rcDescription.String,
+				MatchedLine:  rcMatchedLine.String,
+				SuggestedFix: rcSuggestedFix.String,
+			}
+			if projectID.Valid {
+				rc.RecentMatches, rc.RecentTotal, _ = s.RecentRootCauseFrequency(projectID.String, j.StepID, rc.PatternID, 10)
+			}
+			j.RootCause = rc
 		}
 		jobs = append(jobs, j)
 		statuses = append(statuses, j.Status)
@@ -1074,7 +1092,91 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	return detail, true
 }
 
-// GetJobLogs returns stored log events for a job.
+// RecordJobRootCause stores (or replaces) the automatic root-cause
+// classification for a job that just failed. One row per
+// job — if a job somehow gets re-completed under the same ID, the
+// classification is simply overwritten rather than duplicated.
+func (s *Store) RecordJobRootCause(jobID, runID, projectID, stepID string, m rootcause.Match) error {
+	var projID any
+	if projectID != "" {
+		projID = projectID
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO job_root_causes
+			(job_id, run_id, project_id, step_id, category, pattern_id, description, matched_line, suggested_fix, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+		ON CONFLICT (job_id) DO UPDATE SET
+			run_id        = EXCLUDED.run_id,
+			project_id    = EXCLUDED.project_id,
+			step_id       = EXCLUDED.step_id,
+			category      = EXCLUDED.category,
+			pattern_id    = EXCLUDED.pattern_id,
+			description   = EXCLUDED.description,
+			matched_line  = EXCLUDED.matched_line,
+			suggested_fix = EXCLUDED.suggested_fix,
+			created_at    = NOW()`,
+		jobID, runID, projID, stepID,
+		string(m.Pattern.Category), m.Pattern.ID, m.Pattern.Description, m.MatchedLine, m.Pattern.SuggestedFix,
+	)
+	return err
+}
+
+// RecentRootCauseFrequency reports how many of the last `limit`
+// classified failures on the same project+step matched the given
+// pattern — e.g. "8 of the last 10 failures on this step had the same
+// pattern".
+func (s *Store) RecentRootCauseFrequency(projectID, stepID, patternID string, limit int) (matches, total int, err error) {
+	if projectID == "" || stepID == "" {
+		return 0, 0, nil
+	}
+	rows, err := s.db.Query(`
+		SELECT pattern_id FROM job_root_causes
+		WHERE  project_id = $1 AND step_id = $2
+		ORDER  BY created_at DESC
+		LIMIT  $3`, projectID, stepID, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid string
+		if err := rows.Scan(&pid); err != nil {
+			continue
+		}
+		total++
+		if pid == patternID {
+			matches++
+		}
+	}
+	return matches, total, nil
+}
+
+// FailureBreakdown aggregates classified-failure counts by category for
+// a project since the given time — powers the "40% infrastructure, 20%
+// flaky tests, 40% real code defects" dashboard callout from issue #44.
+func (s *Store) FailureBreakdown(projectID string, since time.Time) (counts map[string]int, total int, err error) {
+	rows, err := s.db.Query(`
+		SELECT category, COUNT(*)
+		FROM   job_root_causes
+		WHERE  project_id = $1 AND created_at >= $2
+		GROUP  BY category`, projectID, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	counts = map[string]int{}
+	for rows.Next() {
+		var cat string
+		var n int
+		if err := rows.Scan(&cat, &n); err != nil {
+			continue
+		}
+		counts[cat] = n
+		total += n
+	}
+	return counts, total, nil
+}
 func (s *Store) GetJobLogs(jobID string) ([]api.LogEvent, bool) {
 	// Check job exists.
 	var count int

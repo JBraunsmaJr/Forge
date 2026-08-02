@@ -30,6 +30,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/rootcause"
 	"github.com/JBraunsmaJr/forge/internal/scm"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
@@ -356,6 +357,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.handleGetProjectWebhook)
+	mux.HandleFunc("GET /api/v1/projects/{id}/failure-stats", s.handleFailureStats)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
 
 	// SCM webhooks - HMAC secured, excempt from token auth
@@ -1504,10 +1506,34 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 		jobsCompletedTotal.WithLabelValues(detail.OrgID, detail.ProjectID, result).Inc()
 		jobDurationSeconds.WithLabelValues(detail.OrgID, detail.ProjectID).Observe(float64(req.Duration) / 1000.0)
+
+		// Root-cause classification (issue #44): pattern-match the job's
+		// own logs against the signature library. Covers real failures
+		// and Forge's own timeout kill; skipped steps never ran, so
+		// there's nothing to classify.
+		if (result == "failed" || req.TimedOut) && !req.Skipped {
+			if m := rootcause.Classify(logMessages(req.LogEvents)); m != nil {
+				jobID := r.PathValue("id")
+				if err := s.store.RecordJobRootCause(jobID, runID, detail.ProjectID, stepID, *m); err != nil {
+					fmt.Printf("[rootcause] failed to record classification for job %s: %v\n", jobID[:8], err)
+				}
+			}
+		}
 	}
 
 	s.publishRunDetail(runID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// logMessages extracts just the text of each log event, in order, for
+// the root-cause classifier — it only cares about the message content,
+// not timestamps or levels.
+func logMessages(events []api.LogEvent) []string {
+	lines := make([]string, len(events))
+	for i, e := range events {
+		lines[i] = e.Message
+	}
+	return lines
 }
 
 func (s *Server) publishRunDetail(runID string) {
@@ -1803,6 +1829,39 @@ func (s *Server) handleGetProjectWebhook(w http.ResponseWriter, r *http.Request)
 		GitHubURL:     fmt.Sprintf("%s/api/v1/webhook/github/%s", base, projectID),
 		GitLabURL:     fmt.Sprintf("%s/api/v1/webhook/gitlab/%s", base, projectID),
 		GenericURL:    fmt.Sprintf("%s/api/v1/webhook/generic/%s", base, projectID),
+	})
+}
+
+// handleFailureStats returns a breakdown of classified failure
+// categories for a project over a recent window — e.g. "40%
+// infrastructure, 20% flaky tests, 40% real code defects" (issue #44).
+// Defaults to the last 30 days; override with ?days=N.
+func (s *Server) handleFailureStats(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if _, _, _, ok := s.projects.GetProject(projectID); !ok {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	windowDays := 30
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			windowDays = n
+		}
+	}
+
+	since := time.Now().AddDate(0, 0, -windowDays)
+	counts, total, err := s.store.FailureBreakdown(projectID, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, api.FailureBreakdown{
+		ProjectID:     projectID,
+		WindowDays:    windowDays,
+		TotalFailures: total,
+		Categories:    counts,
 	})
 }
 
