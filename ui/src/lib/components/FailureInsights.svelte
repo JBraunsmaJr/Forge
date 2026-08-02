@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { api, type FailureBreakdown } from '../api';
+    import { categoryLabels, categoryColors } from '../categories';
     import { ChartBar } from '@lucide/svelte';
 
     export let id: string;
@@ -8,27 +9,6 @@
     let breakdown: FailureBreakdown | null = null;
     let loading = true;
     let error = '';
-
-    const categoryLabels: Record<string, string> = {
-        infrastructure: 'Infrastructure',
-        dependency: 'Dependency',
-        flaky_test: 'Flaky Test',
-        code_defect: 'Code Defect',
-        configuration: 'Configuration',
-        network: 'Network',
-        unknown: 'Unclassified',
-    };
-
-    // Same accent colors as RootCauseCard's badges, keyed by category.
-    const categoryColors: Record<string, string> = {
-        infrastructure: '#e4a390',
-        dependency: '#a390e4',
-        flaky_test: '#e4d490',
-        code_defect: '#e49090',
-        configuration: '#90c9e4',
-        network: '#90e4a3',
-        unknown: '#8a8a8a',
-    };
 
     $: sortedCategories = breakdown
         ? Object.entries(breakdown.categories).sort((a, b) => b[1] - a[1])
@@ -94,7 +74,7 @@
         <p class="summary">
             {breakdown.total_failures} classified failure{breakdown.total_failures === 1 ? '' : 's'} in the last {breakdown.window_days} days.
             {#if preventableShare > 0}
-                ~{Math.round(preventableShare)}% may be preventable by fixing your environment rather than your code.
+                ~{Math.round(preventableShare)}% were not caused by a defect in the product code under test — infrastructure, dependencies, configuration, or test flakiness.
             {/if}
         </p>
     {/if}

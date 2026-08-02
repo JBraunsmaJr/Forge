@@ -1,5 +1,5 @@
 // Package rootcause implements Forge's build-failure root-cause
-// classifier.
+// classifier (issue #44).
 //
 // When a step fails, developers have to read the raw logs and figure out
 // whether it's a code problem, an infrastructure problem, a dependency
@@ -15,7 +15,10 @@
 // identified
 package rootcause
 
-import "regexp"
+import (
+	"regexp"
+	"unicode/utf8"
+)
 
 // Category is one of the failure buckets from issue #44's classification
 // table.
@@ -195,9 +198,17 @@ func Classify(lines []string) *Match {
 	return nil
 }
 
+// truncate cuts s to at most n bytes, never splitting a multi-byte UTF-8
+// rune — a byte-boundary cut could produce an invalid UTF-8 sequence,
+// which Postgres rejects outright on insert (silently losing the whole
+// classification, not just the tail of the matched line).
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

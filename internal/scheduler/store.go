@@ -1027,7 +1027,6 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	if err != nil {
 		return nil, false
 	}
-	defer rows.Close()
 
 	var jobs []api.JobDetail
 	var statuses []api.JobStatus
@@ -1047,20 +1046,32 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 			j.ChildRunID = childRunID.String
 		}
 		if rcCategory.Valid {
-			rc := &api.RootCauseInfo{
+			j.RootCause = &api.RootCauseInfo{
 				Category:     rcCategory.String,
 				PatternID:    rcPatternID.String,
 				Description:  rcDescription.String,
 				MatchedLine:  rcMatchedLine.String,
 				SuggestedFix: rcSuggestedFix.String,
 			}
-			if projectID.Valid {
-				rc.RecentMatches, rc.RecentTotal, _ = s.RecentRootCauseFrequency(projectID.String, j.StepID, rc.PatternID, 10)
-			}
-			j.RootCause = rc
 		}
 		jobs = append(jobs, j)
 		statuses = append(statuses, j.Status)
+	}
+	rows.Close()
+
+	// Frequency lookups run their own queries, so they only start once
+	// the job cursor above is fully closed — doing this while it was
+	// still open meant every classified failure opened a second query
+	// on top of the first, which could stall entirely under a small
+	// connection pool.
+	if projectID.Valid {
+		for i := range jobs {
+			if jobs[i].RootCause == nil {
+				continue
+			}
+			jobs[i].RootCause.RecentMatches, jobs[i].RootCause.RecentTotal, _ =
+				s.RecentRootCauseFrequency(projectID.String, jobs[i].StepID, jobs[i].RootCause.PatternID, 10)
+		}
 	}
 
 	if jobs == nil {

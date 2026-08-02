@@ -1510,14 +1510,39 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		// Root-cause classification (issue #44): pattern-match the job's
 		// own logs against the signature library. Covers real failures
 		// and Forge's own timeout kill; skipped steps never ran, so
-		// there's nothing to classify.
+		// there's nothing to classify. Runs in the background — like
+		// RecordStepResult above — since it's a log scan plus a DB
+		// insert that the agent's completion call has no reason to wait
+		// on. It republishes the run detail once done so SSE-connected
+		// clients see the classification land (typically within
+		// milliseconds of the initial "failed" update) rather than only
+		// picking it up on a later reload.
 		if (result == "failed" || req.TimedOut) && !req.Skipped {
-			if m := rootcause.Classify(logMessages(req.LogEvents)); m != nil {
-				jobID := r.PathValue("id")
-				if err := s.store.RecordJobRootCause(jobID, runID, detail.ProjectID, stepID, *m); err != nil {
-					fmt.Printf("[rootcause] failed to record classification for job %s: %v\n", jobID[:8], err)
+			jobID := r.PathValue("id")
+			lines := logMessages(req.LogEvents)
+			projectID := detail.ProjectID
+			go func() {
+				m := rootcause.Classify(lines)
+				if m == nil {
+					// Nothing in the library matched. Still record an
+					// explicit "unknown" classification instead of
+					// leaving no row at all — otherwise a failure with
+					// no matching signature is indistinguishable from
+					// the classifier never having run, and it silently
+					// drops out of the project's failure breakdown too.
+					m = &rootcause.Match{Pattern: rootcause.Pattern{
+						ID:           "unclassified",
+						Category:     rootcause.CategoryUnknown,
+						Description:  "No known failure signature matched this job's logs.",
+						SuggestedFix: "Read the logs above to diagnose this one manually. If this keeps happening, it's worth adding as a new signature to the pattern library.",
+					}}
 				}
-			}
+				if err := s.store.RecordJobRootCause(jobID, runID, projectID, stepID, *m); err != nil {
+					fmt.Printf("[rootcause] failed to record classification for job %s: %v\n", jobID[:8], err)
+					return
+				}
+				s.publishRunDetail(runID)
+			}()
 		}
 	}
 
@@ -1837,11 +1862,12 @@ func (s *Server) handleGetProjectWebhook(w http.ResponseWriter, r *http.Request)
 // infrastructure, 20% flaky tests, 40% real code defects" (issue #44).
 // Defaults to the last 30 days; override with ?days=N.
 func (s *Server) handleFailureStats(w http.ResponseWriter, r *http.Request) {
-	projectID := r.PathValue("id")
-	if _, _, _, ok := s.projects.GetProject(projectID); !ok {
+	project, _, _, ok := s.projects.GetProject(r.PathValue("id"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	projectID := project.ID
 
 	windowDays := 30
 	if v := r.URL.Query().Get("days"); v != "" {

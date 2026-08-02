@@ -1,6 +1,10 @@
 package rootcause
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestClassify(t *testing.T) {
 	cases := []struct {
@@ -68,6 +72,16 @@ func TestClassify(t *testing.T) {
 			lines:    []string{},
 			wantNone: true,
 		},
+		{
+			// The ordering contract documented on Library: more specific
+			// patterns are listed (and must win) ahead of the broad,
+			// catch-all code-defect patterns — even when the broad
+			// signature's line appears first in the log.
+			name:    "panic caused by a refused connection",
+			lines:   []string{"panic: dial error", "dial tcp 127.0.0.1:5432: connect: connection refused"},
+			wantID:  "connection-refused",
+			wantCat: CategoryInfrastructure,
+		},
 	}
 
 	for _, tc := range cases {
@@ -92,6 +106,24 @@ func TestClassify(t *testing.T) {
 				t.Errorf("expected a non-empty matched line")
 			}
 		})
+	}
+}
+
+// A matched line long enough to need truncation, with a multi-byte rune
+// sitting right at the cutoff, must still truncate to valid UTF-8 —
+// otherwise the insert into job_root_causes (a UTF8 column) fails and the
+// whole classification is silently lost, not just the tail of the line.
+func TestClassifyTruncatesOnRuneBoundary(t *testing.T) {
+	long := "panic: " + strings.Repeat("é", 400)
+	m := Classify([]string{long})
+	if m == nil {
+		t.Fatal("expected a match")
+	}
+	if !utf8.ValidString(m.MatchedLine) {
+		t.Errorf("matched line is not valid UTF-8: %q", m.MatchedLine)
+	}
+	if len(m.MatchedLine) > maxMatchedLineLen+len("…") {
+		t.Errorf("matched line longer than expected: %d bytes", len(m.MatchedLine))
 	}
 }
 

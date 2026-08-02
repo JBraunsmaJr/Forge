@@ -18,7 +18,7 @@
     let openSecretsId: string | null = null;
     let openWebhookId: string | null = null;
     let openInsightsId: string | null = null;
-    
+
     let showCreate = false;
     let triggeringId: string | null = null;
     let triggering = false;
@@ -479,6 +479,20 @@
                         </button>
 
                         <button class="btn-text" on:click={() => openInsightsId = openInsightsId === project.id ? null : project.id}>
+                            <ChartBar size={14} />
+                            Insights
+                            {#if openInsightsId === project.id}
+                                <ChevronUp size={14} />
+                            {:else}
+                                <ChevronDown size={14} />
+                            {/if}
+                        </button>
+
+                        <button
+                            class="btn-text"
+                            aria-expanded={openInsightsId === project.id}
+                            on:click={() => openInsightsId = openInsightsId === project.id ? null : project.id}
+                        >
                             <ChartBar size={14} />
                             Insights
                             {#if openInsightsId === project.id}

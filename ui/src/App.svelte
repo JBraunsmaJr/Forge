@@ -50,14 +50,28 @@
         ws.onmessage = (e) => {
             const updated: RunDetail = JSON.parse(e.data);
             activeRun.set(updated);
-            
-            // Auto-open log streaming for running jobs
-            for (const job of (updated.jobs || [])) {
-                if (job.status === 'running' || job.status === 'waiting') {
-                    if (!$selectedJob || $selectedJob.job_id === job.job_id) {
+
+            if ($selectedJob) {
+                // Keep the currently-selected job's details in sync as the
+                // run progresses — including the moment it finishes, so a
+                // status change, exit code, or root-cause classification
+                // that arrives after the job leaves "running"/"waiting"
+                // still reaches the details panel. Previously this only
+                // refreshed while the job was still running/waiting, so a
+                // job that failed mid-stream would freeze its details at
+                // the last "running" snapshot until the user re-clicked it.
+                const stillPresent = (updated.jobs || []).find(j => j.job_id === $selectedJob!.job_id);
+                if (stillPresent) {
+                    selectedJob.set(stillPresent);
+                }
+            } else {
+                // Nothing selected yet — auto-open log streaming for the
+                // first running/waiting job.
+                for (const job of (updated.jobs || [])) {
+                    if (job.status === 'running' || job.status === 'waiting') {
                         selectedJob.set(job);
+                        break;
                     }
-                    break;
                 }
             }
 
