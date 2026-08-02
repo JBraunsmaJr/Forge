@@ -1507,20 +1507,13 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		jobsCompletedTotal.WithLabelValues(detail.OrgID, detail.ProjectID, result).Inc()
 		jobDurationSeconds.WithLabelValues(detail.OrgID, detail.ProjectID).Observe(float64(req.Duration) / 1000.0)
 
-		// Root-cause classification (issue #44): pattern-match the job's
-		// own logs against the signature library. Covers real failures
-		// and Forge's own timeout kill; skipped steps never ran, so
-		// there's nothing to classify. Runs in the background — like
-		// RecordStepResult above — since it's a log scan plus a DB
-		// insert that the agent's completion call has no reason to wait
-		// on. It republishes the run detail once done so SSE-connected
-		// clients see the classification land (typically within
-		// milliseconds of the initial "failed" update) rather than only
-		// picking it up on a later reload.
+		// Root-cause classification: pattern-match the job's
+		// own logs against the signature library.
 		if (result == "failed" || req.TimedOut) && !req.Skipped {
 			jobID := r.PathValue("id")
 			lines := logMessages(req.LogEvents)
 			projectID := detail.ProjectID
+			fmt.Printf("[rootcause] classifying job %s (project=%q step=%q log_lines=%d)\n", jobID[:8], projectID, stepID, len(lines))
 			go func() {
 				m := rootcause.Classify(lines)
 				if m == nil {
@@ -1537,13 +1530,19 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 						SuggestedFix: "Read the logs above to diagnose this one manually. If this keeps happening, it's worth adding as a new signature to the pattern library.",
 					}}
 				}
+				fmt.Printf("[rootcause] job %s classified as %s (pattern=%s)\n", jobID[:8], m.Pattern.Category, m.Pattern.ID)
 				if err := s.store.RecordJobRootCause(jobID, runID, projectID, stepID, *m); err != nil {
-					fmt.Printf("[rootcause] failed to record classification for job %s: %v\n", jobID[:8], err)
+					fmt.Printf("[rootcause] FAILED to record classification for job %s: %v\n", jobID[:8], err)
 					return
 				}
+				fmt.Printf("[rootcause] recorded classification for job %s\n", jobID[:8])
 				s.publishRunDetail(runID)
 			}()
+		} else {
+			fmt.Printf("[rootcause] skipping classification for job %s (result=%s timed_out=%v skipped=%v)\n", r.PathValue("id")[:8], result, req.TimedOut, req.Skipped)
 		}
+	} else {
+		fmt.Printf("[rootcause] RunDetail(%s) lookup failed for job %s — metrics, step-result recording, and classification all skipped\n", runID, r.PathValue("id")[:8])
 	}
 
 	s.publishRunDetail(runID)

@@ -133,9 +133,6 @@ services:
     restart: unless-stopped
 
   agent:
-    build:
-      context: .
-      dockerfile: Dockerfile
     scale: 2
     image: ghcr.io/jbraunsmajr/forge/forge:latest
     command: [ "agent", "${FORGE_SCHEDULER_URL:-http://scheduler:8080}" ]
@@ -193,9 +190,6 @@ services:
     networks: [ forge ]
 
   proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: ghcr.io/jbraunsmajr/forge/forge:latest
     command: [ "proxy", "--socket-dir", "/run/forge-sockets" ]
     volumes:
@@ -205,9 +199,7 @@ services:
     restart: unless-stopped
 
   init:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/jbraunsmajr/forge/forge:latest
     entrypoint: [ "/bin/bash" ]
     command: [ "/scripts/init.sh" ]
     environment:

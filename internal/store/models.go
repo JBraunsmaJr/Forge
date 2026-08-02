@@ -198,17 +198,24 @@ type JobLog struct {
 // job: a job is classified at most once, re-classification (if it were
 // ever re-run under the same ID) replaces the existing row.
 type JobRootCause struct {
-	JobID        string    `gorm:"primaryKey"`
-	Job          Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
-	RunID        string    `gorm:"not null;index:job_root_causes_run_idx"`
-	ProjectID    *string   `gorm:"index:job_root_causes_project_step_idx,priority:1;index:job_root_causes_project_created_idx,priority:1"`
-	StepID       string    `gorm:"not null;index:job_root_causes_project_step_idx,priority:2"`
-	Category     string    `gorm:"not null;index:job_root_causes_category_idx"`
-	PatternID    string    `gorm:"not null;default:''"`
-	Description  string    `gorm:"not null;default:''"`
-	MatchedLine  string    `gorm:"not null;default:''"`
-	SuggestedFix string    `gorm:"not null;default:''"`
-	CreatedAt    time.Time `gorm:"not null;default:now();index:job_root_causes_project_step_idx,priority:3,sort:desc;index:job_root_causes_project_created_idx,priority:2,sort:desc"`
+	JobID        string  `gorm:"primaryKey"`
+	Job          Job     `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	RunID        string  `gorm:"not null;index:job_root_causes_run_idx"`
+	ProjectID    *string `gorm:"index:job_root_causes_project_step_idx,priority:1"`
+	StepID       string  `gorm:"not null;index:job_root_causes_project_step_idx,priority:2"`
+	Category     string  `gorm:"not null;index:job_root_causes_category_idx"`
+	PatternID    string  `gorm:"not null;default:''"`
+	Description  string  `gorm:"not null;default:''"`
+	MatchedLine  string  `gorm:"not null;default:''"`
+	SuggestedFix string  `gorm:"not null;default:''"`
+	// CreatedAt intentionally has only one GORM index tag. A second
+	// composite index (project_id, created_at) — needed for
+	// FailureBreakdown's project+time-range query — is created via raw
+	// SQL in db.go's autoMigrate instead of a second `index:` tag here:
+	// gorm.io/driver/postgres v1.6.0 hits "pq: got N parameters but the
+	// statement requires N-1" when AutoMigrate tries to create an index
+	// on a column that already carries a different named index.
+	CreatedAt time.Time `gorm:"not null;default:now();index:job_root_causes_project_step_idx,priority:3,sort:desc"`
 }
 
 // Policy represents the policies table.
@@ -238,16 +245,23 @@ type StepResult struct {
 
 // Artifact represents the artifacts table.
 type Artifact struct {
-	ID          string  `gorm:"primaryKey"`
-	RunID       string  `gorm:"not null;index:artifacts_run_id_idx;index:artifacts_run_name_idx,priority:1"`
-	Run         Run     `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	JobID       *string `gorm:"index"`
-	Job         *Job    `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
-	Name        string  `gorm:"not null;index:artifacts_run_name_idx,priority:2"`
-	Filename    string  `gorm:"not null"`
-	SizeBytes   int64   `gorm:"not null;default:0"`
-	ContentType string  `gorm:"not null;default:'application/octet-stream'"`
-	StorageKey  string  `gorm:"not null"`
+	ID    string  `gorm:"primaryKey"`
+	RunID string  `gorm:"not null;index:artifacts_run_id_idx"`
+	Run   Run     `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	JobID *string `gorm:"index"`
+	Job   *Job    `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	// Name intentionally carries no GORM index tag here. The composite
+	// (run_id, name) index — artifacts_run_name_idx — is created via
+	// raw SQL in db.go's autoMigrate instead: RunID already carries the
+	// artifacts_run_id_idx tag, and a column carrying two different
+	// named indexes trips a known gorm.io/driver/postgres v1.6.0
+	// AutoMigrate bug ("pq: got N parameters but the statement requires
+	// N-1").
+	Name        string `gorm:"not null"`
+	Filename    string `gorm:"not null"`
+	SizeBytes   int64  `gorm:"not null;default:0"`
+	ContentType string `gorm:"not null;default:'application/octet-stream'"`
+	StorageKey  string `gorm:"not null"`
 	UploadToken *string
 	Confirmed   bool      `gorm:"not null;default:false"`
 	CreatedAt   time.Time `gorm:"not null;default:now()"`
