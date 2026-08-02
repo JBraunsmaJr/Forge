@@ -70,11 +70,15 @@ func main() {
 		}
 		network := os.Getenv("FORGE_AUTOSCALER_DOCKER_NETWORK")
 		agentID := os.Getenv("FORGE_PROXY_AGENT_ID")
+		if apiToken == "" {
+			log.Printf("[autoscaler] WARNING: FORGE_API_TOKEN is not set — agents spawned by the docker-fake provider will get no token and every scheduler call they make (checkout, log/status reporting, etc.) will fail with 401")
+		}
 		prov = &provisioner.DockerFakeProvisioner{
 			Image:        image,
 			SchedulerURL: schedulerURL,
 			Network:      network,
 			AgentID:      agentID,
+			APIToken:     apiToken,
 		}
 	}
 

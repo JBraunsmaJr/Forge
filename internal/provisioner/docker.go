@@ -15,6 +15,7 @@ type DockerFakeProvisioner struct {
 	SchedulerURL string
 	Network      string
 	AgentID      string
+	APIToken     string
 }
 
 func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]InstanceID, error) {
@@ -29,6 +30,9 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 		}
 		args = append(args, "-e", "FORGE_SCHEDULER_URL="+p.SchedulerURL)
 		args = append(args, "-e", "FORGE_AGENT_POOL="+pool)
+		if p.APIToken != "" {
+			args = append(args, "-e", "FORGE_API_TOKEN="+p.APIToken)
+		}
 		// Ensure agent knows its own ID is the container ID
 		// In ScaleUp we don't know the ID yet, but we can set an env var that the agent reads.
 		// Or the agent can just get it from its own hostname if we don't override it.
