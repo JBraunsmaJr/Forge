@@ -201,25 +201,6 @@ type JobRootCause struct {
 	JobID        string    `gorm:"primaryKey"`
 	Job          Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
 	RunID        string    `gorm:"not null;index:job_root_causes_run_idx"`
-	ProjectID    *string   `gorm:"index:job_root_causes_project_step_idx,priority:1"`
-	StepID       string    `gorm:"not null;index:job_root_causes_project_step_idx,priority:2"`
-	Category     string    `gorm:"not null;index:job_root_causes_category_idx"`
-	PatternID    string    `gorm:"not null;default:''"`
-	Description  string    `gorm:"not null;default:''"`
-	MatchedLine  string    `gorm:"not null;default:''"`
-	SuggestedFix string    `gorm:"not null;default:''"`
-	CreatedAt    time.Time `gorm:"not null;default:now();index:job_root_causes_project_step_idx,priority:3,sort:desc"`
-}
-
-// JobRootCause represents the job_root_causes table — an automatic
-// classification of why a job's step failed, produced by pattern-matching
-// its logs against a known-signature library. One row per
-// job: a job is classified at most once, re-classification (if it were
-// ever re-run under the same ID) replaces the existing row.
-type JobRootCause struct {
-	JobID        string    `gorm:"primaryKey"`
-	Job          Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
-	RunID        string    `gorm:"not null;index:job_root_causes_run_idx"`
 	ProjectID    *string   `gorm:"index:job_root_causes_project_step_idx,priority:1;index:job_root_causes_project_created_idx,priority:1"`
 	StepID       string    `gorm:"not null;index:job_root_causes_project_step_idx,priority:2"`
 	Category     string    `gorm:"not null;index:job_root_causes_category_idx"`
