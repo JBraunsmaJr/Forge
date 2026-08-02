@@ -11,11 +11,13 @@ import (
 )
 
 type DockerFakeProvisioner struct {
-	Image        string
-	SchedulerURL string
-	Network      string
-	AgentID      string
-	APIToken     string
+	Image         string
+	SchedulerURL  string
+	Network       string
+	AgentID       string
+	APIToken      string
+	ProxyURL      string
+	SocketsVolume string
 }
 
 func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int, labels map[string]string) ([]InstanceID, error) {
@@ -32,6 +34,18 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 		args = append(args, "-e", "FORGE_AGENT_POOL="+pool)
 		if p.APIToken != "" {
 			args = append(args, "-e", "FORGE_API_TOKEN="+p.APIToken)
+		}
+		if p.ProxyURL != "" {
+			args = append(args, "-e", "FORGE_PROXY_URL="+p.ProxyURL)
+		}
+		if p.SocketsVolume != "" {
+			// Same shared volume + mount path the static agent service in
+			// compose.yml uses. Without it, the socket path the agent
+			// gets back from registering with the proxy doesn't actually
+			// exist inside this container — every docker command then
+			// fails with "is the docker daemon running?", proxy
+			// registered or not.
+			args = append(args, "--volume", p.SocketsVolume+":/run/forge-sockets")
 		}
 		// Ensure agent knows its own ID is the container ID
 		// In ScaleUp we don't know the ID yet, but we can set an env var that the agent reads.

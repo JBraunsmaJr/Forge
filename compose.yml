@@ -182,6 +182,13 @@ services:
       FORGE_AUTOSCALER_PROVIDER: docker-fake
       FORGE_AUTOSCALER_DOCKER_IMAGE: ghcr.io/jbraunsmajr/forge/forge:latest
       FORGE_AUTOSCALER_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
+      # Forwarded to every agent this spawns, same as the static agent
+      # service below — without these, spawned agents have no route to
+      # Docker at all ("is the docker daemon running?" on any step that
+      # uses it). The sockets volume needs the compose project prefix
+      # since that's how Compose actually names it on the Docker side.
+      FORGE_PROXY_URL: http://proxy:9090
+      FORGE_AUTOSCALER_DOCKER_SOCKETS_VOLUME: ${COMPOSE_PROJECT_NAME:-forge}_forge_sockets
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
