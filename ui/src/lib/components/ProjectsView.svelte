@@ -478,16 +478,6 @@
                             {/if}
                         </button>
 
-                        <button class="btn-text" on:click={() => openInsightsId = openInsightsId === project.id ? null : project.id}>
-                            <ChartBar size={14} />
-                            Insights
-                            {#if openInsightsId === project.id}
-                                <ChevronUp size={14} />
-                            {:else}
-                                <ChevronDown size={14} />
-                            {/if}
-                        </button>
-
                         <button
                             class="btn-text"
                             aria-expanded={openInsightsId === project.id}

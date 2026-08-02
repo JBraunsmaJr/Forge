@@ -10,10 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"net/http"
+
 	"github.com/JBraunsmaJr/forge/internal/autoscaler"
 	"github.com/JBraunsmaJr/forge/internal/provisioner"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http"
 )
 
 func main() {
@@ -65,7 +66,7 @@ func main() {
 		log.Printf("[autoscaler] using docker-fake provider")
 		image := os.Getenv("FORGE_AUTOSCALER_DOCKER_IMAGE")
 		if image == "" {
-			image = "forge-fake-agent:latest"
+			image = "ghcr.io/jbraunsmajr/forge/forge:latest"
 		}
 		network := os.Getenv("FORGE_AUTOSCALER_DOCKER_NETWORK")
 		agentID := os.Getenv("FORGE_PROXY_AGENT_ID")

@@ -111,7 +111,9 @@ func runScheduler(cmd *cobra.Command, args []string) {
 	}
 	defer db.Close()
 
-	gdb, err := store.NewGORM(db)
+	// GORM gets its own connection (native pgx) rather than sharing the
+	// lib/pq one above — see the comment on store.NewGORM for why.
+	gdb, err := store.NewGORM(dbURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ GORM: %v\n", err)
 		os.Exit(1)

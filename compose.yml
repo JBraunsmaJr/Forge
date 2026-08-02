@@ -180,6 +180,7 @@ services:
       FORGE_AUTOSCALER_MAX_BURST_SIZE: 5
       FORGE_AUTOSCALER_POLL_INTERVAL: 5s
       FORGE_AUTOSCALER_PROVIDER: docker-fake
+      FORGE_AUTOSCALER_DOCKER_IMAGE: ghcr.io/jbraunsmajr/forge/forge:latest
       FORGE_AUTOSCALER_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-forge}_forge
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

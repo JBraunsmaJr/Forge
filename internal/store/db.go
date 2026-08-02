@@ -28,10 +28,8 @@ func Open(connStr string) (*sql.DB, error) {
 }
 
 // NewGORM wraps an existing *sql.DB with GORM and runs migrations.
-func NewGORM(db *sql.DB) (*gorm.DB, error) {
-	gdb, err := gorm.Open(postgres.New(postgres.Config{
-		Conn: db,
-	}), &gorm.Config{
+func NewGORM(dsn string) (*gorm.DB, error) {
+	gdb, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger:         logger.Default.LogMode(logger.Silent),
 		TranslateError: true,
 	})
