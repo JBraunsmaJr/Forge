@@ -121,7 +121,7 @@ func (s *ProxyServer) Handler(agentID string) http.Handler {
 		if id != "" && id != "json" && id != "create" && id != "prune" && id != "df" && id != "info" {
 			labels, err := s.getResourceLabels(resource, id)
 			if err == nil {
-				if labels["forge.managed"] != "true" || labels["forge.agent_id"] != agentID {
+				if labels["forge.managed"] != "true" || (labels["forge.agent_id"] != agentID && !strings.HasPrefix(labels["forge.agent_id"], agentID+"-")) {
 					// We return a generic forbidden message for security (don't reveal too much)
 					// But for now, let's include more info for debugging.
 					http.Error(w, fmt.Sprintf("forbidden: access to %s %s denied (proxy agentID: %s, resource agent_id: %s)", resource, id, agentID, labels["forge.agent_id"]), http.StatusForbidden)
@@ -300,8 +300,11 @@ func (s *ProxyServer) filterContainerList(agentID string, resp *http.Response) e
 	filtered := make([]map[string]any, 0)
 	for _, c := range containers {
 		labels, _ := c["Labels"].(map[string]any)
-		if labels != nil && labels["forge.agent_id"] == agentID {
-			filtered = append(filtered, c)
+		if labels != nil {
+			lID, _ := labels["forge.agent_id"].(string)
+			if lID == agentID || strings.HasPrefix(lID, agentID+"-") {
+				filtered = append(filtered, c)
+			}
 		}
 	}
 

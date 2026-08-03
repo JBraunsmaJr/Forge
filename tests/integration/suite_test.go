@@ -371,16 +371,19 @@ func initProjectName() {
 	composeProjectName = "forge-it"
 	// Always use a unique project name to avoid collisions and "poisoned" volumes from previous runs.
 	// We include the agent ID and a timestamp to ensure uniqueness.
-	agentID := os.Getenv("FORGE_JOB_ID")
-	if agentID == "" {
-		agentID = os.Getenv("FORGE_AGENT_ID")
-	}
+	agentID := os.Getenv("FORGE_AGENT_ID")
 	if agentID == "" {
 		agentID = "local"
 	}
+	jobID := os.Getenv("FORGE_JOB_ID")
+	uniquePart := jobID
+	if uniquePart == "" {
+		uniquePart = "it"
+	}
+
 	// Use a more robust unique ID (timestamp in seconds + microsecond part)
 	now := time.Now()
-	composeProjectName = fmt.Sprintf("forge-it-%s-%d-%06d", agentID, now.Unix()%10000, now.UnixNano()%1000000)
+	composeProjectName = fmt.Sprintf("%s-%s-%d-%06d", agentID, uniquePart, now.Unix()%10000, now.UnixNano()%1000000)
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
 	// Use a unique image name for this test run to avoid build collisions on shared hosts.
 	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)

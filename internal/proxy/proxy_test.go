@@ -43,6 +43,12 @@ func TestFilterContainerList_Success(t *testing.T) {
 				"forge.agent_id": "agent-2",
 			},
 		},
+		{
+			"Id": "c3",
+			"Labels": map[string]any{
+				"forge.agent_id": "agent-1-shard-1",
+			},
+		},
 	}
 	body, _ := json.Marshal(containers)
 
@@ -62,10 +68,13 @@ func TestFilterContainerList_Success(t *testing.T) {
 	var filtered []map[string]any
 	json.Unmarshal(newBody, &filtered)
 
-	if len(filtered) != 1 {
-		t.Errorf("expected 1 container, got %d", len(filtered))
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 containers, got %d", len(filtered))
 	}
-	if filtered[0]["Id"] != "c1" {
-		t.Errorf("expected container c1, got %v", filtered[0]["Id"])
+	if filtered[0]["Id"] != "c1" && filtered[1]["Id"] != "c1" {
+		t.Errorf("expected container c1 to be present")
+	}
+	if filtered[0]["Id"] != "c3" && filtered[1]["Id"] != "c3" {
+		t.Errorf("expected container c3 to be present")
 	}
 }
