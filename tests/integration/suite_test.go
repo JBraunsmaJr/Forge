@@ -536,13 +536,15 @@ func assertPassed(t *testing.T, s runStatus) {
 	t.Helper()
 	if s.Status != "passed" {
 		for _, j := range s.Jobs {
-			if j.Status == "failed" {
+			if j.Status == "failed" || j.Status == "timed_out" || j.Status == "canceled" {
 				resp, err := adminClient.get("/api/v1/jobs/" + j.JobID + "/logs")
-				if err == nil {
-					body, _ := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					t.Errorf("Job %s (%s) failed logs:\n%s", j.JobID, j.StepID, body)
+				if err != nil {
+					t.Errorf("Job %s (%s) failed but logs could not be fetched: %v", j.JobID, j.StepID, err)
+					continue
 				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				t.Errorf("Job %s (%s) status %q logs:\n%s", j.JobID, j.StepID, j.Status, body)
 			}
 		}
 		t.Fatalf("expected run to pass, got status %q", s.Status)

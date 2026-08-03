@@ -158,7 +158,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 				ExitCode: 1,
 				Duration: time.Since(start),
 				LogFile:  logPath,
-			}, nil
+			}, err
 		}
 
 		// 2. Copy workspace IN
@@ -175,7 +175,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 				ExitCode: 1,
 				Duration: time.Since(start),
 				LogFile:  logPath,
-			}, nil
+			}, err
 		}
 
 		// 3. Prepare start command
@@ -215,7 +215,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 			ExitCode: 1,
 			Duration: time.Since(start),
 			LogFile:  logPath,
-		}, nil
+		}, err
 	}
 	cmd.Stderr = cmd.Stdout
 
@@ -232,12 +232,18 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 			ExitCode: 1,
 			Duration: time.Since(start),
 			LogFile:  logPath,
-		}, nil
+		}, err
 	}
 
 	scanner := bufio.NewScanner(outputPipe)
+	// Support lines up to 10MB (default is 64KB)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		logger.Output(scanner.Text())
+	}
+	if serr := scanner.Err(); serr != nil {
+		logger.Error(fmt.Sprintf("log scanner error: %v", serr), map[string]any{"error": serr.Error()})
 	}
 
 	err = cmd.Wait()
@@ -312,7 +318,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		Duration: duration,
 		LogFile:  logPath,
 		CacheHit: false,
-	}, nil
+	}, err
 }
 
 // RunPipeline executes all steps in dependency order.
@@ -531,8 +537,14 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	// Stream stderr lines to the log while the generator runs.
 	scanner := bufio.NewScanner(stderrPipe)
+	// Support lines up to 10MB (default is 64KB)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		logger.Output("[stderr] " + scanner.Text())
+	}
+	if serr := scanner.Err(); serr != nil {
+		logger.Error(fmt.Sprintf("generator log scanner error: %v", serr), map[string]any{"error": serr.Error()})
 	}
 
 	err = cmdGen.Wait()
@@ -572,7 +584,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		Duration:           duration,
 		LogFile:            logPath,
 		GeneratedStepsJSON: bytes.TrimSpace(stdoutBuf.Bytes()),
-	}, nil
+	}, err
 }
 
 // Cleanup removes dangling Docker containers started by Forge.

@@ -16,7 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
+	os_exec "os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -140,8 +140,8 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		maxConcurrency:   concurrency,
 		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
-		out:              make(chan *pb.AgentMessage, 64),
-		reliableOut:      make(chan reliableMessage, 16),
+		out:              make(chan *pb.AgentMessage, 1024),
+		reliableOut:      make(chan reliableMessage, 128),
 	}
 }
 
@@ -642,8 +642,8 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			fmt.Printf("[agent %s] running scheduled docker container prune...\n", a.id[:8])
-			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
-			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			os_exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			os_exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
 			// Also clean up any old workspace directories
 			a.cleanupWorkspaces()
 		}
@@ -699,14 +699,14 @@ func getDiskUsagePercent(path string) float64 {
 			drive = "C:"
 		}
 		cmd := fmt.Sprintf("Get-Volume -DriveLetter %s | ForEach-Object { 100 * (1 - $_.SizeRemaining / $_.Size) }", strings.TrimSuffix(drive, ":"))
-		out, err := exec.Command("powershell", "-Command", cmd).Output()
+		out, err := os_exec.Command("powershell", "-Command", cmd).Output()
 		if err == nil {
 			val, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 			return val
 		}
 	} else {
 		// Use df on Linux/Unix
-		out, err := exec.Command("df", "--output=pcent", path).Output()
+		out, err := os_exec.Command("df", "--output=pcent", path).Output()
 		if err == nil {
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 			if len(lines) >= 2 {
@@ -720,7 +720,7 @@ func getDiskUsagePercent(path string) float64 {
 }
 
 func (a *Agent) getDockerUsageGB() (float64, error) {
-	cmd := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
+	cmd := os_exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, string(out))
@@ -766,7 +766,7 @@ func parseDockerSize(s string) float64 {
 
 func (a *Agent) evictLRUImages(targetGB float64) {
 	// List all images with ID, CreatedAt, and Size
-	out, err := exec.Command("docker", "images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
+	out, err := os_exec.Command("docker", "images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
 	if err != nil {
 		return
 	}
@@ -807,7 +807,7 @@ func (a *Agent) evictLRUImages(targetGB float64) {
 			break
 		}
 		// Try to remove. It will fail if in use.
-		err := exec.Command("docker", "rmi", img.id).Run()
+		err := os_exec.Command("docker", "rmi", img.id).Run()
 		if err == nil {
 			evictedGB += img.gb
 			fmt.Printf("[agent %s] evicted image %s (%.2f GB)\n", a.id[:8], img.id[:12], img.gb)
@@ -1125,7 +1125,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		A buffered channel decouples the executor's log writes from the
 		HTTP POST to the scheduler - the scanner never blocks.
 	*/
-	logCh := make(chan api.LogEvent, 256)
+	logCh := make(chan api.LogEvent, 4096)
 
 	exec.StreamCallback = func(stepID string, ts time.Time, level, message string) {
 		select {
@@ -1163,28 +1163,34 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	// Read log events to forward to the scheduler.
 	var logEvents []api.LogEvent
+	if result != nil && result.LogFile != "" {
+		logEvents = readLogFile(result.LogFile)
+	}
+
 	if timedOut {
-		logEvents = []api.LogEvent{{
+		logEvents = append(logEvents, api.LogEvent{
 			Timestamp: time.Now(),
 			Level:     "ERROR",
 			Message:   fmt.Sprintf("◯ step timed out after %v", step.Timeout),
-		}}
+		})
 	} else if err != nil {
 		/*
-				Hard error from the executor - e.g. Docker failed to start the container due to workdir being set to "".
-			    The result is nil, so there's no log file. We'll sythesize a log event so the user sees what went wrong
-			    in the UI rather than "no logs stored for this job"
+			Hard error from the executor - e.g. Docker failed to start the container due to workdir being set to "".
+			We'll synthesize a log event so the user sees what went wrong in the UI rather than "no logs stored for this job".
+			We skip this for normal exit code failures which are already in the log file.
 		*/
-		logEvents = []api.LogEvent{{
-			Timestamp: time.Now(),
-			Level:     "ERROR",
-			Message:   fmt.Sprintf("executor error: %v", err),
-		}}
+		var exitErr *os_exec.ExitError
+		if !errors.As(err, &exitErr) {
+			logEvents = append(logEvents, api.LogEvent{
+				Timestamp: time.Now(),
+				Level:     "ERROR",
+				Message:   fmt.Sprintf("executor error: %v", err),
+			})
+		}
 	} else if result != nil && result.CacheHit {
 		logEvents = cacheHitLog(result.Step.CacheKey)
-	} else if result != nil && result.LogFile != "" {
-		logEvents = readLogFile(result.LogFile)
 	}
+
 	if logEvents == nil {
 		logEvents = []api.LogEvent{}
 	}
@@ -1252,7 +1258,7 @@ func (a *Agent) collectStatus() *pb.AgentStatus {
 	}
 
 	// Docker images count
-	cmd := exec.Command("docker", "images", "-q")
+	cmd := os_exec.Command("docker", "images", "-q")
 	if out, err := cmd.Output(); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		count := 0
@@ -1633,9 +1639,9 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	// Start debug container
-	if err := exec.CommandContext(ctx, "docker", "start", containerID).Run(); err != nil {
+	if err := os_exec.CommandContext(ctx, "docker", "start", containerID).Run(); err != nil {
 		fmt.Printf("[agent %s] debug container failed to start: %v\n", a.id[:8], err)
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		os_exec.Command("docker", "rm", "-f", containerID).Run()
 		return
 	}
 
@@ -1657,7 +1663,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	if spec.DockerSocket {
 		apkCmd += " docker-cli"
 	}
-	exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c",
+	os_exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c",
 		apkCmd+" >/dev/null 2>&1 || true",
 	).Run()
 
@@ -1759,7 +1765,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 // Output is streamed line-by-line so the user sees it in real-time.
 // The ctx can be cancelled to kill the command (used by the cancel button).
 func (a *Agent) execDebugCommand(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {
-	execCmd := exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", cmd.Input)
+	execCmd := os_exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", cmd.Input)
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -1796,7 +1802,7 @@ func (a *Agent) execDebugCommand(ctx context.Context, sessionID, containerID str
 
 	exitCode := 0
 	if err := execCmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr, ok := err.(*os_exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			exitCode = 1
@@ -2130,7 +2136,7 @@ func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID s
 		cols, rows,
 	)
 
-	cmd := exec.CommandContext(shellCtx, "docker", "exec",
+	cmd := os_exec.CommandContext(shellCtx, "docker", "exec",
 		"-i",
 		"-e", fmt.Sprintf("COLUMNS=%d", cols),
 		"-e", fmt.Sprintf("LINES=%d", rows),
@@ -2723,7 +2729,7 @@ func pipelineLog(level, msg string) []api.LogEvent {
 
 func (a *Agent) cleanupJobContainers(runID, jobID string) {
 	// Stop and remove all containers created by this job
-	out, _ := exec.Command("docker", "ps", "-aq",
+	out, _ := os_exec.Command("docker", "ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.job_id="+jobID,
 		"--filter", "label=forge.agent_id="+a.proxyID,
@@ -2741,21 +2747,21 @@ func (a *Agent) cleanupJobContainers(runID, jobID string) {
 	}
 
 	// Remove networks created by this run
-	out, _ = exec.Command("docker", "network", "ls", "-q",
+	out, _ = os_exec.Command("docker", "network", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		exec.Command("docker", "network", "rm", id).Run()
+		os_exec.Command("docker", "network", "rm", id).Run()
 	}
 
 	// Remove volumes created by this run
-	out, _ = exec.Command("docker", "volume", "ls", "-q",
+	out, _ = os_exec.Command("docker", "volume", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		exec.Command("docker", "volume", "rm", id).Run()
+		os_exec.Command("docker", "volume", "rm", id).Run()
 	}
 }
 
