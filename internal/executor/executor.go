@@ -185,6 +185,26 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		cmd = exec.CommandContext(ctx, "docker", append([]string{"run", "--rm"}, args...)...)
 	}
 
+	/*
+		On step timeout/cancellation,  an interrupt (SIGINT on
+		Unix; the closest portable equivalent os/exec supports on
+		Windows too - see the runtime.GOOS=="windows" branches elsewhere in this file
+
+		Instead of Go's default SIGKILL, so docker's signal-proxy has a chance to forward
+		the shutdown into the container and let --rm actually clean it up. SIGKILL can't be
+		caught: the local docker CLI process dies instantly without ever telling the daemon to
+		stop the container, which orphans it - and anything it spawned,
+		e.g. a nested docker compose stack for an integration-test step
+		- running indefinitely after Forge has already marked the step as timed
+		out. WaitDelay caps how long we give it before Go escalates to a hard kill of its
+		own, so a container that ignores the interrupt can't hang the agent.
+	*/
+
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(os.Interrupt)
+	}
+	cmd.WaitDelay = 15 * time.Second
+
 	outputPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		logger.Error("failed to create output pipe", map[string]any{"error": err.Error()})

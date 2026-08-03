@@ -170,6 +170,13 @@ services:
     networks: [ forge ]
 
   autoscaler:
+    # Off by default. `docker compose up` alone gives you just the static
+    # agent: scale: 2 below — the autoscaler was spawning one agent per
+    # pending job (up to FORGE_AUTOSCALER_MAX_BURST_SIZE), which is the
+    # right behavior for a cloud environment but not something you want
+    # 6 concurrent containers of on a dev laptop within a few seconds of
+    # queuing work. Opt in with: docker compose --profile autoscaler up
+    profiles: [ "autoscaler" ]
     build:
       context: .
       dockerfile: deployments/autoscaler/Dockerfile

@@ -20,11 +20,18 @@ fi
 
 go build -o /usr/local/bin/forge ./cmd/forge
 
-TEST_PKGS=""
+SUITE_FIXTURE="tests/integration/suite_test.go"
+TEST_PKGS="./$SUITE_FIXTURE"
 
-for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do TEST_PKGS="$TEST_PKGS ./$p"; done
+for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do
+  if [ "$p" != "$SUITE_FIXTURE" ]; then
+    TEST_PKGS="$TEST_PKGS ./$p"
+  fi
+done
 
-if [ -z "$TEST_PKGS" ]; then TEST_PKGS="./..."; fi
+if [ "$TEST_PKGS" = "./$SUITE_FIXTURE" ]; then
+  TEST_PKGS="./..."
+fi
 
 # We don't want the exit code here to fail the script
 set +e

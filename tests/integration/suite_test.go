@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -64,6 +66,22 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Println("[integration] stack ready")
 
+	// Best-effort safety net: if this process is interrupted/terminated
+	// before m.Run() returns normally — e.g. because Forge's own
+	// step-timeout killed the container this suite is running inside
+	// (see the cmd.Cancel comment in internal/executor/executor.go) —
+	// tear the compose stack down here instead of leaving it orphaned.
+	// The normal teardown path below still runs when m.Run() returns on
+	// its own; this only fires on an external kill.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		fmt.Printf("[integration] received %v, tearing down stack before exit...\n", sig)
+		stopStack(repoRoot)
+		os.Exit(1)
+	}()
+
 	// Initialize the admin client after the stack is ready and ports are discovered.
 	adminClient = newClient(adminToken)
 
@@ -89,6 +107,11 @@ func startStack(repoRoot string) error {
 	os.Setenv("FORGE_MINIO_PORT", "0")
 	os.Setenv("FORGE_MINIO_CONSOLE_PORT", "0")
 	os.Setenv("FORGE_UI_PORT", "0")
+
+	// compose.yml gates the autoscaler service behind this profile so it
+	// doesn't start on a bare `docker compose up` (see the comment on
+	// that service) — integration tests still need it active.
+	os.Setenv("COMPOSE_PROFILES", "autoscaler")
 
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
