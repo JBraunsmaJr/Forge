@@ -81,10 +81,11 @@ type Agent struct {
 	semaphore      chan struct{}
 
 	// gRPC communication
-	grpcClient pb.AgentServiceClient
-	out        chan reliableMessage
-	grpcMu     sync.Mutex
-	sessionCtx context.Context
+	grpcClient  pb.AgentServiceClient
+	out         chan reliableMessage
+	outPriority chan reliableMessage // heartbeats, completions
+	grpcMu      sync.Mutex
+	sessionCtx  context.Context
 
 	// Cleanup configuration
 	maxDockerGB      float64
@@ -141,6 +142,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
 		out:              make(chan reliableMessage, 4096),
+		outPriority:      make(chan reliableMessage, 1024),
 	}
 }
 
@@ -292,26 +294,36 @@ func (a *Agent) Run(ctx context.Context) error {
 		defer close(senderDone)
 		defer sessionCancel()
 		for {
+			var rm reliableMessage
+			var ok bool
+
+			// Prioritize heartbeats and completions
 			select {
-			case rm, ok := <-a.out:
-				if !ok {
+			case rm, ok = <-a.outPriority:
+			default:
+				select {
+				case rm, ok = <-a.outPriority:
+				case rm, ok = <-a.out:
+				case <-sessionCtx.Done():
 					return
 				}
-				rm.msg.AgentId = a.id
-				a.grpcMu.Lock()
-				err := stream.Send(rm.msg)
-				a.grpcMu.Unlock()
-				if rm.ack != nil {
-					if err != nil {
-						fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
-						return
-					}
-					rm.ack <- nil
-				} else if err != nil {
-					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
-				}
-			case <-sessionCtx.Done():
+			}
+
+			if !ok {
 				return
+			}
+			rm.msg.AgentId = a.id
+			a.grpcMu.Lock()
+			err := stream.Send(rm.msg)
+			a.grpcMu.Unlock()
+			if rm.ack != nil {
+				if err != nil {
+					fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
+					return
+				}
+				rm.ack <- nil
+			} else if err != nil {
+				fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
 			}
 		}
 	}()
@@ -428,6 +440,11 @@ ReceiveLoop:
 				if info, ok := a.activeJobs.Load(spec.JobID); ok {
 					if info.(activeJobInfo).LeaseID != spec.LeaseID {
 						fmt.Printf("[agent %s] received redundant job %s with new lease, canceling old execution\n", a.id[:8], spec.JobID[:8])
+						a.postLogBatch(spec.JobID, info.(activeJobInfo).LeaseID, []api.LogEvent{{
+							Timestamp: time.Now(),
+							Level:     "ERROR",
+							Message:   "◯ job canceled by agent: redundant lease received from scheduler (possible heartbeat delay)",
+						}})
 						info.(activeJobInfo).Cancel()
 					} else {
 						fmt.Printf("[agent %s] received redundant job %s with same lease, ignoring\n", a.id[:8], spec.JobID[:8])
@@ -567,9 +584,13 @@ func (a *Agent) isSpotEvicted() bool {
 	return false
 }
 
-func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
+func (a *Agent) sendAsync(msg *pb.AgentMessage, priority bool) error {
+	ch := a.out
+	if priority {
+		ch = a.outPriority
+	}
 	select {
-	case a.out <- reliableMessage{msg: msg}:
+	case ch <- reliableMessage{msg: msg}:
 		return nil
 	case <-time.After(5 * time.Second):
 		fmt.Printf("[agent %s] warning: message queue full, dropping message\n", a.id[:8])
@@ -577,11 +598,15 @@ func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
 	}
 }
 
-func (a *Agent) sendReliable(msg *pb.AgentMessage) error {
+func (a *Agent) sendReliable(msg *pb.AgentMessage, priority bool) error {
+	ch := a.out
+	if priority {
+		ch = a.outPriority
+	}
 	ack := make(chan error, 1)
 	rm := reliableMessage{msg: msg, ack: ack}
 	select {
-	case a.out <- rm:
+	case ch <- rm:
 		select {
 		case err := <-ack:
 			return err
@@ -1230,7 +1255,7 @@ func (a *Agent) statusLoop(ctx context.Context) {
 						Status: a.collectStatus(),
 					},
 				},
-			})
+			}, true)
 		}
 	}
 }
@@ -1319,7 +1344,7 @@ func (a *Agent) heartbeat(jobID, leaseID string) error {
 				Status:  a.collectStatus(),
 			},
 		},
-	})
+	}, true)
 	return nil
 }
 
@@ -1346,7 +1371,7 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 				TimedOut:         timedOut,
 			},
 		},
-	})
+	}, true)
 }
 
 // reportSkipped marks a job as skipped via gRPC.
@@ -1368,7 +1393,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 				Skipped:  true,
 			},
 		},
-	})
+	}, true)
 }
 
 // isSchedulerCondition returns true for conditions the scheduler evaluates
@@ -2070,7 +2095,7 @@ func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
 				Events:  pbEvents,
 			},
 		},
-	})
+	}, false)
 }
 
 func (a *Agent) handleTerminalRequest(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {

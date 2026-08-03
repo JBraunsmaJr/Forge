@@ -276,7 +276,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
-			logger.Error(fmt.Sprintf("step failed: exit status %d", exitCode), map[string]any{"exit_code": exitCode})
+			logger.Error(fmt.Sprintf("step failed: %v", err), map[string]any{"exit_code": exitCode})
 		} else {
 			exitCode = 1
 			logger.Error(fmt.Sprintf("step failed: %v", err), map[string]any{"error": err.Error()})
