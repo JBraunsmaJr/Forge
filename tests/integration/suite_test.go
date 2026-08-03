@@ -371,7 +371,10 @@ func initProjectName() {
 	composeProjectName = "forge-it"
 	// Always use a unique project name to avoid collisions and "poisoned" volumes from previous runs.
 	// We include the agent ID and a timestamp to ensure uniqueness.
-	agentID := os.Getenv("FORGE_AGENT_ID")
+	agentID := os.Getenv("FORGE_JOB_ID")
+	if agentID == "" {
+		agentID = os.Getenv("FORGE_AGENT_ID")
+	}
 	if agentID == "" {
 		agentID = "local"
 	}

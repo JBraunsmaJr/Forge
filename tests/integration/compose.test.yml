@@ -8,6 +8,7 @@ services:
   scheduler:
     image: "${FORGE_IMAGE}"
     command: ["scheduler"]
+    ports: []
     logging: *default-logging
     labels:
       forge.managed: "true"
@@ -52,18 +53,21 @@ services:
       replicas: 2   # two agents so cancel test occupying one doesn't block rerun test
 
   postgres:
+    ports: []
     logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   vault:
+    ports: []
     logging: *default-logging
     labels:
       forge.managed: "true"
       forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   minio:
+    ports: []
     logging: *default-logging
     labels:
       forge.managed: "true"

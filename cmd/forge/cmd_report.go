@@ -141,6 +141,7 @@ func fromGoTest(inputPath, outputPath string) error {
 		passed     int
 		failed     int
 		skipped    int
+		pkgFailed  bool
 	}
 	packages := make(map[string]*pkgStats)
 
@@ -168,6 +169,7 @@ func fromGoTest(inputPath, outputPath string) error {
 		case "fail":
 			if e.Test == "" {
 				pkg.durationMS = int64(e.Elapsed * 1000)
+				pkg.pkgFailed = true
 			} else {
 				pkg.tests++
 				pkg.failed++
@@ -195,12 +197,17 @@ func fromGoTest(inputPath, outputPath string) error {
 			path = strings.TrimPrefix(path, "/")
 		}
 
+		failedCount := stats.failed
+		if stats.pkgFailed && failedCount == 0 {
+			failedCount = 1
+		}
+
 		files = append(files, api.TestFileResult{
 			Path:       path,
 			DurationMS: stats.durationMS,
 			Tests:      stats.tests,
 			Passed:     stats.passed,
-			Failed:     stats.failed,
+			Failed:     failedCount,
 			Skipped:    stats.skipped,
 		})
 		totalDuration += stats.durationMS

@@ -558,16 +558,39 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 	}
 
 	if len(logs) > 0 {
-		if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
-			return "", fmt.Errorf("clearing logs: %w", err)
-		}
-		for _, log := range logs {
-			_, err = tx.Exec(
-				`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1,$2,$3,$4)`,
-				jobID, log.Timestamp, log.Level, log.Message,
-			)
-			if err != nil {
-				return "", fmt.Errorf("inserting log: %w", err)
+		// Heuristic to avoid wiping streamed logs if the agent's final report is incomplete.
+		// We only replace if the new set is at least as large as the old one,
+		// or if the old set is very small (less than 10 lines).
+		var existingCount int
+		s.db.QueryRow(`SELECT COUNT(*) FROM job_logs WHERE job_id = $1`, jobID).Scan(&existingCount)
+
+		if len(logs) >= existingCount || existingCount < 10 {
+			if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
+				return "", fmt.Errorf("clearing logs: %w", err)
+			}
+			for _, log := range logs {
+				_, err = tx.Exec(
+					`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1, $2, $3, $4)`,
+					jobID, log.Timestamp, log.Level, log.Message,
+				)
+				if err != nil {
+					return "", fmt.Errorf("inserting log: %w", err)
+				}
+			}
+		} else {
+			// If we have fewer logs than before, just append the new ones that are
+			// likely "final" messages (like timeouts or agent errors) that weren't streamed.
+			// Since we don't have unique IDs, we just append everything and let the UI
+			// handle potential duplicates (or the user can see both).
+			// Better than losing all logs.
+			for _, log := range logs {
+				_, err = tx.Exec(
+					`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1, $2, $3, $4)`,
+					jobID, log.Timestamp, log.Level, log.Message,
+				)
+				if err != nil {
+					return "", fmt.Errorf("appending log: %w", err)
+				}
 			}
 		}
 	}

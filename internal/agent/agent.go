@@ -1025,6 +1025,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	step.Env["FORGE_API_TOKEN"] = a.apiToken
 	step.Env["FORGE_SCHEDULER_URL"] = a.schedulerURL
 	step.Env["FORGE_AGENT_ID"] = a.id
+	step.Env["FORGE_JOB_ID"] = spec.JobID
 
 	/*
 		Fetch secrets from Vault
