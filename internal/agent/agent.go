@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -139,7 +140,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		maxConcurrency:   concurrency,
 		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
-		out:              make(chan reliableMessage, 2048),
+		out:              make(chan reliableMessage, 4096),
 	}
 }
 
@@ -1096,12 +1097,14 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		A buffered channel decouples the executor's log writes from the
 		HTTP POST to the scheduler - the scanner never blocks.
 	*/
-	logCh := make(chan api.LogEvent, 65536)
+	logCh := make(chan api.LogEvent, 131072)
+	var dropped atomic.Int64
 
 	exec.StreamCallback = func(stepID string, ts time.Time, level, message string) {
 		select {
 		case logCh <- api.LogEvent{Timestamp: ts, Level: level, Message: message}:
 		default:
+			dropped.Add(1)
 		}
 	}
 
@@ -1144,7 +1147,17 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			Level:     "ERROR",
 			Message:   fmt.Sprintf("◯ step timed out after %v", step.Timeout),
 		})
-	} else if err != nil {
+	}
+
+	if d := dropped.Load(); d > 0 {
+		logEvents = append(logEvents, api.LogEvent{
+			Timestamp: time.Now(),
+			Level:     "WARN",
+			Message:   fmt.Sprintf("◯ agent dropped %d log lines due to slow network/scheduler", d),
+		})
+	}
+
+	if err != nil && !timedOut {
 		/*
 			Hard error from the executor - e.g. Docker failed to start the container due to workdir being set to "".
 			We'll synthesize a log event so the user sees what went wrong in the UI rather than "no logs stored for this job".
@@ -1890,7 +1903,7 @@ func (a *Agent) submitDebugOutput(sessionID string, req api.SubmitOutputRequest)
 }
 
 // streamJobLogs reads log events from ch and POSTs them to the scheduler
-// in batches - either every 500ms or every 50 events, whichever comes first.
+// in batches - either every 500ms or every 100 events, whichever comes first.
 //
 // The batching avoids hammering the scheduler with one HTTP request per line
 // while still keeping latency low enough that the browser feels real-time.
@@ -1905,7 +1918,7 @@ func (a *Agent) streamJobLogs(jobID, leaseID string, ch <-chan api.LogEvent) {
 			return
 		}
 		a.postLogBatch(jobID, leaseID, buf)
-		buf = buf[:0]
+		buf = nil // Use nil to allow GC of the underlying array if it grew large
 	}
 
 	for {
@@ -1917,7 +1930,7 @@ func (a *Agent) streamJobLogs(jobID, leaseID string, ch <-chan api.LogEvent) {
 				return
 			}
 			buf = append(buf, e)
-			if len(buf) >= 50 {
+			if len(buf) >= 100 {
 				flush()
 			}
 		case <-ticker.C:

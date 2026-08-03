@@ -226,6 +226,8 @@ func buildImage(repoRoot, imageName, dockerfile string) error {
 		lastErr = err
 		lastOutput = captured.String()
 
+		fmt.Fprintf(os.Stderr, "[integration] build FAILED (attempt %d/%d):\n--- build output ---\n%s\n--- end build output ---\nError: %v\n", attempt, maxAttempts, lastOutput, err)
+
 		transient := false
 		for _, sig := range buildkitTransientExportErrors {
 			if strings.Contains(lastOutput, sig) {
@@ -376,7 +378,11 @@ func initProjectName() {
 		agentID = "local"
 	}
 	jobID := os.Getenv("FORGE_JOB_ID")
+	shardIndex := os.Getenv("FORGE_SHARD_INDEX")
 	uniquePart := jobID
+	if shardIndex != "" {
+		uniquePart += "-s" + shardIndex
+	}
 	if uniquePart == "" {
 		uniquePart = "it"
 	}

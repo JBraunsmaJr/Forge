@@ -66,7 +66,11 @@ Typical use, keeping the raw JSON for from-go-test:
 				os.Stdout.WriteString(ev.Output)
 			}
 		}
-		return sc.Err()
+		if err := sc.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "stream-go-test: scanner error: %v\n", err)
+			return err
+		}
+		return nil
 	},
 }
 
