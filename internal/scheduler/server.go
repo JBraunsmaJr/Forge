@@ -440,6 +440,8 @@ func (s *Server) Start(ctx context.Context) error {
 		gsrv := grpc.NewServer(
 			grpc.KeepaliveParams(kasp),
 			grpc.KeepaliveEnforcementPolicy(kapv),
+			grpc.MaxRecvMsgSize(64*1024*1024),
+			grpc.MaxSendMsgSize(64*1024*1024),
 		)
 		pb.RegisterAgentServiceServer(gsrv, &grpcServer{scheduler: s})
 		go func() {

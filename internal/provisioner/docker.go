@@ -93,7 +93,11 @@ func (p *DockerFakeProvisioner) ScaleDown(ctx context.Context, ids []InstanceID)
 }
 
 func (p *DockerFakeProvisioner) ListInstances(ctx context.Context) ([]Instance, error) {
-	cmd := exec.CommandContext(ctx, "docker", "ps", "-a", "--filter", "label=forge-pool", "--format", "{{.ID}}")
+	args := []string{"ps", "-a", "--filter", "label=forge-pool", "--format", "{{.ID}}"}
+	if p.AgentID != "" {
+		args = append(args, "--filter", "label=forge.agent_id="+p.AgentID)
+	}
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps failed: %w: %s", err, string(out))

@@ -382,10 +382,11 @@ func initProjectName() {
 	// Use a unique image name for this test run to avoid build collisions on shared hosts.
 	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
 	os.Setenv("FORGE_AUTOSCALER_IMAGE", "forge-autoscaler-test:"+composeProjectName)
-	// Ensure FORGE_PROXY_AGENT_ID is set for the internal stack to use for labels.
-	if os.Getenv("FORGE_PROXY_AGENT_ID") == "" {
-		os.Setenv("FORGE_PROXY_AGENT_ID", agentID)
-	}
+	// Ensure FORGE_PROXY_AGENT_ID is unique for this stack to avoid cross-talk
+	// between parallel shards sharing the same host Docker daemon.
+	os.Setenv("FORGE_PROXY_AGENT_ID", composeProjectName)
+	// Proxy also needs a unique ID to avoid collisions in the host sockets volume.
+	os.Setenv("FORGE_AGENT_ID", composeProjectName)
 }
 
 func composeArgs(sub ...string) []string {

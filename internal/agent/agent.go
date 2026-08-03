@@ -237,6 +237,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		PermitWithoutStream: true,
 	}))
 
+	opts = append(opts, grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(64*1024*1024),
+		grpc.MaxCallSendMsgSize(64*1024*1024),
+	))
+
 	fmt.Printf("[agent %s] dialing gRPC: %s (secure: %v)\n", a.id[:8], grpcAddr, isSecure)
 	conn, err := grpc.NewClient(grpcAddr, opts...)
 	if err != nil {
@@ -1496,10 +1501,11 @@ func cacheHitLog(taskHash string) []api.LogEvent {
 // Errors on individual lines are silently skipped rather than aborting
 // a partial log is better than no log if the step crashed mid-write
 func readLogFile(path string) []api.LogEvent {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
+	defer f.Close()
 
 	// A struct that matches only the fields we care about from the
 	// logger's Event type. We don't need to import the log package —
@@ -1511,8 +1517,12 @@ func readLogFile(path string) []api.LogEvent {
 	}
 
 	var events []api.LogEvent
-	for line := range bytes.SplitSeq(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
+	sc := bufio.NewScanner(f)
+	// Match the executor's 10MB buffer to support long lines.
+	sc.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
 			continue
 		}
