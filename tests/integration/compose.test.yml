@@ -89,7 +89,16 @@ services:
       forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   autoscaler:
-    image: "${FORGE_IMAGE}"
+    # This is a genuinely different binary from scheduler/agent/proxy/init
+    # (cmd/forge-autoscaler, not a subcommand of the main forge CLI — see
+    # deployments/autoscaler/Dockerfile). It was previously pointed at
+    # ${FORGE_IMAGE} like the others below, which meant it ran the main
+    # forge binary with no matching subcommand — Cobra's response to that
+    # is to print its help/usage text and exit, which looked like a
+    # config error but was really just the wrong image entirely.
+    build:
+      context: .
+      dockerfile: deployments/autoscaler/Dockerfile
     logging: *default-logging
     labels:
       forge.managed: "true"
@@ -98,6 +107,9 @@ services:
       FORGE_PROXY_AGENT_ID: "${FORGE_PROXY_AGENT_ID}"
       FORGE_SCHEDULER_URL: http://scheduler:8080
       FORGE_API_TOKEN: it-admin-token-forge
+      # Correct as-is: this is what the autoscaler tells spawned agents
+      # to run, and agents do correctly use the main forge binary's
+      # "agent" subcommand.
       FORGE_AUTOSCALER_DOCKER_IMAGE: "${FORGE_IMAGE}"
       FORGE_AUTOSCALER_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME}_forge"
       FORGE_PROXY_URL: http://proxy:9090
