@@ -60,7 +60,7 @@ Typical use, keeping the raw JSON for from-go-test:
 				os.Stdout.Write(append(line, '\n'))
 				continue
 			}
-			if ev.Action == "output" {
+			if ev.Output != "" {
 				// Output already carries its own trailing newline.
 				// Unbuffered on purpose: these lines stream into live CI logs.
 				os.Stdout.WriteString(ev.Output)
