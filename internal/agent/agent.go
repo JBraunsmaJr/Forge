@@ -81,7 +81,7 @@ type Agent struct {
 
 	// gRPC communication
 	grpcClient pb.AgentServiceClient
-	out        chan *pb.AgentMessage
+	out        chan reliableMessage
 	grpcMu     sync.Mutex
 	sessionCtx context.Context
 
@@ -94,7 +94,6 @@ type Agent struct {
 	lastCleanup      time.Time
 	wg               sync.WaitGroup
 	loopsWg          sync.WaitGroup
-	reliableOut      chan reliableMessage
 }
 
 type reliableMessage struct {
@@ -140,8 +139,7 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		maxConcurrency:   concurrency,
 		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
-		out:              make(chan *pb.AgentMessage, 1024),
-		reliableOut:      make(chan reliableMessage, 128),
+		out:              make(chan reliableMessage, 2048),
 	}
 }
 
@@ -292,58 +290,26 @@ func (a *Agent) Run(ctx context.Context) error {
 	go func() {
 		defer close(senderDone)
 		defer sessionCancel()
-		var pending []reliableMessage
-		outCh, relCh := a.out, a.reliableOut
-		doneCh := sessionCtx.Done()
 		for {
-			var msg *pb.AgentMessage
-			var rm reliableMessage
-			var ok bool
-
 			select {
-			case msg, ok = <-outCh:
+			case rm, ok := <-a.out:
 				if !ok {
-					outCh = nil
-				}
-			case rm, ok = <-relCh:
-				if !ok {
-					relCh = nil
-				} else {
-					pending = append(pending, rm)
-				}
-			case <-doneCh:
-				doneCh = nil
-			}
-
-			// Process pending reliable messages first
-			for len(pending) > 0 {
-				p := pending[0]
-				p.msg.AgentId = a.id
-				a.grpcMu.Lock()
-				err := stream.Send(p.msg)
-				a.grpcMu.Unlock()
-				if err != nil {
-					fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
-					// If send fails, the session is likely dead. Return from loop
-					// and let Recv() or sessionCtx.Done() handle shutdown.
-					// We don't acknowledge, so reportComplete will block until session ctx is done.
 					return
 				}
-				p.ack <- nil
-				pending = pending[1:]
-			}
-
-			if msg != nil {
-				msg.AgentId = a.id
+				rm.msg.AgentId = a.id
 				a.grpcMu.Lock()
-				err := stream.Send(msg)
+				err := stream.Send(rm.msg)
 				a.grpcMu.Unlock()
-				if err != nil {
+				if rm.ack != nil {
+					if err != nil {
+						fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
+						return
+					}
+					rm.ack <- nil
+				} else if err != nil {
 					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
 				}
-			}
-
-			if outCh == nil && relCh == nil && len(pending) == 0 {
+			case <-sessionCtx.Done():
 				return
 			}
 		}
@@ -530,7 +496,6 @@ ReceiveLoop:
 	fmt.Printf("[agent %s] joining background loops...\n", a.id[:8])
 	a.loopsWg.Wait()
 	close(a.out)
-	close(a.reliableOut)
 	<-senderDone
 	return nil
 }
@@ -603,7 +568,7 @@ func (a *Agent) isSpotEvicted() bool {
 
 func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
 	select {
-	case a.out <- msg:
+	case a.out <- reliableMessage{msg: msg}:
 		return nil
 	case <-time.After(5 * time.Second):
 		fmt.Printf("[agent %s] warning: message queue full, dropping message\n", a.id[:8])
@@ -615,7 +580,7 @@ func (a *Agent) sendReliable(msg *pb.AgentMessage) error {
 	ack := make(chan error, 1)
 	rm := reliableMessage{msg: msg, ack: ack}
 	select {
-	case a.reliableOut <- rm:
+	case a.out <- rm:
 		select {
 		case err := <-ack:
 			return err
@@ -1131,7 +1096,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		A buffered channel decouples the executor's log writes from the
 		HTTP POST to the scheduler - the scanner never blocks.
 	*/
-	logCh := make(chan api.LogEvent, 4096)
+	logCh := make(chan api.LogEvent, 65536)
 
 	exec.StreamCallback = func(stepID string, ts time.Time, level, message string) {
 		select {
@@ -1539,6 +1504,14 @@ func readLogFile(path string) []api.LogEvent {
 			Timestamp: ts,
 			Level:     raw.Level,
 			Message:   raw.Message,
+		})
+	}
+
+	if err := sc.Err(); err != nil {
+		events = append(events, api.LogEvent{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   fmt.Sprintf("log reader error: %v", err),
 		})
 	}
 	return events

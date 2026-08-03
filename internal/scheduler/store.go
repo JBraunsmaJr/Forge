@@ -568,14 +568,8 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 			if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
 				return "", fmt.Errorf("clearing logs: %w", err)
 			}
-			for _, log := range logs {
-				_, err = tx.Exec(
-					`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1, $2, $3, $4)`,
-					jobID, log.Timestamp, log.Level, log.Message,
-				)
-				if err != nil {
-					return "", fmt.Errorf("inserting log: %w", err)
-				}
+			if err := s.batchInsertLogs(tx, jobID, logs); err != nil {
+				return "", fmt.Errorf("batch inserting logs: %w", err)
 			}
 		} else {
 			// If we have fewer logs than before, just append the new ones that are
@@ -583,14 +577,8 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 			// Since we don't have unique IDs, we just append everything and let the UI
 			// handle potential duplicates (or the user can see both).
 			// Better than losing all logs.
-			for _, log := range logs {
-				_, err = tx.Exec(
-					`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1, $2, $3, $4)`,
-					jobID, log.Timestamp, log.Level, log.Message,
-				)
-				if err != nil {
-					return "", fmt.Errorf("appending log: %w", err)
-				}
+			if err := s.batchInsertLogs(tx, jobID, logs); err != nil {
+				return "", fmt.Errorf("batch appending logs: %w", err)
 			}
 		}
 	}
@@ -1412,11 +1400,13 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 func (s *Store) AppendJobLogs(jobID, leaseID string, events []api.LogEvent) error {
 	// Verify the lease is still valid.
 	var currentLease string
+	// We allow appending to jobs in any status as long as the lease matches,
+	// to account for late-arriving log batches from the agent.
 	err := s.db.QueryRow(
-		`SELECT lease_id FROM jobs WHERE id=$1 AND (status='running' OR status='waiting')`, jobID,
+		`SELECT lease_id FROM jobs WHERE id=$1`, jobID,
 	).Scan(&currentLease)
 	if err != nil || currentLease != leaseID {
-		return fmt.Errorf("invalid lease or job not running")
+		return fmt.Errorf("invalid lease")
 	}
 
 	tx, err := s.db.Begin()
@@ -1425,16 +1415,41 @@ func (s *Store) AppendJobLogs(jobID, leaseID string, events []api.LogEvent) erro
 	}
 	defer tx.Rollback()
 
-	for _, e := range events {
-		_, err = tx.Exec(
-			`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1,$2,$3,$4)`,
-			jobID, e.Timestamp, e.Level, e.Message,
-		)
-		if err != nil {
+	if err := s.batchInsertLogs(tx, jobID, events); err != nil {
+		return fmt.Errorf("batch inserting logs: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) batchInsertLogs(tx *sql.Tx, jobID string, logs []api.LogEvent) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	const batchSize = 500
+	for i := 0; i < len(logs); i += batchSize {
+		end := i + batchSize
+		if end > len(logs) {
+			end = len(logs)
+		}
+
+		batch := logs[i:end]
+		query := "INSERT INTO job_logs (job_id, ts, level, message) VALUES "
+		vals := []any{}
+		for j, log := range batch {
+			if j > 0 {
+				query += ","
+			}
+			query += fmt.Sprintf("($%d, $%d, $%d, $%d)", j*4+1, j*4+2, j*4+3, j*4+4)
+			vals = append(vals, jobID, log.Timestamp, log.Level, log.Message)
+		}
+
+		if _, err := tx.Exec(query, vals...); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) GetRunsOlderThan(olderThan time.Duration) ([]string, error) {

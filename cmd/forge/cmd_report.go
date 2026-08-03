@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -182,6 +183,10 @@ func fromGoTest(inputPath, outputPath string) error {
 				pkg.skipped++
 			}
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanning go test output: %w", err)
 	}
 
 	moduleName := getModuleName()
