@@ -47,7 +47,7 @@ Typical use, keeping the raw JSON for from-go-test:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc := bufio.NewScanner(os.Stdin)
 		// go test output lines can be long (giant assertion diffs).
-		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 		for sc.Scan() {
 			line := sc.Bytes()
 			var ev struct {
@@ -145,6 +145,9 @@ func fromGoTest(inputPath, outputPath string) error {
 	packages := make(map[string]*pkgStats)
 
 	scanner := bufio.NewScanner(f)
+	// go test output lines can be long (giant assertion diffs).
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		var e goTestEvent
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {

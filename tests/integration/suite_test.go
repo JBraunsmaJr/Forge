@@ -116,8 +116,13 @@ func startStack(repoRoot string) error {
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
 	fmt.Println("[integration] pre-building forge image...")
-	if err := buildForgeImage(repoRoot); err != nil {
+	if err := buildImage(repoRoot, os.Getenv("FORGE_IMAGE"), "Dockerfile"); err != nil {
 		return fmt.Errorf("pre-building forge image: %w", err)
+	}
+
+	fmt.Println("[integration] pre-building autoscaler image...")
+	if err := buildImage(repoRoot, os.Getenv("FORGE_AUTOSCALER_IMAGE"), "deployments/autoscaler/Dockerfile"); err != nil {
+		return fmt.Errorf("pre-building autoscaler image: %w", err)
 	}
 
 	args := composeArgs("up", "-d")
@@ -196,20 +201,16 @@ var buildkitTransientExportErrors = []string{
 	"content digest",
 }
 
-// buildForgeImage runs `docker build` for the shared test image, retrying
-// a few times on the known transient BuildKit export race above. Any
-// other failure (a real Dockerfile problem, a compile error, etc.) is
-// deterministic and returned immediately on the first attempt — this
-// only adds delay for the specific class of error that's actually worth
-// retrying.
-func buildForgeImage(repoRoot string) error {
+// buildImage runs `docker build` for the given image and dockerfile, retrying
+// a few times on the known transient BuildKit export race.
+func buildImage(repoRoot, imageName, dockerfile string) error {
 	const maxAttempts = 3
 	var lastErr error
 	var lastOutput string
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
+		buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", imageName, "-f", dockerfile, ".")
 		buildCmd.Dir = repoRoot
 
 		var captured bytes.Buffer
@@ -380,6 +381,7 @@ func initProjectName() {
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
 	// Use a unique image name for this test run to avoid build collisions on shared hosts.
 	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
+	os.Setenv("FORGE_AUTOSCALER_IMAGE", "forge-autoscaler-test:"+composeProjectName)
 	// Ensure FORGE_PROXY_AGENT_ID is set for the internal stack to use for labels.
 	if os.Getenv("FORGE_PROXY_AGENT_ID") == "" {
 		os.Setenv("FORGE_PROXY_AGENT_ID", agentID)

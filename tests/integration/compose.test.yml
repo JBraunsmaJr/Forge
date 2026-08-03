@@ -89,16 +89,7 @@ services:
       forge.agent_id: "${FORGE_PROXY_AGENT_ID}"
 
   autoscaler:
-    # This is a genuinely different binary from scheduler/agent/proxy/init
-    # (cmd/forge-autoscaler, not a subcommand of the main forge CLI — see
-    # deployments/autoscaler/Dockerfile). It was previously pointed at
-    # ${FORGE_IMAGE} like the others below, which meant it ran the main
-    # forge binary with no matching subcommand — Cobra's response to that
-    # is to print its help/usage text and exit, which looked like a
-    # config error but was really just the wrong image entirely.
-    build:
-      context: .
-      dockerfile: deployments/autoscaler/Dockerfile
+    image: "${FORGE_AUTOSCALER_IMAGE}"
     logging: *default-logging
     labels:
       forge.managed: "true"
