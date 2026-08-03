@@ -116,13 +116,7 @@ func startStack(repoRoot string) error {
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
 	fmt.Println("[integration] pre-building forge image...")
-	buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer buildCancel()
-	buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
-	buildCmd.Dir = repoRoot
-	buildCmd.Stdout = os.Stderr
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
+	if err := buildForgeImage(repoRoot); err != nil {
 		return fmt.Errorf("pre-building forge image: %w", err)
 	}
 
@@ -187,6 +181,67 @@ func startStack(repoRoot string) error {
 			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
 		}
 	}
+}
+
+// buildkitTransientExportErrors are substrings of a known, well-documented
+// class of BuildKit bug (e.g. moby/buildkit#2041, #4793) where a build's
+// final "exporting to image" step fails with "No such image" / "content
+// digest ... not found" specifically under concurrent build load sharing
+// the same BuildKit cache — exactly what happens here when multiple
+// sharded test runs each run their own `docker build` around the same
+// time. It's transient: retrying after a short pause routinely succeeds.
+var buildkitTransientExportErrors = []string{
+	"failed to export image",
+	"No such image",
+	"content digest",
+}
+
+// buildForgeImage runs `docker build` for the shared test image, retrying
+// a few times on the known transient BuildKit export race above. Any
+// other failure (a real Dockerfile problem, a compile error, etc.) is
+// deterministic and returned immediately on the first attempt — this
+// only adds delay for the specific class of error that's actually worth
+// retrying.
+func buildForgeImage(repoRoot string) error {
+	const maxAttempts = 3
+	var lastErr error
+	var lastOutput string
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
+		buildCmd.Dir = repoRoot
+
+		var captured bytes.Buffer
+		buildCmd.Stdout = io.MultiWriter(os.Stderr, &captured)
+		buildCmd.Stderr = io.MultiWriter(os.Stderr, &captured)
+
+		err := buildCmd.Run()
+		buildCancel()
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		lastOutput = captured.String()
+
+		transient := false
+		for _, sig := range buildkitTransientExportErrors {
+			if strings.Contains(lastOutput, sig) {
+				transient = true
+				break
+			}
+		}
+		if !transient || attempt == maxAttempts {
+			break
+		}
+
+		wait := time.Duration(attempt) * 5 * time.Second
+		fmt.Printf("[integration] build hit a known transient BuildKit export race (attempt %d/%d), retrying in %s...\n", attempt, maxAttempts, wait)
+		time.Sleep(wait)
+	}
+
+	return lastErr
 }
 
 func getMappedPort(repoRoot, service string, port int) (string, error) {
