@@ -274,8 +274,19 @@ func stopStack(repoRoot string) {
 			if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
 				continue
 			}
-			// Only clean up job containers or policies, not the stack itself.
-			if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
+			// Only clean up job containers, policies, or autoscaler-spawned
+			// agents — not the stack itself. Agents don't carry
+			// forge.run_id/forge.policy (an agent isn't tied to one
+			// specific job over its lifetime); they carry forge-pool
+			// instead (see DockerFakeProvisioner.ScaleUp). Without this,
+			// dynamically-spawned agents are invisible to `docker compose
+			// down` below — they were never part of the compose project,
+			// just raw `docker run` containers on this same network — and
+			// are left orphaned after every test run that triggers any
+			// autoscaling.
+			if !strings.Contains(labels, "forge.run_id") &&
+				!strings.Contains(labels, "forge.policy") &&
+				!strings.Contains(labels, "forge-pool") {
 				continue
 			}
 			toRemove = append(toRemove, id)
