@@ -1,8 +1,17 @@
-// Shared display metadata for root-cause failure categories (issue #44).
-// Single source of truth for RootCauseCard.svelte and
-// FailureInsights.svelte — add a category here once, both places pick it
-// up, and the two can't silently drift apart.
-
+/**
+ * A collection of category labels used for classification purposes.
+ * Each key represents a category identifier, and the corresponding value
+ * is the human-readable label for that category.
+ *
+ * The available categories include:
+ * - infrastructure: Represents categories related to infrastructure issues.
+ * - dependency: Indicates issues caused by dependency-related problems.
+ * - flaky_test: Refers to tests that are unstable and produce inconsistent results.
+ * - code_defect: Denotes issues originating from defects or bugs in the code.
+ * - configuration: Represents problems related to misconfigurations.
+ * - network: Covers issues related to networking problems.
+ * - unknown: Categorizes items that cannot be classified under any specific category.
+ */
 export const categoryLabels: Record<string, string> = {
     infrastructure: 'Infrastructure',
     dependency: 'Dependency',
@@ -23,9 +32,11 @@ export const categoryColors: Record<string, string> = {
     unknown: '#8a8a8a',
 };
 
-// Darker background tints for the badge in RootCauseCard, keyed the same
-// way. Colors chosen to pair with categoryColors above (same hue, dark
-// surface) rather than derived at runtime, so they stay crisp/legible.
+/**
+ * A collection of background colors for category badges used in RootCauseCard.
+ * Each key corresponds to a category identifier, and the value is the
+ * hexadecimal color code for the badge background.
+ */
 export const categoryBadgeBg: Record<string, string> = {
     infrastructure: '#2e1d14',
     dependency: '#211a30',

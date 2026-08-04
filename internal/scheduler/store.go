@@ -558,9 +558,11 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 	}
 
 	if len(logs) > 0 {
-		// Heuristic to avoid wiping streamed logs if the agent's final report is incomplete.
-		// We only replace if the new set is at least as large as the old one,
-		// or if the old set is very small (less than 10 lines).
+		/*
+			Heuristic to avoid wiping streamed logs if the agent's final report is incomplete.
+			We only replace if the new set is at least as large as the old one,
+			or if the old set is very small (less than 10 lines).
+		*/
 		var existingCount int
 		s.db.QueryRow(`SELECT COUNT(*) FROM job_logs WHERE job_id = $1`, jobID).Scan(&existingCount)
 
@@ -572,11 +574,13 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 				return "", fmt.Errorf("batch inserting logs: %w", err)
 			}
 		} else {
-			// If we have fewer logs than before, just append the new ones that are
-			// likely "final" messages (like timeouts or agent errors) that weren't streamed.
-			// Since we don't have unique IDs, we just append everything and let the UI
-			// handle potential duplicates (or the user can see both).
-			// Better than losing all logs.
+			/*
+				If we have fewer logs than before, just append the new ones that are
+				likely "final" messages (like timeouts or agent errors) that weren't streamed.
+				Since we don't have unique IDs, we just append everything and let the UI
+				handle potential duplicates (or the user can see both).
+				Better than losing all logs.
+			*/
 			if err := s.batchInsertLogs(tx, jobID, logs); err != nil {
 				return "", fmt.Errorf("batch appending logs: %w", err)
 			}

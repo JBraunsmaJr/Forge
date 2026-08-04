@@ -52,14 +52,16 @@
             activeRun.set(updated);
 
             if ($selectedJob) {
-                // Keep the currently-selected job's details in sync as the
-                // run progresses — including the moment it finishes, so a
-                // status change, exit code, or root-cause classification
-                // that arrives after the job leaves "running"/"waiting"
-                // still reaches the details panel. Previously this only
-                // refreshed while the job was still running/waiting, so a
-                // job that failed mid-stream would freeze its details at
-                // the last "running" snapshot until the user re-clicked it.
+                /*
+                    Keep the currently selected job's details in sync as the
+                    run progresses - including the moment it finishes, so a
+                    status change, exit code, or root-cause classification
+                    that arrives after the job leaves "running"/"waiting"
+                    still reaches the details panel. Previously this only
+                    refreshed while the job was still running/waiting, so a
+                    job that failed mid-stream would freeze its details at
+                    the last "running" snapshot until the user re-clicked it.
+                 */
                 const stillPresent = (updated.jobs || []).find(j => j.job_id === $selectedJob!.job_id);
                 if (stillPresent) {
                     selectedJob.set(stillPresent);

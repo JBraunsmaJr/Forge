@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { api, type AgentInfo } from '../api';
-    import { Server, Activity, Cpu, Package, HardDrive, ShieldCheck, ShieldAlert, RefreshCw } from '@lucide/svelte';
+    import { Server, Activity, Cpu, Package, RefreshCw } from '@lucide/svelte';
 
     let agents: AgentInfo[] = [];
     let loading = true;
