@@ -66,6 +66,19 @@ type Server struct {
 	server      *http.Server
 	agents      *AgentRegistry
 	oidc        *OIDCProvider
+
+	// scmStatusMu guards scmStatusReported, which dedupes SCM status
+	// posts per run. publishRunDetail can fire multiple times for the
+	// same terminal run — once synchronously per job completion, and
+	// again whenever an async root-cause classification finishes after
+	// the run is already terminal — and without this guard each of
+	// those re-posts the same "success"/"failure" status to GitHub/
+	// GitLab. This map grows by one entry per run for the life of the
+	// process (never evicted); each entry is two short strings, so this
+	// isn't a practical concern until a single scheduler process has
+	// handled a very large number of runs without restarting.
+	scmStatusMu       sync.Mutex
+	scmStatusReported map[string]string
 }
 
 // NewServer creates a scheduler server backed by the given Postgres database.
@@ -149,6 +162,8 @@ func NewServer(addr string, db *sql.DB, gdb *gorm.DB, baseURL string) *Server {
 		addr:        addr,
 		agents:      newAgentRegistry(),
 		oidc:        oidc,
+
+		scmStatusReported: make(map[string]string),
 	}
 }
 
@@ -1577,6 +1592,14 @@ func (s *Server) publishRunDetail(runID string) {
 }
 
 func (s *Server) reportSCMStatus(detail *api.RunDetail) {
+	s.scmStatusMu.Lock()
+	if s.scmStatusReported[detail.RunID] == string(detail.Status) {
+		s.scmStatusMu.Unlock()
+		return
+	}
+	s.scmStatusReported[detail.RunID] = string(detail.Status)
+	s.scmStatusMu.Unlock()
+
 	proj, _, scmToken, ok := s.projects.GetProject(detail.ProjectID)
 	if !ok {
 		fmt.Printf("[scm] project %s not found for status report\n", detail.ProjectID)

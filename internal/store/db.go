@@ -27,7 +27,32 @@ func Open(connStr string) (*sql.DB, error) {
 	return db, nil
 }
 
-// NewGORM wraps an existing *sql.DB with GORM and runs migrations.
+// NewGORM opens its own native pgx-based connection for GORM, using the
+// same DSN the app's lib/pq connection (see Open, above) already uses.
+// It deliberately does NOT reuse that lib/pq *sql.DB: gorm.io/driver/
+// postgres's Migrator injects a pgx-specific query-exec-mode hint
+// (pgx.QueryExecModeSimpleProtocol) as an extra bind variable whenever
+// Config.DriverName is empty or "pgx" — see go-gorm/postgres's
+// migrator.go. That hint is meaningless to lib/pq, which then sees one
+// more parameter than the query has placeholders and fails with "pq:
+// got N parameters but the statement requires N-1". This isn't limited
+// to diffing old, pre-existing tables — it reproduces on a brand-new
+// database too, e.g. resolving sso_identities' foreign key to users
+// immediately after users was just created in the same AutoMigrate pass.
+//
+// IMPORTANT: do not "fix" this by setting Config.DriverName ourselves.
+// Leaving DriverName empty is what routes postgres.Open's Initialize
+// down its native pgx.ParseConfig/stdlib.OpenDB path in the first place;
+// setting DriverName: "postgres" flips that same code path over to
+// sql.Open("postgres", dsn) — i.e. lib/pq — which reintroduces exactly
+// the mismatch above (empty/"pgx" DriverName + a non-pgx connection).
+// The fix here is giving GORM a genuinely pgx-backed connection, not
+// silencing the hint.
+//
+// This does mean two separate connection pools to the same database:
+// the lib/pq one for the app's hand-written SQL (Store), and this pgx
+// one for GORM. That's intentional — mixing drivers on one pool is
+// exactly what caused the bug.
 func NewGORM(dsn string) (*gorm.DB, error) {
 	gdb, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger:         logger.Default.LogMode(logger.Silent),
@@ -52,58 +77,26 @@ func autoMigrate(db *gorm.DB) error {
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 
-	/*
-		gorm.io/driver/postgres v1.6.0 is built around pgx internally, but
-		NewGORM hands it a *sql.DB opened via lib/pq (see the Conn config
-		above). Under that combination, the driver's column-introspection
-		query — which AutoMigrate uses to diff an EXISTING table's columns
-		— fails with "pq: got N parameters but the statement requires
-		N-1". This isn't specific to any one table or model: it reproduces
-		on the very first table AutoMigrate touches (orgs), regardless of
-		anything in this feature.
-
-		Until the connection is switched to a native pgx one (the real
-		fix — see NewGORM), we avoid the broken code path by skipping
-		AutoMigrate for any table that already exists (HasTable itself
-		works fine; only the deeper column diff is broken) and only
-		letting AutoMigrate CREATE genuinely new tables, which doesn't
-		hit this code path. This means schema changes to EXISTING tables
-		are no longer applied automatically — they need a hand-written
-		migration (like the raw-SQL indexes below) until the connection
-		fixed properly.
-	*/
-
-	models := []struct {
-		name  string
-		model any
-	}{
-		{"orgs", &Org{}},
-		{"users", &User{}},
-		{"sso_identities", &SSOIdentity{}},
-		{"projects", &Project{}},
-		{"project_health_snapshots", &ProjectHealthSnapshot{}},
-		{"api_tokens", &APIToken{}},
-		{"audit_logs", &AuditLog{}},
-		{"runs", &Run{}},
-		{"jobs", &Job{}},
-		{"test_file_durations", &TestFileDuration{}},
-		{"test_shard_assignments", &TestShardAssignment{}},
-		{"job_logs", &JobLog{}},
-		{"job_root_causes", &JobRootCause{}},
-		{"policies", &Policy{}},
-		{"step_results", &StepResult{}},
-		{"artifacts", &Artifact{}},
-	}
-
-	for _, m := range models {
-		if migrateDB.Migrator().HasTable(m.model) {
-			fmt.Printf("[migrate] %s already exists — skipping AutoMigrate diff\n", m.name)
-			continue
-		}
-		fmt.Printf("[migrate] %s does not exist — creating\n", m.name)
-		if err := migrateDB.AutoMigrate(m.model); err != nil {
-			return fmt.Errorf("AutoMigrate %s: %w", m.name, err)
-		}
+	err := migrateDB.AutoMigrate(
+		&Org{},
+		&User{},
+		&SSOIdentity{},
+		&Project{},
+		&ProjectHealthSnapshot{},
+		&APIToken{},
+		&AuditLog{},
+		&Run{},
+		&Job{},
+		&TestFileDuration{},
+		&TestShardAssignment{},
+		&JobLog{},
+		&JobRootCause{},
+		&Policy{},
+		&StepResult{},
+		&Artifact{},
+	)
+	if err != nil {
+		return fmt.Errorf("AutoMigrate models: %w", err)
 	}
 
 	// Custom trigger for audit_logs immutability
