@@ -30,6 +30,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/rootcause"
 	"github.com/JBraunsmaJr/forge/internal/scm"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
 	"github.com/JBraunsmaJr/forge/internal/tracing"
@@ -65,6 +66,19 @@ type Server struct {
 	server      *http.Server
 	agents      *AgentRegistry
 	oidc        *OIDCProvider
+
+	// scmStatusMu guards scmStatusReported, which dedupes SCM status
+	// posts per run. publishRunDetail can fire multiple times for the
+	// same terminal run — once synchronously per job completion, and
+	// again whenever an async root-cause classification finishes after
+	// the run is already terminal — and without this guard each of
+	// those re-posts the same "success"/"failure" status to GitHub/
+	// GitLab. This map grows by one entry per run for the life of the
+	// process (never evicted); each entry is two short strings, so this
+	// isn't a practical concern until a single scheduler process has
+	// handled a very large number of runs without restarting.
+	scmStatusMu       sync.Mutex
+	scmStatusReported map[string]string
 }
 
 // NewServer creates a scheduler server backed by the given Postgres database.
@@ -148,6 +162,8 @@ func NewServer(addr string, db *sql.DB, gdb *gorm.DB, baseURL string) *Server {
 		addr:        addr,
 		agents:      newAgentRegistry(),
 		oidc:        oidc,
+
+		scmStatusReported: make(map[string]string),
 	}
 }
 
@@ -356,6 +372,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.handleDeleteProject)
 	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.handleGetProjectWebhook)
+	mux.HandleFunc("GET /api/v1/projects/{id}/failure-stats", s.handleFailureStats)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
 
 	// SCM webhooks - HMAC secured, excempt from token auth
@@ -438,6 +455,8 @@ func (s *Server) Start(ctx context.Context) error {
 		gsrv := grpc.NewServer(
 			grpc.KeepaliveParams(kasp),
 			grpc.KeepaliveEnforcementPolicy(kapv),
+			grpc.MaxRecvMsgSize(64*1024*1024),
+			grpc.MaxSendMsgSize(64*1024*1024),
 		)
 		pb.RegisterAgentServiceServer(gsrv, &grpcServer{scheduler: s})
 		go func() {
@@ -1504,10 +1523,58 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 		jobsCompletedTotal.WithLabelValues(detail.OrgID, detail.ProjectID, result).Inc()
 		jobDurationSeconds.WithLabelValues(detail.OrgID, detail.ProjectID).Observe(float64(req.Duration) / 1000.0)
+
+		// Root-cause classification: pattern-match the job's
+		// own logs against the signature library.
+		if (result == "failed" || req.TimedOut) && !req.Skipped {
+			jobID := r.PathValue("id")
+			lines := logMessages(req.LogEvents)
+			projectID := detail.ProjectID
+			fmt.Printf("[rootcause] classifying job %s (project=%q step=%q log_lines=%d)\n", jobID[:8], projectID, stepID, len(lines))
+			go func() {
+				m := rootcause.Classify(lines)
+				if m == nil {
+					// Nothing in the library matched. Still record an
+					// explicit "unknown" classification instead of
+					// leaving no row at all — otherwise a failure with
+					// no matching signature is indistinguishable from
+					// the classifier never having run, and it silently
+					// drops out of the project's failure breakdown too.
+					m = &rootcause.Match{Pattern: rootcause.Pattern{
+						ID:           "unclassified",
+						Category:     rootcause.CategoryUnknown,
+						Description:  "No known failure signature matched this job's logs.",
+						SuggestedFix: "Read the logs above to diagnose this one manually. If this keeps happening, it's worth adding as a new signature to the pattern library.",
+					}}
+				}
+				fmt.Printf("[rootcause] job %s classified as %s (pattern=%s)\n", jobID[:8], m.Pattern.Category, m.Pattern.ID)
+				if err := s.store.RecordJobRootCause(jobID, runID, projectID, stepID, *m); err != nil {
+					fmt.Printf("[rootcause] FAILED to record classification for job %s: %v\n", jobID[:8], err)
+					return
+				}
+				fmt.Printf("[rootcause] recorded classification for job %s\n", jobID[:8])
+				s.publishRunDetail(runID)
+			}()
+		} else {
+			fmt.Printf("[rootcause] skipping classification for job %s (result=%s timed_out=%v skipped=%v)\n", r.PathValue("id")[:8], result, req.TimedOut, req.Skipped)
+		}
+	} else {
+		fmt.Printf("[rootcause] RunDetail(%s) lookup failed for job %s — metrics, step-result recording, and classification all skipped\n", runID, r.PathValue("id")[:8])
 	}
 
 	s.publishRunDetail(runID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// logMessages extracts just the text of each log event, in order, for
+// the root-cause classifier — it only cares about the message content,
+// not timestamps or levels.
+func logMessages(events []api.LogEvent) []string {
+	lines := make([]string, len(events))
+	for i, e := range events {
+		lines[i] = e.Message
+	}
+	return lines
 }
 
 func (s *Server) publishRunDetail(runID string) {
@@ -1525,6 +1592,14 @@ func (s *Server) publishRunDetail(runID string) {
 }
 
 func (s *Server) reportSCMStatus(detail *api.RunDetail) {
+	s.scmStatusMu.Lock()
+	if s.scmStatusReported[detail.RunID] == string(detail.Status) {
+		s.scmStatusMu.Unlock()
+		return
+	}
+	s.scmStatusReported[detail.RunID] = string(detail.Status)
+	s.scmStatusMu.Unlock()
+
 	proj, _, scmToken, ok := s.projects.GetProject(detail.ProjectID)
 	if !ok {
 		fmt.Printf("[scm] project %s not found for status report\n", detail.ProjectID)
@@ -1803,6 +1878,40 @@ func (s *Server) handleGetProjectWebhook(w http.ResponseWriter, r *http.Request)
 		GitHubURL:     fmt.Sprintf("%s/api/v1/webhook/github/%s", base, projectID),
 		GitLabURL:     fmt.Sprintf("%s/api/v1/webhook/gitlab/%s", base, projectID),
 		GenericURL:    fmt.Sprintf("%s/api/v1/webhook/generic/%s", base, projectID),
+	})
+}
+
+// handleFailureStats returns a breakdown of classified failure
+// categories for a project over a recent window — e.g. "40%
+// infrastructure, 20% flaky tests, 40% real code defects" (issue #44).
+// Defaults to the last 30 days; override with ?days=N.
+func (s *Server) handleFailureStats(w http.ResponseWriter, r *http.Request) {
+	project, _, _, ok := s.projects.GetProject(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	projectID := project.ID
+
+	windowDays := 30
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			windowDays = n
+		}
+	}
+
+	since := time.Now().AddDate(0, 0, -windowDays)
+	counts, total, err := s.store.FailureBreakdown(projectID, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, api.FailureBreakdown{
+		ProjectID:     projectID,
+		WindowDays:    windowDays,
+		TotalFailures: total,
+		Categories:    counts,
 	})
 }
 

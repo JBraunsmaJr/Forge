@@ -27,11 +27,34 @@ func Open(connStr string) (*sql.DB, error) {
 	return db, nil
 }
 
-// NewGORM wraps an existing *sql.DB with GORM and runs migrations.
-func NewGORM(db *sql.DB) (*gorm.DB, error) {
-	gdb, err := gorm.Open(postgres.New(postgres.Config{
-		Conn: db,
-	}), &gorm.Config{
+// NewGORM opens its own native pgx-based connection for GORM, using the
+// same DSN the app's lib/pq connection (see Open, above) already uses.
+// It deliberately does NOT reuse that lib/pq *sql.DB: gorm.io/driver/
+// postgres's Migrator injects a pgx-specific query-exec-mode hint
+// (pgx.QueryExecModeSimpleProtocol) as an extra bind variable whenever
+// Config.DriverName is empty or "pgx" — see go-gorm/postgres's
+// migrator.go. That hint is meaningless to lib/pq, which then sees one
+// more parameter than the query has placeholders and fails with "pq:
+// got N parameters but the statement requires N-1". This isn't limited
+// to diffing old, pre-existing tables — it reproduces on a brand-new
+// database too, e.g. resolving sso_identities' foreign key to users
+// immediately after users was just created in the same AutoMigrate pass.
+//
+// IMPORTANT: do not "fix" this by setting Config.DriverName ourselves.
+// Leaving DriverName empty is what routes postgres.Open's Initialize
+// down its native pgx.ParseConfig/stdlib.OpenDB path in the first place;
+// setting DriverName: "postgres" flips that same code path over to
+// sql.Open("postgres", dsn) — i.e. lib/pq — which reintroduces exactly
+// the mismatch above (empty/"pgx" DriverName + a non-pgx connection).
+// The fix here is giving GORM a genuinely pgx-backed connection, not
+// silencing the hint.
+//
+// This does mean two separate connection pools to the same database:
+// the lib/pq one for the app's hand-written SQL (Store), and this pgx
+// one for GORM. That's intentional — mixing drivers on one pool is
+// exactly what caused the bug.
+func NewGORM(dsn string) (*gorm.DB, error) {
+	gdb, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger:         logger.Default.LogMode(logger.Silent),
 		TranslateError: true,
 	})
@@ -47,7 +70,14 @@ func NewGORM(db *sql.DB) (*gorm.DB, error) {
 }
 
 func autoMigrate(db *gorm.DB) error {
-	err := db.AutoMigrate(
+	// AutoMigrate runs with its own verbose logger (scoped to this call
+	// only, via Session — normal runtime queries stay silent) so any
+	// migration issue stays visible in the logs going forward.
+	migrateDB := db.Session(&gorm.Session{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
+
+	err := migrateDB.AutoMigrate(
 		&Org{},
 		&User{},
 		&SSOIdentity{},
@@ -60,6 +90,7 @@ func autoMigrate(db *gorm.DB) error {
 		&TestFileDuration{},
 		&TestShardAssignment{},
 		&JobLog{},
+		&JobRootCause{},
 		&Policy{},
 		&StepResult{},
 		&Artifact{},
@@ -72,6 +103,31 @@ func autoMigrate(db *gorm.DB) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("getting raw db connection for trigger: %w", err)
+	}
+
+	/*
+		The following composite indexes are created via raw SQL rather
+		than a second GORM `index:` tag on their columns: a column
+		carrying two different named indexes trips a known
+		gorm.io/driver/postgres v1.6.0 AutoMigrate bug ("pq: got N
+		parameters but the statement requires N-1"). IF NOT EXISTS makes
+		both safe to run on every startup.
+
+		job_root_causes(project_id, created_at) — powers FailureBreakdown's
+	*/
+
+	if _, err := sqlDB.Exec(`CREATE INDEX IF NOT EXISTS job_root_causes_project_created_idx ON job_root_causes (project_id, created_at DESC)`); err != nil {
+		return fmt.Errorf("creating job_root_causes_project_created_idx: %w", err)
+	}
+
+	/*
+		artifacts(run_id, name) — pre-existing composite index that hit
+		the same AutoMigrate bug; it never surfaced before because
+		migration aborted on job_root_causes earlier in the model list
+		and never reached this table.
+	*/
+	if _, err := sqlDB.Exec(`CREATE INDEX IF NOT EXISTS artifacts_run_name_idx ON artifacts (run_id, name)`); err != nil {
+		return fmt.Errorf("creating artifacts_run_name_idx: %w", err)
 	}
 
 	_, err = sqlDB.Exec(`

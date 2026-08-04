@@ -158,7 +158,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 				ExitCode: 1,
 				Duration: time.Since(start),
 				LogFile:  logPath,
-			}, nil
+			}, err
 		}
 
 		// 2. Copy workspace IN
@@ -175,7 +175,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 				ExitCode: 1,
 				Duration: time.Since(start),
 				LogFile:  logPath,
-			}, nil
+			}, err
 		}
 
 		// 3. Prepare start command
@@ -184,6 +184,26 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
 		cmd = exec.CommandContext(ctx, "docker", append([]string{"run", "--rm"}, args...)...)
 	}
+
+	/*
+		On step timeout/cancellation,  an interrupt (SIGINT on
+		Unix; the closest portable equivalent os/exec supports on
+		Windows too - see the runtime.GOOS=="windows" branches elsewhere in this file
+
+		Instead of Go's default SIGKILL, so docker's signal-proxy has a chance to forward
+		the shutdown into the container and let --rm actually clean it up. SIGKILL can't be
+		caught: the local docker CLI process dies instantly without ever telling the daemon to
+		stop the container, which orphans it - and anything it spawned,
+		e.g. a nested docker compose stack for an integration-test step
+		- running indefinitely after Forge has already marked the step as timed
+		out. WaitDelay caps how long we give it before Go escalates to a hard kill of its
+		own, so a container that ignores the interrupt can't hang the agent.
+	*/
+
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(os.Interrupt)
+	}
+	cmd.WaitDelay = 15 * time.Second
 
 	outputPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -195,7 +215,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 			ExitCode: 1,
 			Duration: time.Since(start),
 			LogFile:  logPath,
-		}, nil
+		}, err
 	}
 	cmd.Stderr = cmd.Stdout
 
@@ -212,12 +232,18 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 			ExitCode: 1,
 			Duration: time.Since(start),
 			LogFile:  logPath,
-		}, nil
+		}, err
 	}
 
 	scanner := bufio.NewScanner(outputPipe)
+	// Support lines up to 10MB (default is 64KB)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		logger.Output(scanner.Text())
+	}
+	if serr := scanner.Err(); serr != nil {
+		logger.Error(fmt.Sprintf("log scanner error: %v", serr), map[string]any{"error": serr.Error()})
 	}
 
 	err = cmd.Wait()
@@ -250,11 +276,12 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
+			logger.Error(fmt.Sprintf("step failed: %v", err), map[string]any{"exit_code": exitCode})
 		} else {
 			exitCode = 1
+			logger.Error(fmt.Sprintf("step failed: %v", err), map[string]any{"error": err.Error()})
 		}
 		passed = false
-		logger.Error("step failed", map[string]any{"exit_code": exitCode})
 	} else {
 		logger.Info("step passed", map[string]any{"duration_ms": duration.Milliseconds()})
 	}
@@ -292,7 +319,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		Duration: duration,
 		LogFile:  logPath,
 		CacheHit: false,
-	}, nil
+	}, err
 }
 
 // RunPipeline executes all steps in dependency order.
@@ -511,8 +538,14 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	// Stream stderr lines to the log while the generator runs.
 	scanner := bufio.NewScanner(stderrPipe)
+	// Support lines up to 10MB (default is 64KB)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		logger.Output("[stderr] " + scanner.Text())
+	}
+	if serr := scanner.Err(); serr != nil {
+		logger.Error(fmt.Sprintf("generator log scanner error: %v", serr), map[string]any{"error": serr.Error()})
 	}
 
 	err = cmdGen.Wait()
@@ -552,7 +585,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 		Duration:           duration,
 		LogFile:            logPath,
 		GeneratedStepsJSON: bytes.TrimSpace(stdoutBuf.Bytes()),
-	}, nil
+	}, err
 }
 
 // Cleanup removes dangling Docker containers started by Forge.

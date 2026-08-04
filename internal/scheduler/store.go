@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/rootcause"
 )
 
 // Store is the Postgres-backed implementation of the job store.
@@ -557,16 +558,31 @@ func (s *Store) Complete(jobID, leaseID string, exitCode int, durationMs int64,
 	}
 
 	if len(logs) > 0 {
-		if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
-			return "", fmt.Errorf("clearing logs: %w", err)
-		}
-		for _, log := range logs {
-			_, err = tx.Exec(
-				`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1,$2,$3,$4)`,
-				jobID, log.Timestamp, log.Level, log.Message,
-			)
-			if err != nil {
-				return "", fmt.Errorf("inserting log: %w", err)
+		/*
+			Heuristic to avoid wiping streamed logs if the agent's final report is incomplete.
+			We only replace if the new set is at least as large as the old one,
+			or if the old set is very small (less than 10 lines).
+		*/
+		var existingCount int
+		s.db.QueryRow(`SELECT COUNT(*) FROM job_logs WHERE job_id = $1`, jobID).Scan(&existingCount)
+
+		if len(logs) >= existingCount || existingCount < 10 {
+			if _, err := tx.Exec(`DELETE FROM job_logs WHERE job_id = $1`, jobID); err != nil {
+				return "", fmt.Errorf("clearing logs: %w", err)
+			}
+			if err := s.batchInsertLogs(tx, jobID, logs); err != nil {
+				return "", fmt.Errorf("batch inserting logs: %w", err)
+			}
+		} else {
+			/*
+				If we have fewer logs than before, just append the new ones that are
+				likely "final" messages (like timeouts or agent errors) that weren't streamed.
+				Since we don't have unique IDs, we just append everything and let the UI
+				handle potential duplicates (or the user can see both).
+				Better than losing all logs.
+			*/
+			if err := s.batchInsertLogs(tx, jobID, logs); err != nil {
+				return "", fmt.Errorf("batch appending logs: %w", err)
 			}
 		}
 	}
@@ -1017,14 +1033,15 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 
 	rows, err := s.db.Query(`
 		SELECT j.id, j.step_id, j.status, j.depends_on,
-		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id
+		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id,
+		       rc.category, rc.pattern_id, rc.description, rc.matched_line, rc.suggested_fix
 		FROM   jobs j
 		LEFT JOIN runs r ON r.parent_job_id = j.id
+		LEFT JOIN job_root_causes rc ON rc.job_id = j.id
 		WHERE  j.run_id=$1`, runID)
 	if err != nil {
 		return nil, false
 	}
-	defer rows.Close()
 
 	var jobs []api.JobDetail
 	var statuses []api.JobStatus
@@ -1032,8 +1049,10 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		var j api.JobDetail
 		var depsJSON []byte
 		var childRunID sql.NullString
+		var rcCategory, rcPatternID, rcDescription, rcMatchedLine, rcSuggestedFix sql.NullString
 		rows.Scan(&j.JobID, &j.StepID, &j.Status, &depsJSON,
-			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID)
+			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID,
+			&rcCategory, &rcPatternID, &rcDescription, &rcMatchedLine, &rcSuggestedFix)
 		json.Unmarshal(depsJSON, &j.DependsOn)
 		if j.DependsOn == nil {
 			j.DependsOn = []string{}
@@ -1041,8 +1060,33 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		if childRunID.Valid {
 			j.ChildRunID = childRunID.String
 		}
+		if rcCategory.Valid {
+			j.RootCause = &api.RootCauseInfo{
+				Category:     rcCategory.String,
+				PatternID:    rcPatternID.String,
+				Description:  rcDescription.String,
+				MatchedLine:  rcMatchedLine.String,
+				SuggestedFix: rcSuggestedFix.String,
+			}
+		}
 		jobs = append(jobs, j)
 		statuses = append(statuses, j.Status)
+	}
+	rows.Close()
+
+	// Frequency lookups run their own queries, so they only start once
+	// the job cursor above is fully closed — doing this while it was
+	// still open meant every classified failure opened a second query
+	// on top of the first, which could stall entirely under a small
+	// connection pool.
+	if projectID.Valid {
+		for i := range jobs {
+			if jobs[i].RootCause == nil {
+				continue
+			}
+			jobs[i].RootCause.RecentMatches, jobs[i].RootCause.RecentTotal, _ =
+				s.RecentRootCauseFrequency(projectID.String, jobs[i].StepID, jobs[i].RootCause.PatternID, 10)
+		}
 	}
 
 	if jobs == nil {
@@ -1074,7 +1118,91 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	return detail, true
 }
 
-// GetJobLogs returns stored log events for a job.
+// RecordJobRootCause stores (or replaces) the automatic root-cause
+// classification for a job that just failed. One row per
+// job — if a job somehow gets re-completed under the same ID, the
+// classification is simply overwritten rather than duplicated.
+func (s *Store) RecordJobRootCause(jobID, runID, projectID, stepID string, m rootcause.Match) error {
+	var projID any
+	if projectID != "" {
+		projID = projectID
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO job_root_causes
+			(job_id, run_id, project_id, step_id, category, pattern_id, description, matched_line, suggested_fix, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+		ON CONFLICT (job_id) DO UPDATE SET
+			run_id        = EXCLUDED.run_id,
+			project_id    = EXCLUDED.project_id,
+			step_id       = EXCLUDED.step_id,
+			category      = EXCLUDED.category,
+			pattern_id    = EXCLUDED.pattern_id,
+			description   = EXCLUDED.description,
+			matched_line  = EXCLUDED.matched_line,
+			suggested_fix = EXCLUDED.suggested_fix,
+			created_at    = NOW()`,
+		jobID, runID, projID, stepID,
+		string(m.Pattern.Category), m.Pattern.ID, m.Pattern.Description, m.MatchedLine, m.Pattern.SuggestedFix,
+	)
+	return err
+}
+
+// RecentRootCauseFrequency reports how many of the last `limit`
+// classified failures on the same project+step matched the given
+// pattern — e.g. "8 of the last 10 failures on this step had the same
+// pattern".
+func (s *Store) RecentRootCauseFrequency(projectID, stepID, patternID string, limit int) (matches, total int, err error) {
+	if projectID == "" || stepID == "" {
+		return 0, 0, nil
+	}
+	rows, err := s.db.Query(`
+		SELECT pattern_id FROM job_root_causes
+		WHERE  project_id = $1 AND step_id = $2
+		ORDER  BY created_at DESC
+		LIMIT  $3`, projectID, stepID, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid string
+		if err := rows.Scan(&pid); err != nil {
+			continue
+		}
+		total++
+		if pid == patternID {
+			matches++
+		}
+	}
+	return matches, total, nil
+}
+
+// FailureBreakdown aggregates classified-failure counts by category for
+// a project since the given time — powers the "40% infrastructure, 20%
+// flaky tests, 40% real code defects" dashboard callout from issue #44.
+func (s *Store) FailureBreakdown(projectID string, since time.Time) (counts map[string]int, total int, err error) {
+	rows, err := s.db.Query(`
+		SELECT category, COUNT(*)
+		FROM   job_root_causes
+		WHERE  project_id = $1 AND created_at >= $2
+		GROUP  BY category`, projectID, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	counts = map[string]int{}
+	for rows.Next() {
+		var cat string
+		var n int
+		if err := rows.Scan(&cat, &n); err != nil {
+			continue
+		}
+		counts[cat] = n
+		total += n
+	}
+	return counts, total, nil
+}
 func (s *Store) GetJobLogs(jobID string) ([]api.LogEvent, bool) {
 	// Check job exists.
 	var count int
@@ -1276,11 +1404,13 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 func (s *Store) AppendJobLogs(jobID, leaseID string, events []api.LogEvent) error {
 	// Verify the lease is still valid.
 	var currentLease string
+	// We allow appending to jobs in any status as long as the lease matches,
+	// to account for late-arriving log batches from the agent.
 	err := s.db.QueryRow(
-		`SELECT lease_id FROM jobs WHERE id=$1 AND (status='running' OR status='waiting')`, jobID,
+		`SELECT lease_id FROM jobs WHERE id=$1`, jobID,
 	).Scan(&currentLease)
 	if err != nil || currentLease != leaseID {
-		return fmt.Errorf("invalid lease or job not running")
+		return fmt.Errorf("invalid lease")
 	}
 
 	tx, err := s.db.Begin()
@@ -1289,16 +1419,41 @@ func (s *Store) AppendJobLogs(jobID, leaseID string, events []api.LogEvent) erro
 	}
 	defer tx.Rollback()
 
-	for _, e := range events {
-		_, err = tx.Exec(
-			`INSERT INTO job_logs (job_id, ts, level, message) VALUES ($1,$2,$3,$4)`,
-			jobID, e.Timestamp, e.Level, e.Message,
-		)
-		if err != nil {
+	if err := s.batchInsertLogs(tx, jobID, events); err != nil {
+		return fmt.Errorf("batch inserting logs: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) batchInsertLogs(tx *sql.Tx, jobID string, logs []api.LogEvent) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	const batchSize = 500
+	for i := 0; i < len(logs); i += batchSize {
+		end := i + batchSize
+		if end > len(logs) {
+			end = len(logs)
+		}
+
+		batch := logs[i:end]
+		query := "INSERT INTO job_logs (job_id, ts, level, message) VALUES "
+		vals := []any{}
+		for j, log := range batch {
+			if j > 0 {
+				query += ","
+			}
+			query += fmt.Sprintf("($%d, $%d, $%d, $%d)", j*4+1, j*4+2, j*4+3, j*4+4)
+			vals = append(vals, jobID, log.Timestamp, log.Level, log.Message)
+		}
+
+		if _, err := tx.Exec(query, vals...); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) GetRunsOlderThan(olderThan time.Duration) ([]string, error) {

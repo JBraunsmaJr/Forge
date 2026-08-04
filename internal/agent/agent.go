@@ -16,7 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
+	os_exec "os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -80,10 +81,11 @@ type Agent struct {
 	semaphore      chan struct{}
 
 	// gRPC communication
-	grpcClient pb.AgentServiceClient
-	out        chan *pb.AgentMessage
-	grpcMu     sync.Mutex
-	sessionCtx context.Context
+	grpcClient  pb.AgentServiceClient
+	out         chan reliableMessage
+	outPriority chan reliableMessage // heartbeats, completions
+	grpcMu      sync.Mutex
+	sessionCtx  context.Context
 
 	// Cleanup configuration
 	maxDockerGB      float64
@@ -94,7 +96,6 @@ type Agent struct {
 	lastCleanup      time.Time
 	wg               sync.WaitGroup
 	loopsWg          sync.WaitGroup
-	reliableOut      chan reliableMessage
 }
 
 type reliableMessage struct {
@@ -140,8 +141,8 @@ func New(id, schedulerURL, workspaceDir, cacheDir, logDir, vaultAddr, vaultToken
 		maxConcurrency:   concurrency,
 		cas:              cache.NewRemote(schedulerURL, apiToken),
 		semaphore:        make(chan struct{}, concurrency),
-		out:              make(chan *pb.AgentMessage, 64),
-		reliableOut:      make(chan reliableMessage, 16),
+		out:              make(chan reliableMessage, 4096),
+		outPriority:      make(chan reliableMessage, 1024),
 	}
 }
 
@@ -237,6 +238,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		PermitWithoutStream: true,
 	}))
 
+	opts = append(opts, grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(64*1024*1024),
+		grpc.MaxCallSendMsgSize(64*1024*1024),
+	))
+
 	fmt.Printf("[agent %s] dialing gRPC: %s (secure: %v)\n", a.id[:8], grpcAddr, isSecure)
 	conn, err := grpc.NewClient(grpcAddr, opts...)
 	if err != nil {
@@ -287,59 +293,37 @@ func (a *Agent) Run(ctx context.Context) error {
 	go func() {
 		defer close(senderDone)
 		defer sessionCancel()
-		var pending []reliableMessage
-		outCh, relCh := a.out, a.reliableOut
-		doneCh := sessionCtx.Done()
 		for {
-			var msg *pb.AgentMessage
 			var rm reliableMessage
 			var ok bool
 
+			// Prioritize heartbeats and completions
 			select {
-			case msg, ok = <-outCh:
-				if !ok {
-					outCh = nil
-				}
-			case rm, ok = <-relCh:
-				if !ok {
-					relCh = nil
-				} else {
-					pending = append(pending, rm)
-				}
-			case <-doneCh:
-				doneCh = nil
-			}
-
-			// Process pending reliable messages first
-			for len(pending) > 0 {
-				p := pending[0]
-				p.msg.AgentId = a.id
-				a.grpcMu.Lock()
-				err := stream.Send(p.msg)
-				a.grpcMu.Unlock()
-				if err != nil {
-					fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
-					// If send fails, the session is likely dead. Return from loop
-					// and let Recv() or sessionCtx.Done() handle shutdown.
-					// We don't acknowledge, so reportComplete will block until session ctx is done.
+			case rm, ok = <-a.outPriority:
+			default:
+				select {
+				case rm, ok = <-a.outPriority:
+				case rm, ok = <-a.out:
+				case <-sessionCtx.Done():
 					return
 				}
-				p.ack <- nil
-				pending = pending[1:]
 			}
 
-			if msg != nil {
-				msg.AgentId = a.id
-				a.grpcMu.Lock()
-				err := stream.Send(msg)
-				a.grpcMu.Unlock()
-				if err != nil {
-					fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
-				}
-			}
-
-			if outCh == nil && relCh == nil && len(pending) == 0 {
+			if !ok {
 				return
+			}
+			rm.msg.AgentId = a.id
+			a.grpcMu.Lock()
+			err := stream.Send(rm.msg)
+			a.grpcMu.Unlock()
+			if rm.ack != nil {
+				if err != nil {
+					fmt.Printf("[agent %s] reliable gRPC send error: %v\n", a.id[:8], err)
+					return
+				}
+				rm.ack <- nil
+			} else if err != nil {
+				fmt.Printf("[agent %s] gRPC send error: %v\n", a.id[:8], err)
 			}
 		}
 	}()
@@ -456,6 +440,11 @@ ReceiveLoop:
 				if info, ok := a.activeJobs.Load(spec.JobID); ok {
 					if info.(activeJobInfo).LeaseID != spec.LeaseID {
 						fmt.Printf("[agent %s] received redundant job %s with new lease, canceling old execution\n", a.id[:8], spec.JobID[:8])
+						a.postLogBatch(spec.JobID, info.(activeJobInfo).LeaseID, []api.LogEvent{{
+							Timestamp: time.Now(),
+							Level:     "ERROR",
+							Message:   "◯ job canceled by agent: redundant lease received from scheduler (possible heartbeat delay)",
+						}})
 						info.(activeJobInfo).Cancel()
 					} else {
 						fmt.Printf("[agent %s] received redundant job %s with same lease, ignoring\n", a.id[:8], spec.JobID[:8])
@@ -525,7 +514,6 @@ ReceiveLoop:
 	fmt.Printf("[agent %s] joining background loops...\n", a.id[:8])
 	a.loopsWg.Wait()
 	close(a.out)
-	close(a.reliableOut)
 	<-senderDone
 	return nil
 }
@@ -596,9 +584,13 @@ func (a *Agent) isSpotEvicted() bool {
 	return false
 }
 
-func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
+func (a *Agent) sendAsync(msg *pb.AgentMessage, priority bool) error {
+	ch := a.out
+	if priority {
+		ch = a.outPriority
+	}
 	select {
-	case a.out <- msg:
+	case ch <- reliableMessage{msg: msg}:
 		return nil
 	case <-time.After(5 * time.Second):
 		fmt.Printf("[agent %s] warning: message queue full, dropping message\n", a.id[:8])
@@ -606,11 +598,15 @@ func (a *Agent) sendAsync(msg *pb.AgentMessage) error {
 	}
 }
 
-func (a *Agent) sendReliable(msg *pb.AgentMessage) error {
+func (a *Agent) sendReliable(msg *pb.AgentMessage, priority bool) error {
+	ch := a.out
+	if priority {
+		ch = a.outPriority
+	}
 	ack := make(chan error, 1)
 	rm := reliableMessage{msg: msg, ack: ack}
 	select {
-	case a.reliableOut <- rm:
+	case ch <- rm:
 		select {
 		case err := <-ack:
 			return err
@@ -642,8 +638,8 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			fmt.Printf("[agent %s] running scheduled docker container prune...\n", a.id[:8])
-			exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
-			exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			os_exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			os_exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
 			// Also clean up any old workspace directories
 			a.cleanupWorkspaces()
 		}
@@ -699,14 +695,14 @@ func getDiskUsagePercent(path string) float64 {
 			drive = "C:"
 		}
 		cmd := fmt.Sprintf("Get-Volume -DriveLetter %s | ForEach-Object { 100 * (1 - $_.SizeRemaining / $_.Size) }", strings.TrimSuffix(drive, ":"))
-		out, err := exec.Command("powershell", "-Command", cmd).Output()
+		out, err := os_exec.Command("powershell", "-Command", cmd).Output()
 		if err == nil {
 			val, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 			return val
 		}
 	} else {
 		// Use df on Linux/Unix
-		out, err := exec.Command("df", "--output=pcent", path).Output()
+		out, err := os_exec.Command("df", "--output=pcent", path).Output()
 		if err == nil {
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 			if len(lines) >= 2 {
@@ -720,7 +716,7 @@ func getDiskUsagePercent(path string) float64 {
 }
 
 func (a *Agent) getDockerUsageGB() (float64, error) {
-	cmd := exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
+	cmd := os_exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, string(out))
@@ -766,7 +762,7 @@ func parseDockerSize(s string) float64 {
 
 func (a *Agent) evictLRUImages(targetGB float64) {
 	// List all images with ID, CreatedAt, and Size
-	out, err := exec.Command("docker", "images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
+	out, err := os_exec.Command("docker", "images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
 	if err != nil {
 		return
 	}
@@ -807,7 +803,7 @@ func (a *Agent) evictLRUImages(targetGB float64) {
 			break
 		}
 		// Try to remove. It will fail if in use.
-		err := exec.Command("docker", "rmi", img.id).Run()
+		err := os_exec.Command("docker", "rmi", img.id).Run()
 		if err == nil {
 			evictedGB += img.gb
 			fmt.Printf("[agent %s] evicted image %s (%.2f GB)\n", a.id[:8], img.id[:12], img.gb)
@@ -1020,6 +1016,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	step.Env["FORGE_API_TOKEN"] = a.apiToken
 	step.Env["FORGE_SCHEDULER_URL"] = a.schedulerURL
 	step.Env["FORGE_AGENT_ID"] = a.id
+	step.Env["FORGE_JOB_ID"] = spec.JobID
 
 	/*
 		Fetch secrets from Vault
@@ -1125,12 +1122,14 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		A buffered channel decouples the executor's log writes from the
 		HTTP POST to the scheduler - the scanner never blocks.
 	*/
-	logCh := make(chan api.LogEvent, 256)
+	logCh := make(chan api.LogEvent, 131072)
+	var dropped atomic.Int64
 
 	exec.StreamCallback = func(stepID string, ts time.Time, level, message string) {
 		select {
 		case logCh <- api.LogEvent{Timestamp: ts, Level: level, Message: message}:
 		default:
+			dropped.Add(1)
 		}
 	}
 
@@ -1163,28 +1162,44 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 
 	// Read log events to forward to the scheduler.
 	var logEvents []api.LogEvent
+	if result != nil && result.LogFile != "" {
+		logEvents = readLogFile(result.LogFile)
+	}
+
 	if timedOut {
-		logEvents = []api.LogEvent{{
+		logEvents = append(logEvents, api.LogEvent{
 			Timestamp: time.Now(),
 			Level:     "ERROR",
 			Message:   fmt.Sprintf("◯ step timed out after %v", step.Timeout),
-		}}
-	} else if err != nil {
-		/*
-				Hard error from the executor - e.g. Docker failed to start the container due to workdir being set to "".
-			    The result is nil, so there's no log file. We'll sythesize a log event so the user sees what went wrong
-			    in the UI rather than "no logs stored for this job"
-		*/
-		logEvents = []api.LogEvent{{
+		})
+	}
+
+	if d := dropped.Load(); d > 0 {
+		logEvents = append(logEvents, api.LogEvent{
 			Timestamp: time.Now(),
-			Level:     "ERROR",
-			Message:   fmt.Sprintf("executor error: %v", err),
-		}}
+			Level:     "WARN",
+			Message:   fmt.Sprintf("◯ agent dropped %d log lines due to slow network/scheduler", d),
+		})
+	}
+
+	if err != nil && !timedOut {
+		/*
+			Hard error from the executor - e.g. Docker failed to start the container due to workdir being set to "".
+			We'll synthesize a log event so the user sees what went wrong in the UI rather than "no logs stored for this job".
+			We skip this for normal exit code failures which are already in the log file.
+		*/
+		var exitErr *os_exec.ExitError
+		if !errors.As(err, &exitErr) {
+			logEvents = append(logEvents, api.LogEvent{
+				Timestamp: time.Now(),
+				Level:     "ERROR",
+				Message:   fmt.Sprintf("executor error: %v", err),
+			})
+		}
 	} else if result != nil && result.CacheHit {
 		logEvents = cacheHitLog(result.Step.CacheKey)
-	} else if result != nil && result.LogFile != "" {
-		logEvents = readLogFile(result.LogFile)
 	}
+
 	if logEvents == nil {
 		logEvents = []api.LogEvent{}
 	}
@@ -1240,7 +1255,7 @@ func (a *Agent) statusLoop(ctx context.Context) {
 						Status: a.collectStatus(),
 					},
 				},
-			})
+			}, true)
 		}
 	}
 }
@@ -1252,7 +1267,7 @@ func (a *Agent) collectStatus() *pb.AgentStatus {
 	}
 
 	// Docker images count
-	cmd := exec.Command("docker", "images", "-q")
+	cmd := os_exec.Command("docker", "images", "-q")
 	if out, err := cmd.Output(); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		count := 0
@@ -1329,7 +1344,7 @@ func (a *Agent) heartbeat(jobID, leaseID string) error {
 				Status:  a.collectStatus(),
 			},
 		},
-	})
+	}, true)
 	return nil
 }
 
@@ -1356,7 +1371,7 @@ func (a *Agent) reportComplete(spec *api.JobSpec, exitCode int, durationMs int64
 				TimedOut:         timedOut,
 			},
 		},
-	})
+	}, true)
 }
 
 // reportSkipped marks a job as skipped via gRPC.
@@ -1378,7 +1393,7 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 				Skipped:  true,
 			},
 		},
-	})
+	}, true)
 }
 
 // isSchedulerCondition returns true for conditions the scheduler evaluates
@@ -1490,10 +1505,11 @@ func cacheHitLog(taskHash string) []api.LogEvent {
 // Errors on individual lines are silently skipped rather than aborting
 // a partial log is better than no log if the step crashed mid-write
 func readLogFile(path string) []api.LogEvent {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
+	defer f.Close()
 
 	// A struct that matches only the fields we care about from the
 	// logger's Event type. We don't need to import the log package —
@@ -1505,8 +1521,12 @@ func readLogFile(path string) []api.LogEvent {
 	}
 
 	var events []api.LogEvent
-	for line := range bytes.SplitSeq(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
+	sc := bufio.NewScanner(f)
+	// Match the executor's 10MB buffer to support long lines.
+	sc.Buffer(make([]byte, 64*1024), 10*1024*1024)
+
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
 			continue
 		}
@@ -1522,6 +1542,14 @@ func readLogFile(path string) []api.LogEvent {
 			Timestamp: ts,
 			Level:     raw.Level,
 			Message:   raw.Message,
+		})
+	}
+
+	if err := sc.Err(); err != nil {
+		events = append(events, api.LogEvent{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   fmt.Sprintf("log reader error: %v", err),
 		})
 	}
 	return events
@@ -1633,9 +1661,9 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	// Start debug container
-	if err := exec.CommandContext(ctx, "docker", "start", containerID).Run(); err != nil {
+	if err := os_exec.CommandContext(ctx, "docker", "start", containerID).Run(); err != nil {
 		fmt.Printf("[agent %s] debug container failed to start: %v\n", a.id[:8], err)
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		os_exec.Command("docker", "rm", "-f", containerID).Run()
 		return
 	}
 
@@ -1657,7 +1685,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	if spec.DockerSocket {
 		apkCmd += " docker-cli"
 	}
-	exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c",
+	os_exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c",
 		apkCmd+" >/dev/null 2>&1 || true",
 	).Run()
 
@@ -1759,7 +1787,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 // Output is streamed line-by-line so the user sees it in real-time.
 // The ctx can be cancelled to kill the command (used by the cancel button).
 func (a *Agent) execDebugCommand(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {
-	execCmd := exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", cmd.Input)
+	execCmd := os_exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", cmd.Input)
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -1796,7 +1824,7 @@ func (a *Agent) execDebugCommand(ctx context.Context, sessionID, containerID str
 
 	exitCode := 0
 	if err := execCmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr, ok := err.(*os_exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			exitCode = 1
@@ -1900,7 +1928,7 @@ func (a *Agent) submitDebugOutput(sessionID string, req api.SubmitOutputRequest)
 }
 
 // streamJobLogs reads log events from ch and POSTs them to the scheduler
-// in batches - either every 500ms or every 50 events, whichever comes first.
+// in batches - either every 500ms or every 100 events, whichever comes first.
 //
 // The batching avoids hammering the scheduler with one HTTP request per line
 // while still keeping latency low enough that the browser feels real-time.
@@ -1915,7 +1943,7 @@ func (a *Agent) streamJobLogs(jobID, leaseID string, ch <-chan api.LogEvent) {
 			return
 		}
 		a.postLogBatch(jobID, leaseID, buf)
-		buf = buf[:0]
+		buf = nil // Use nil to allow GC of the underlying array if it grew large
 	}
 
 	for {
@@ -1927,7 +1955,7 @@ func (a *Agent) streamJobLogs(jobID, leaseID string, ch <-chan api.LogEvent) {
 				return
 			}
 			buf = append(buf, e)
-			if len(buf) >= 50 {
+			if len(buf) >= 100 {
 				flush()
 			}
 		case <-ticker.C:
@@ -2067,7 +2095,7 @@ func (a *Agent) postLogBatch(jobID, leaseID string, events []api.LogEvent) {
 				Events:  pbEvents,
 			},
 		},
-	})
+	}, false)
 }
 
 func (a *Agent) handleTerminalRequest(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {
@@ -2130,7 +2158,7 @@ func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID s
 		cols, rows,
 	)
 
-	cmd := exec.CommandContext(shellCtx, "docker", "exec",
+	cmd := os_exec.CommandContext(shellCtx, "docker", "exec",
 		"-i",
 		"-e", fmt.Sprintf("COLUMNS=%d", cols),
 		"-e", fmt.Sprintf("LINES=%d", rows),
@@ -2723,7 +2751,7 @@ func pipelineLog(level, msg string) []api.LogEvent {
 
 func (a *Agent) cleanupJobContainers(runID, jobID string) {
 	// Stop and remove all containers created by this job
-	out, _ := exec.Command("docker", "ps", "-aq",
+	out, _ := os_exec.Command("docker", "ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.job_id="+jobID,
 		"--filter", "label=forge.agent_id="+a.proxyID,
@@ -2741,21 +2769,21 @@ func (a *Agent) cleanupJobContainers(runID, jobID string) {
 	}
 
 	// Remove networks created by this run
-	out, _ = exec.Command("docker", "network", "ls", "-q",
+	out, _ = os_exec.Command("docker", "network", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		exec.Command("docker", "network", "rm", id).Run()
+		os_exec.Command("docker", "network", "rm", id).Run()
 	}
 
 	// Remove volumes created by this run
-	out, _ = exec.Command("docker", "volume", "ls", "-q",
+	out, _ = os_exec.Command("docker", "volume", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		exec.Command("docker", "volume", "rm", id).Run()
+		os_exec.Command("docker", "volume", "rm", id).Run()
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ Typical use, keeping the raw JSON for from-go-test:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sc := bufio.NewScanner(os.Stdin)
 		// go test output lines can be long (giant assertion diffs).
-		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 		for sc.Scan() {
 			line := sc.Bytes()
 			var ev struct {
@@ -59,13 +60,17 @@ Typical use, keeping the raw JSON for from-go-test:
 				os.Stdout.Write(append(line, '\n'))
 				continue
 			}
-			if ev.Action == "output" {
+			if ev.Output != "" {
 				// Output already carries its own trailing newline.
 				// Unbuffered on purpose: these lines stream into live CI logs.
 				os.Stdout.WriteString(ev.Output)
 			}
 		}
-		return sc.Err()
+		if err := sc.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "stream-go-test: scanner error: %v\n", err)
+			return err
+		}
+		return nil
 	},
 }
 
@@ -141,10 +146,14 @@ func fromGoTest(inputPath, outputPath string) error {
 		passed     int
 		failed     int
 		skipped    int
+		pkgFailed  bool
 	}
 	packages := make(map[string]*pkgStats)
 
 	scanner := bufio.NewScanner(f)
+	// go test output lines can be long (giant assertion diffs).
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
 	for scanner.Scan() {
 		var e goTestEvent
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
@@ -165,6 +174,7 @@ func fromGoTest(inputPath, outputPath string) error {
 		case "fail":
 			if e.Test == "" {
 				pkg.durationMS = int64(e.Elapsed * 1000)
+				pkg.pkgFailed = true
 			} else {
 				pkg.tests++
 				pkg.failed++
@@ -177,6 +187,10 @@ func fromGoTest(inputPath, outputPath string) error {
 				pkg.skipped++
 			}
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanning go test output: %w", err)
 	}
 
 	moduleName := getModuleName()
@@ -192,12 +206,17 @@ func fromGoTest(inputPath, outputPath string) error {
 			path = strings.TrimPrefix(path, "/")
 		}
 
+		failedCount := stats.failed
+		if stats.pkgFailed && failedCount == 0 {
+			failedCount = 1
+		}
+
 		files = append(files, api.TestFileResult{
 			Path:       path,
 			DurationMS: stats.durationMS,
 			Tests:      stats.tests,
 			Passed:     stats.passed,
-			Failed:     stats.failed,
+			Failed:     failedCount,
 			Skipped:    stats.skipped,
 		})
 		totalDuration += stats.durationMS

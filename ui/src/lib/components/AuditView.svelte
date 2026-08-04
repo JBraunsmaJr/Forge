@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { api, type AuditEntry, type Org } from '../api';
-    import { Shield, Filter, Download, RefreshCw, User, Terminal, Globe } from '@lucide/svelte';
+    import { Shield, Download, RefreshCw, User, Globe } from '@lucide/svelte';
 
     let logs: AuditEntry[] = [];
     let orgs: Org[] = [];

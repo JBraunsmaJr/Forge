@@ -55,6 +55,16 @@ async function fetchAuth(url: string, opts: RequestInit = {}): Promise<Response 
     return resp;
 }
 
+export interface RootCauseInfo {
+    category: string;
+    pattern_id?: string;
+    description: string;
+    matched_line?: string;
+    suggested_fix?: string;
+    recent_matches: number;
+    recent_total: number;
+}
+
 export interface Job {
     job_id: string;
     step_id: string;
@@ -66,6 +76,7 @@ export interface Job {
     depends_on: string[];
     policy_source?: string;
     child_run_id?: string;
+    root_cause?: RootCauseInfo;
 }
 
 export interface Run {
@@ -167,6 +178,15 @@ export interface ProjectHealth {
     previous_at?: string;
     org_average?: number;
     org_project_count?: number;
+}
+
+// FailureBreakdown summarizes classified-failure categories for a
+// project over a recent window (issue #44).
+export interface FailureBreakdown {
+    project_id: string;
+    window_days: number;
+    total_failures: number;
+    categories: Record<string, number>;
 }
 
 export interface Policy {
@@ -316,6 +336,10 @@ export const api = {
             status: r?.status ?? 0,
             data: r?.ok ? await r.json() : null,
         })),
+    // Category breakdown of automatically-classified failures over the
+    // last `days` (default 30) — powers the failure-insights panel
+    getFailureStats: (id: string, days = 30): Promise<FailureBreakdown | null> =>
+        fetchAuth(`/api/v1/projects/${id}/failure-stats?days=${days}`).then(r => r?.ok ? r.json() : null),
     triggerProject: async (id: string, branch: string, commit?: string): Promise<{ run_id: string }> => {
         const r = await fetchAuth(`/api/v1/projects/${id}/trigger`, {
             method: 'POST',

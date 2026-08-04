@@ -10,10 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"net/http"
+
 	"github.com/JBraunsmaJr/forge/internal/autoscaler"
 	"github.com/JBraunsmaJr/forge/internal/provisioner"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http"
 )
 
 func main() {
@@ -65,15 +66,26 @@ func main() {
 		log.Printf("[autoscaler] using docker-fake provider")
 		image := os.Getenv("FORGE_AUTOSCALER_DOCKER_IMAGE")
 		if image == "" {
-			image = "forge-fake-agent:latest"
+			image = "ghcr.io/jbraunsmajr/forge/forge:latest"
 		}
 		network := os.Getenv("FORGE_AUTOSCALER_DOCKER_NETWORK")
 		agentID := os.Getenv("FORGE_PROXY_AGENT_ID")
+		proxyURL := os.Getenv("FORGE_PROXY_URL")
+		socketsVolume := os.Getenv("FORGE_AUTOSCALER_DOCKER_SOCKETS_VOLUME")
+		if apiToken == "" {
+			log.Printf("[autoscaler] WARNING: FORGE_API_TOKEN is not set — agents spawned by the docker-fake provider will get no token and every scheduler call they make (checkout, log/status reporting, etc.) will fail with 401")
+		}
+		if proxyURL == "" || socketsVolume == "" {
+			log.Printf("[autoscaler] WARNING: FORGE_PROXY_URL and/or FORGE_AUTOSCALER_DOCKER_SOCKETS_VOLUME is not set — agents spawned by the docker-fake provider will have no way to reach Docker, and pipeline steps using it will fail with \"is the docker daemon running?\"")
+		}
 		prov = &provisioner.DockerFakeProvisioner{
-			Image:        image,
-			SchedulerURL: schedulerURL,
-			Network:      network,
-			AgentID:      agentID,
+			Image:         image,
+			SchedulerURL:  schedulerURL,
+			Network:       network,
+			AgentID:       agentID,
+			APIToken:      apiToken,
+			ProxyURL:      proxyURL,
+			SocketsVolume: socketsVolume,
 		}
 	}
 

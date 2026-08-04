@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -64,6 +66,24 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Println("[integration] stack ready")
 
+	/*
+		Best-effort safety net: if this process is interrupted/terminated
+		before m.Run() returns normally — e.g., because Forge's own
+		step-timeout killed the container, this suite is running inside
+		(see the cmd.Cancel comment in internal/executor/executor.go) —
+		tear the compose stack down here instead of leaving it orphaned.
+		The normal teardown path below still runs when m.Run() returns on
+		its own; this only fires on an external kill.
+	*/
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		fmt.Printf("[integration] received %v, tearing down stack before exit...\n", sig)
+		stopStack(repoRoot)
+		os.Exit(1)
+	}()
+
 	// Initialize the admin client after the stack is ready and ports are discovered.
 	adminClient = newClient(adminToken)
 
@@ -90,17 +110,21 @@ func startStack(repoRoot string) error {
 	os.Setenv("FORGE_MINIO_CONSOLE_PORT", "0")
 	os.Setenv("FORGE_UI_PORT", "0")
 
+	// compose.yml gates the autoscaler service behind this profile so it
+	// doesn't start on a bare `docker compose up` (see the comment on
+	// that service) — integration tests still need it active.
+	os.Setenv("COMPOSE_PROFILES", "autoscaler")
+
 	// Build the image once to avoid race conditions in Docker Compose when multiple
 	// services share the same image and build context.
 	fmt.Println("[integration] pre-building forge image...")
-	buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer buildCancel()
-	buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", os.Getenv("FORGE_IMAGE"), ".")
-	buildCmd.Dir = repoRoot
-	buildCmd.Stdout = os.Stderr
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
+	if err := buildImage(repoRoot, os.Getenv("FORGE_IMAGE"), "Dockerfile"); err != nil {
 		return fmt.Errorf("pre-building forge image: %w", err)
+	}
+
+	fmt.Println("[integration] pre-building autoscaler image...")
+	if err := buildImage(repoRoot, os.Getenv("FORGE_AUTOSCALER_IMAGE"), "deployments/autoscaler/Dockerfile"); err != nil {
+		return fmt.Errorf("pre-building autoscaler image: %w", err)
 	}
 
 	args := composeArgs("up", "-d")
@@ -164,6 +188,65 @@ func startStack(repoRoot string) error {
 			fmt.Printf("[integration] scheduler returned HTTP %d, still waiting...\n", resp.StatusCode)
 		}
 	}
+}
+
+// buildkitTransientExportErrors are substrings of a known, well-documented
+// class of BuildKit bug (e.g. moby/buildkit#2041, #4793) where a build's
+// final "exporting to image" step fails with "No such image" / "content
+// digest ... not found" specifically under concurrent build load sharing
+// the same BuildKit cache — exactly what happens here when multiple
+// sharded test runs each run their own `docker build` around the same
+// time. It's transient: retrying after a short pause routinely succeeds.
+var buildkitTransientExportErrors = []string{
+	"failed to export image",
+	"No such image",
+	"content digest",
+}
+
+// buildImage runs `docker build` for the given image and dockerfile, retrying
+// a few times on the known transient BuildKit export race.
+func buildImage(repoRoot, imageName, dockerfile string) error {
+	const maxAttempts = 3
+	var lastErr error
+	var lastOutput string
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		buildCtx, buildCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		buildCmd := exec.CommandContext(buildCtx, "docker", "build", "-t", imageName, "-f", dockerfile, ".")
+		buildCmd.Dir = repoRoot
+
+		var captured bytes.Buffer
+		buildCmd.Stdout = io.MultiWriter(os.Stderr, &captured)
+		buildCmd.Stderr = io.MultiWriter(os.Stderr, &captured)
+
+		err := buildCmd.Run()
+		buildCancel()
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		lastOutput = captured.String()
+
+		fmt.Fprintf(os.Stderr, "[integration] build FAILED (attempt %d/%d):\n--- build output ---\n%s\n--- end build output ---\nError: %v\n", attempt, maxAttempts, lastOutput, err)
+
+		transient := false
+		for _, sig := range buildkitTransientExportErrors {
+			if strings.Contains(lastOutput, sig) {
+				transient = true
+				break
+			}
+		}
+		if !transient || attempt == maxAttempts {
+			break
+		}
+
+		wait := time.Duration(attempt) * 5 * time.Second
+		fmt.Printf("[integration] build hit a known transient BuildKit export race (attempt %d/%d), retrying in %s...\n", attempt, maxAttempts, wait)
+		time.Sleep(wait)
+	}
+
+	return lastErr
 }
 
 func getMappedPort(repoRoot, service string, port int) (string, error) {
@@ -251,8 +334,22 @@ func stopStack(repoRoot string) {
 			if self != "" && (strings.HasPrefix(self, id) || strings.HasPrefix(id, self)) {
 				continue
 			}
-			// Only clean up job containers or policies, not the stack itself.
-			if !strings.Contains(labels, "forge.run_id") && !strings.Contains(labels, "forge.policy") {
+
+			/*
+				Only clean up job containers, policies, or autoscaler-spawned
+				agents - not the stack itself. Agents don't carry forge.run_id/forge.policy
+				(an agent isn't tied to one specific job over its lifetime); they carry forge-pool
+				instead (see DockerFakeProvisioner.ScaleUp). Without this,
+				dynamically spawned agents are invisible to `docker compose
+				down` below — they were never part of the compose project,
+				just raw `docker run` containers on this same network — and
+				are left orphaned after every test run that triggers any
+				autoscaling.
+			*/
+
+			if !strings.Contains(labels, "forge.run_id") &&
+				!strings.Contains(labels, "forge.policy") &&
+				!strings.Contains(labels, "forge-pool") {
 				continue
 			}
 			toRemove = append(toRemove, id)
@@ -285,16 +382,28 @@ func initProjectName() {
 	if agentID == "" {
 		agentID = "local"
 	}
+	jobID := os.Getenv("FORGE_JOB_ID")
+	shardIndex := os.Getenv("FORGE_SHARD_INDEX")
+	uniquePart := jobID
+	if shardIndex != "" {
+		uniquePart += "-s" + shardIndex
+	}
+	if uniquePart == "" {
+		uniquePart = "it"
+	}
+
 	// Use a more robust unique ID (timestamp in seconds + microsecond part)
 	now := time.Now()
-	composeProjectName = fmt.Sprintf("forge-it-%s-%d-%06d", agentID, now.Unix()%10000, now.UnixNano()%1000000)
+	composeProjectName = fmt.Sprintf("%s-%s-%d-%06d", agentID, uniquePart, now.Unix()%10000, now.UnixNano()%1000000)
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
 	// Use a unique image name for this test run to avoid build collisions on shared hosts.
 	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
-	// Ensure FORGE_PROXY_AGENT_ID is set for the internal stack to use for labels.
-	if os.Getenv("FORGE_PROXY_AGENT_ID") == "" {
-		os.Setenv("FORGE_PROXY_AGENT_ID", agentID)
-	}
+	os.Setenv("FORGE_AUTOSCALER_IMAGE", "forge-autoscaler-test:"+composeProjectName)
+	// Ensure FORGE_PROXY_AGENT_ID is unique for this stack to avoid cross-talk
+	// between parallel shards sharing the same host Docker daemon.
+	os.Setenv("FORGE_PROXY_AGENT_ID", composeProjectName)
+	// Proxy also needs a unique ID to avoid collisions in the host sockets volume.
+	os.Setenv("FORGE_AGENT_ID", composeProjectName)
 }
 
 func composeArgs(sub ...string) []string {
@@ -447,13 +556,15 @@ func assertPassed(t *testing.T, s runStatus) {
 	t.Helper()
 	if s.Status != "passed" {
 		for _, j := range s.Jobs {
-			if j.Status == "failed" {
+			if j.Status == "failed" || j.Status == "timed_out" || j.Status == "canceled" {
 				resp, err := adminClient.get("/api/v1/jobs/" + j.JobID + "/logs")
-				if err == nil {
-					body, _ := io.ReadAll(resp.Body)
-					resp.Body.Close()
-					t.Errorf("Job %s (%s) failed logs:\n%s", j.JobID, j.StepID, body)
+				if err != nil {
+					t.Errorf("Job %s (%s) failed but logs could not be fetched: %v", j.JobID, j.StepID, err)
+					continue
 				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				t.Errorf("Job %s (%s) status %q logs:\n%s", j.JobID, j.StepID, j.Status, body)
 			}
 		}
 		t.Fatalf("expected run to pass, got status %q", s.Status)
