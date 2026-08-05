@@ -26,11 +26,23 @@ steps:
       upload:
         - path: ui-dist.tar.gz
 
+  - id: build-image
+    name: Build Image
+    uses: ./templates/docker-build.yml
+    depends_on: [ build-ui ]
+    timeout: 10m
+    with:
+      image: ghcr.io/jbraunsmajr/forge/forge:test-${{ env.FORGE_BUILD_NUMBER }}
+      dockerfile: Dockerfile
+      context: .
+
   - id: unit-tests
     name: Unit Tests
     image: golang:1.26.5-alpine
     docker_socket: true
-    depends_on: [ build-ui ]
+    depends_on: [ build-image ]
+    env:
+      FORGE_IMAGE: ghcr.io/jbraunsmajr/forge/forge:test-${{ env.FORGE_BUILD_NUMBER }}
     artifacts:
       download:
         - name: ui-dist.tar.gz
@@ -41,7 +53,9 @@ steps:
     name: Integration Tests
     image: golang:1.26.5-alpine
     docker_socket: true
-    depends_on: [ build-ui ]
+    depends_on: [ build-image ]
+    env:
+      FORGE_IMAGE: ghcr.io/jbraunsmajr/forge/forge:test-${{ env.FORGE_BUILD_NUMBER }}
     artifacts:
       download:
         - name: ui-dist.tar.gz
@@ -54,6 +68,20 @@ steps:
       fallback: single
     test_report: .forge/test-report.json
     script: .forge/scripts/integration-tests.sh
+
+  - id: promote-on-branch
+    name: Promote Image
+    condition: "!branch(main)"
+    type: docker_publish
+    depends_on: [ unit-tests, integration-tests ]
+    secrets: [ REGISTRY_USERNAME, REGISTRY_PASSWORD ]
+    docker_publish:
+      registry: ghcr.io
+      repository: jbraunsmajr/forge/forge
+      source: test-${{ env.FORGE_BUILD_NUMBER }}
+      tags:
+        - ${{ env.FORGE_BRANCH }}
+      delete_source: true
 
   - id: main-pipeline
     condition: branch(main)

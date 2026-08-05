@@ -1,9 +1,9 @@
 <script lang="ts">
-    import { Layers, Cpu, Play, Package, Globe } from '@lucide/svelte';
+    import { Layers, Cpu, Play, Package, Globe, Container } from '@lucide/svelte';
 
     interface Step {
         id: string;
-        type: 'command' | 'generator' | 'pipeline' | 'release' | 'approval';
+        type: 'command' | 'generator' | 'pipeline' | 'release' | 'approval' | 'docker_publish';
         depends_on: string[];
         image?: string;
         pipeline_ref?: { name: string };
@@ -30,6 +30,7 @@
         generator: { fill: '#0d1117', stroke: '#d29922', text: '#d29922', icon: Layers },
         pipeline:  { fill: '#0d1117', stroke: '#58a6ff', text: '#58a6ff', icon: Play },
         release:   { fill: '#0d1117', stroke: '#a78bfa', text: '#a78bfa', icon: Package },
+        docker_publish: { fill: '#0d1117', stroke: '#39c5cf', text: '#39c5cf', icon: Container },
         approval:  { fill: '#0d1117', stroke: '#f59e0b', text: '#f59e0b', icon: Globe },
     };
 
@@ -163,9 +164,11 @@
                         ? `Trigger: ${s.pipeline_ref?.name || '...'}`
                         : s.type === 'release'
                             ? 'SCM Release'
-                            : s.type === 'approval'
-                                ? 'Manual Approval'
-                                : (s.image || 'no image') + (s.split?.enabled ? ` · ${s.split.shards} shards` : '')}
+                            : s.type === 'docker_publish'
+                                ? 'Docker Publish'
+                                : s.type === 'approval'
+                                    ? 'Manual Approval'
+                                    : (s.image || 'no image') + (s.split?.enabled ? ` · ${s.split.shards} shards` : '')}
                     <g class="node" on:click={() => onSelectStep(s.id)} clip-path="url(#node-clip-{s.id})">
                         <rect 
                             x={pos.x} y={pos.y} 

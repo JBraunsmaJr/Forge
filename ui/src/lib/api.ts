@@ -65,6 +65,21 @@ export interface RootCauseInfo {
     recent_total: number;
 }
 
+export interface DockerPublishConfig {
+    registry: string;
+    repository: string;
+    source: string;
+    tags: string[];
+    delete_source: boolean;
+}
+
+export interface DockerPublishResult {
+    tags_applied: string[];
+    source_digest?: string;
+    source_deleted: boolean;
+    warnings?: string[];
+}
+
 export interface Job {
     job_id: string;
     step_id: string;
@@ -77,6 +92,11 @@ export interface Job {
     policy_source?: string;
     child_run_id?: string;
     root_cause?: RootCauseInfo;
+    // docker_publish/docker_publish_result are populated only for
+    // docker_publish-type jobs: the configured promotion and its
+    // outcome (tags applied, deletion status, warnings) — issue #57.
+    docker_publish?: DockerPublishConfig;
+    docker_publish_result?: DockerPublishResult;
 }
 
 export interface Run {
@@ -99,6 +119,9 @@ export interface RunComparison {
 export interface RunDetail extends Run {
     jobs: Job[];
     shard_assignments?: Record<string, ShardAssignmentDetail[]>;
+    // build_number is the FORGE_BUILD_NUMBER assigned to this run at
+    // submission time (issue #57).
+    build_number?: string;
 }
 
 export interface ShardAssignmentDetail {
@@ -161,6 +184,20 @@ export interface ProjectWebhook {
     github_url: string;
     gitlab_url: string;
     generic_url: string;
+}
+
+// BuildFormatInfo describes the build-number format and version state
+// configured for a (project, pipeline) scope (issue #57).
+export interface BuildFormatInfo {
+    project_id: string;
+    pipeline_name: string;
+    format: string;
+    major: number;
+    minor: number;
+    version_source?: string; // "", "manual", or "tag:<ref>"
+    version_set_by?: string;
+    version_tag_filter?: string;
+    sample_build_number: string;
 }
 
 export interface HealthFinding {
@@ -340,6 +377,45 @@ export const api = {
     // last `days` (default 30) — powers the failure-insights panel
     getFailureStats: (id: string, days = 30): Promise<FailureBreakdown | null> =>
         fetchAuth(`/api/v1/projects/${id}/failure-stats?days=${days}`).then(r => r?.ok ? r.json() : null),
+
+    // Build number format & version (issue #57)
+    getBuildFormat: (projectID: string, pipelineName: string): Promise<BuildFormatInfo | null> =>
+        fetchAuth(`/api/v1/projects/${projectID}/build-format?pipeline=${encodeURIComponent(pipelineName)}`)
+            .then(r => r?.ok ? r.json() : null),
+    // Returns { ok, status } rather than a boolean so the caller can
+    // show the server's rejection reason (e.g. an unknown token) —
+    // this is the "rejected at validation time" save path.
+    setBuildFormat: async (projectID: string, pipelineName: string, format: string): Promise<{ ok: boolean, error?: string }> => {
+        const r = await fetchAuth(`/api/v1/projects/${projectID}/build-format`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pipeline_name: pipelineName, format }),
+        });
+        if (r?.status === 204) return { ok: true };
+        const body = await r?.json().catch(() => null);
+        return { ok: false, error: body?.error || 'Failed to save format' };
+    },
+    setVersion: async (projectID: string, pipelineName: string, major: number, minor: number): Promise<{ ok: boolean, error?: string }> => {
+        const r = await fetchAuth(`/api/v1/projects/${projectID}/version`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pipeline_name: pipelineName, major, minor }),
+        });
+        if (r?.status === 204) return { ok: true };
+        const body = await r?.json().catch(() => null);
+        return { ok: false, error: body?.error || 'Failed to save version' };
+    },
+    setVersionTagFilter: async (projectID: string, pipelineName: string, filter: string): Promise<{ ok: boolean, error?: string }> => {
+        const r = await fetchAuth(`/api/v1/projects/${projectID}/version-tag-filter`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pipeline_name: pipelineName, filter }),
+        });
+        if (r?.status === 204) return { ok: true };
+        const body = await r?.json().catch(() => null);
+        return { ok: false, error: body?.error || 'Failed to save tag filter' };
+    },
+
     triggerProject: async (id: string, branch: string, commit?: string): Promise<{ run_id: string }> => {
         const r = await fetchAuth(`/api/v1/projects/${id}/trigger`, {
             method: 'POST',

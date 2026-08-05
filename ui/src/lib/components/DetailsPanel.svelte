@@ -7,12 +7,13 @@
     import GanttChart from './GanttChart.svelte';
     import Terminal from './Terminal.svelte';
     import RootCauseCard from './RootCauseCard.svelte';
-    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check, TrendingUp } from '@lucide/svelte';
+    import DockerPublishCard from './DockerPublishCard.svelte';
+    import { Maximize2, Minimize2, Terminal as TerminalIcon, FileText, Package, Clock, X, Check, TrendingUp, Container } from '@lucide/svelte';
 
     export let debugSession: { sessionID: string | null, status: 'starting' | 'ready' | 'closed', expiresInS: number };
     export let onCloseDebug: () => void;
 
-    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' | 'shards' = 'logs';
+    let activeTab: 'logs' | 'artifacts' | 'terminal' | 'timing' | 'shards' | 'publish' = 'logs';
     let expanded = false;
 
     $: if (debugSession.sessionID && activeTab !== 'terminal') {
@@ -149,6 +150,12 @@
                     Shards
                 </button>
             {/if}
+            {#if $selectedJob?.docker_publish_result || $selectedJob?.docker_publish}
+                <button class:active={activeTab === 'publish'} on:click={() => activeTab = 'publish'}>
+                    <Container size={12} />
+                    Publish
+                </button>
+            {/if}
         </div>
         <div class="actions">
             {#if $selectedJob?.status === 'approval'}
@@ -230,6 +237,10 @@
                     {/each}
                 {/if}
             </div>
+        {:else if activeTab === 'publish'}
+            <div class="publish-tab-content">
+                <DockerPublishCard config={$selectedJob?.docker_publish} result={$selectedJob?.docker_publish_result} />
+            </div>
         {/if}
     </div>
 </div>
@@ -246,6 +257,11 @@
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
         gap: 20px;
+        background: var(--bg);
+    }
+    .publish-tab-content {
+        flex: 1;
+        overflow-y: auto;
         background: var(--bg);
     }
     .shard-card {

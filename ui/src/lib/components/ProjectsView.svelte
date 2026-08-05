@@ -2,10 +2,11 @@
     import { onMount } from 'svelte';
     import { api, type Project, type Org, type ProjectHealth } from '../api';
     import { currentView } from '../stores';
-    import { Plus, Briefcase, ExternalLink, Play, Key, Webhook, ChartBar, ChevronDown, ChevronUp, Settings, RefreshCw, TriangleAlert, CircleX, Info } from '@lucide/svelte';
+    import { Plus, Briefcase, ExternalLink, Play, Key, Webhook, ChartBar, ChevronDown, ChevronUp, Settings, RefreshCw, TriangleAlert, CircleX, Info, Hash } from '@lucide/svelte';
     import SecretsManager from './SecretsManager.svelte';
     import WebhookPanel from './WebhookPanel.svelte';
     import FailureInsights from './FailureInsights.svelte';
+    import BuildSettings from './BuildSettings.svelte';
 
     let projects: Project[] = [];
     let orgs: Org[] = [];
@@ -18,6 +19,7 @@
     let openSecretsId: string | null = null;
     let openWebhookId: string | null = null;
     let openInsightsId: string | null = null;
+    let openBuildSettingsId: string | null = null;
 
     let showCreate = false;
     let triggeringId: string | null = null;
@@ -492,6 +494,20 @@
                             {/if}
                         </button>
 
+                        <button
+                            class="btn-text"
+                            aria-expanded={openBuildSettingsId === project.id}
+                            on:click={() => openBuildSettingsId = openBuildSettingsId === project.id ? null : project.id}
+                        >
+                            <Hash size={14} />
+                            Build
+                            {#if openBuildSettingsId === project.id}
+                                <ChevronUp size={14} />
+                            {:else}
+                                <ChevronDown size={14} />
+                            {/if}
+                        </button>
+
                         <button class="btn-text" on:click={() => startEdit(project)}>
                             <Settings size={14} />
                             Settings
@@ -507,6 +523,10 @@
 
                         {#if openInsightsId === project.id}
                             <FailureInsights id={project.id} />
+                        {/if}
+
+                        {#if openBuildSettingsId === project.id}
+                            <BuildSettings id={project.id} />
                         {/if}
                     </div>
                     <div class="item-actions">

@@ -12,13 +12,18 @@ steps:
       dockerfile: examples/policies/Dockerfile
       context: examples/policies/
 
-  - id: build-image
-    uses: ./templates/docker-build.yml
-    with:
-      timeout: 10m
-      image: ghcr.io/jbraunsmajr/forge/forge
-      dockerfile: Dockerfile
-      context: .
+  - id: promote-image
+    name: Promote Image
+    type: docker_publish
+    secrets: [ REGISTRY_USERNAME, REGISTRY_PASSWORD ]
+    docker_publish:
+      registry: ghcr.io
+      repository: jbraunsmajr/forge/forge
+      source: test-${{ env.FORGE_BUILD_NUMBER }}
+      tags:
+        - latest
+        - ${{ env.FORGE_BUILD_NUMBER }}
+      delete_source: true
 
   - id: release-approval
     name: Approve Release

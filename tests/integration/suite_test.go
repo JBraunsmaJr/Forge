@@ -397,8 +397,12 @@ func initProjectName() {
 	composeProjectName = fmt.Sprintf("%s-%s-%d-%06d", agentID, uniquePart, now.Unix()%10000, now.UnixNano()%1000000)
 	os.Setenv("COMPOSE_PROJECT_NAME", composeProjectName)
 	// Use a unique image name for this test run to avoid build collisions on shared hosts.
-	os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
-	os.Setenv("FORGE_AUTOSCALER_IMAGE", "forge-autoscaler-test:"+composeProjectName)
+	if os.Getenv("FORGE_IMAGE") == "" {
+		os.Setenv("FORGE_IMAGE", "forge-test:"+composeProjectName)
+	}
+	if os.Getenv("FORGE_AUTOSCALER_IMAGE") == "" {
+		os.Setenv("FORGE_AUTOSCALER_IMAGE", "forge-autoscaler-test:"+composeProjectName)
+	}
 	// Ensure FORGE_PROXY_AGENT_ID is unique for this stack to avoid cross-talk
 	// between parallel shards sharing the same host Docker daemon.
 	os.Setenv("FORGE_PROXY_AGENT_ID", composeProjectName)

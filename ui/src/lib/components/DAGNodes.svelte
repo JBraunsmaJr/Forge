@@ -36,7 +36,7 @@
             passed: 'passed', failed: 'failed', running: 'running…',
             waiting: 'waiting…', queued: 'queued', pending: 'pending',
             canceled: 'canceled', timed_out: 'timed out',
-            approval: 'waiting for approval', release: 'releasing',
+            approval: 'waiting for approval', release: 'releasing', docker_publish: 'publishing',
         };
         return labels[status] || status;
     }
