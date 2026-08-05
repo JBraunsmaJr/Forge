@@ -15,7 +15,7 @@ steps:
   - id: promote-image
     name: Promote Image
     type: docker_publish
-    secrets: [ REGISTRY_USERNAME, REGISTRY_PASSWORD ]
+    secrets: [REGISTRY_USERNAME, REGISTRY_PASSWORD]
     docker_publish:
       registry: ghcr.io
       repository: jbraunsmajr/forge/forge
@@ -23,7 +23,11 @@ steps:
       tags:
         - latest
         - ${{ env.FORGE_BUILD_NUMBER }}
-      delete_source: true
+      # delete_source is intentionally omitted: automatic deletion is
+      # currently disabled (it would risk deleting the tags above too,
+      # since they share a digest with the source tag immediately after
+      # promotion — see registryutil.DeleteTag). Stale test-* tags need
+      # manual/scheduled cleanup for now.
 
   - id: release-approval
     name: Approve Release
@@ -33,10 +37,10 @@ steps:
   - id: build-binaries
     name: Build Binaries
     image: golang:1.26.5-alpine
-    depends_on: [ release-approval ]
+    depends_on: [release-approval]
     matrix:
-      os: [ linux, windows, darwin ]
-      arch: [ amd64, arm64 ]
+      os: [linux, windows, darwin]
+      arch: [amd64, arm64]
     env:
       CGO_ENABLED: "0"
     run: |
@@ -47,7 +51,7 @@ steps:
       export GOOS=${{ matrix.os }}
       export GOARCH=${{ matrix.arch }}
       EXT=""
-      if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
+      if ["$GOOS" = "windows"]; then EXT=".exe"; fi
       OUT="forge-${GOOS}-${GOARCH}${EXT}"
       mkdir -p dist
       go build -ldflags="-s -w" -o "dist/${OUT}" ./cmd/forge
@@ -61,7 +65,7 @@ steps:
   - id: github-release
     name: GitHub Release
     type: release
-    depends_on: [ build-binaries ]
+    depends_on: [build-binaries]
     condition: tag()
     release:
       name: "Release ${{ env.FORGE_COMMIT_TAG }}"

@@ -126,6 +126,29 @@ func init() {
 	rootCmd.AddCommand(reportCmd)
 }
 
+// fromGoTest converts `go test -json` output into a Forge test report.
+//
+// Granularity note: entries are keyed by top-level test FUNCTION NAME
+// (e.g. "TestAuth_Login"), not by source file. go test -json has no
+// concept of "which .go file is this test defined in" — that's
+// compile-time-only information the test binary doesn't retain at
+// runtime, so file-level splitting isn't something Go's own tooling
+// can report. Test-function-name is the finest granularity actually
+// available, and it composes with go test's own -run flag: Forge's
+// shard-assignment logic (internal/scheduler/test_split.go) puts each
+// shard's assigned names into FORGE_TEST_FILES exactly like it would
+// file paths for other frameworks, and the calling script builds a
+// `-run "^(Name1|Name2)$"` regex from it — see
+// .forge/scripts/integration-tests.sh.
+//
+// This does mean two different packages' identically-named top-level
+// tests (e.g. two "TestBasic" in different packages) would collide
+// under this scheme, since durations here are keyed by name alone with
+// no package qualifier. That's a non-issue for a single-package suite
+// (Go doesn't allow two functions of the same name in one package,
+// so no collision is possible) — which is the only case this is
+// currently used for — but would need a package-qualified key before
+// reusing this against a multi-package `go test ./...` invocation.
 func fromGoTest(inputPath, outputPath string) error {
 	f, err := os.Open(inputPath)
 	if err != nil {
@@ -140,15 +163,17 @@ func fromGoTest(inputPath, outputPath string) error {
 		Elapsed float64 `json:"Elapsed"` // seconds
 	}
 
-	type pkgStats struct {
+	type testStats struct {
 		durationMS int64
-		tests      int
-		passed     int
-		failed     int
-		skipped    int
-		pkgFailed  bool
+		passed     bool
+		failed     bool
+		skipped    bool
 	}
-	packages := make(map[string]*pkgStats)
+	tests := make(map[string]*testStats)
+	// Preserve first-seen order so the report's file list isn't
+	// randomized run to run (map iteration order isn't stable, and a
+	// stable order makes diffing/reading reports across runs saner).
+	var order []string
 
 	scanner := bufio.NewScanner(f)
 	// go test output lines can be long (giant assertion diffs).
@@ -159,33 +184,32 @@ func fromGoTest(inputPath, outputPath string) error {
 		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
 			continue
 		}
-		if _, ok := packages[e.Package]; !ok {
-			packages[e.Package] = &pkgStats{}
+		if e.Test == "" || strings.Contains(e.Test, "/") {
+			// e.Test == "" is a package-level event (build result,
+			// package pass/fail summary) — not an individual test.
+			// A "/" means this is a subtest event (e.g.
+			// "TestFoo/some_case"); skip it, since the top-level
+			// "TestFoo" event's Elapsed already includes all of its
+			// subtests' time, and -run selects/deselects by the
+			// top-level name, not per-subtest.
+			continue
 		}
-		pkg := packages[e.Package]
+		t, ok := tests[e.Test]
+		if !ok {
+			t = &testStats{}
+			tests[e.Test] = t
+			order = append(order, e.Test)
+		}
 		switch e.Action {
 		case "pass":
-			if e.Test == "" { // package-level pass
-				pkg.durationMS = int64(e.Elapsed * 1000)
-			} else {
-				pkg.tests++
-				pkg.passed++
-			}
+			t.durationMS = int64(e.Elapsed * 1000)
+			t.passed = true
 		case "fail":
-			if e.Test == "" {
-				pkg.durationMS = int64(e.Elapsed * 1000)
-				pkg.pkgFailed = true
-			} else {
-				pkg.tests++
-				pkg.failed++
-			}
+			t.durationMS = int64(e.Elapsed * 1000)
+			t.failed = true
 		case "skip":
-			if e.Test == "" {
-				pkg.durationMS = int64(e.Elapsed * 1000)
-			} else {
-				pkg.tests++
-				pkg.skipped++
-			}
+			t.durationMS = int64(e.Elapsed * 1000)
+			t.skipped = true
 		}
 	}
 
@@ -193,33 +217,33 @@ func fromGoTest(inputPath, outputPath string) error {
 		return fmt.Errorf("scanning go test output: %w", err)
 	}
 
-	moduleName := getModuleName()
 	var files []api.TestFileResult
 	var totalDuration int64
-	for pkg, stats := range packages {
-		if pkg == "" {
-			continue
+	for _, name := range order {
+		t := tests[name]
+		passed, failed, skipped := 0, 0, 0
+		switch {
+		case t.failed:
+			failed = 1
+		case t.skipped:
+			skipped = 1
+		case t.passed:
+			passed = 1
+		default:
+			// Started but never resolved to pass/fail/skip (binary
+			// crashed mid-test, panic, timeout) — count it as a
+			// failure rather than silently dropping it from totals.
+			failed = 1
 		}
-		path := pkg
-		if moduleName != "" && strings.HasPrefix(pkg, moduleName) {
-			path = strings.TrimPrefix(pkg, moduleName)
-			path = strings.TrimPrefix(path, "/")
-		}
-
-		failedCount := stats.failed
-		if stats.pkgFailed && failedCount == 0 {
-			failedCount = 1
-		}
-
 		files = append(files, api.TestFileResult{
-			Path:       path,
-			DurationMS: stats.durationMS,
-			Tests:      stats.tests,
-			Passed:     stats.passed,
-			Failed:     failedCount,
-			Skipped:    stats.skipped,
+			Path:       name, // top-level test function name — see doc comment above
+			DurationMS: t.durationMS,
+			Tests:      1,
+			Passed:     passed,
+			Failed:     failed,
+			Skipped:    skipped,
 		})
-		totalDuration += stats.durationMS
+		totalDuration += t.durationMS
 	}
 
 	report := api.TestReport{
@@ -230,21 +254,6 @@ func fromGoTest(inputPath, outputPath string) error {
 	}
 
 	return writeReport(outputPath, report)
-}
-
-func getModuleName() string {
-	data, err := os.ReadFile(filepath.Join(workspaceDir, "go.mod"))
-	if err != nil {
-		return ""
-	}
-	lines := strings.SplitSeq(string(data), "\n")
-	for line := range lines {
-		line = strings.TrimSpace(line)
-		if after, ok := strings.CutPrefix(line, "module "); ok {
-			return strings.TrimSpace(after)
-		}
-	}
-	return ""
 }
 
 func fromPytest(inputPath, outputPath string) error {

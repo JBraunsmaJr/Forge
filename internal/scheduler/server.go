@@ -6,7 +6,6 @@ import (
 	"embed"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -1050,18 +1049,31 @@ func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
 	cfg := job.DockerPublish
 	start := time.Now()
 
+	fail := func(msg string) {
+		s.logError(job, msg)
+		s.store.Complete(job.JobID, job.LeaseID, 1, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+	}
+
+	// Defense in depth: never let a pull_request-triggered run reach a
+	// credentialed registry promotion, regardless of what the pipeline's
+	// own condition: happens to say. A PR run builds and tests the PR
+	// author's own source (not necessarily reviewed yet, and — for a
+	// fork PR — not even from someone with write access), so letting it
+	// reach docker_publish would let an external contributor get
+	// arbitrary code built, promoted, and published under this
+	// project's real image tags.
+	if job.Env["FORGE_EVENT"] == "pull_request" {
+		fail("docker_publish is not permitted on pull_request-triggered runs")
+		return
+	}
+
 	registry := interpolate(cfg.Registry, job.Env)
 	repository := interpolate(cfg.Repository, job.Env)
 	source := interpolate(cfg.Source, job.Env)
 	var targetTags []string
 	for _, t := range cfg.Tags {
 		targetTags = append(targetTags, interpolate(t, job.Env))
-	}
-
-	fail := func(msg string) {
-		s.logError(job, msg)
-		s.store.Complete(job.JobID, job.LeaseID, 1, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
-		s.publishRunDetail(job.RunID)
 	}
 
 	// Resolve registry credentials the same way task steps resolve any
@@ -1111,25 +1123,19 @@ func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
 		s.logInfo(job, fmt.Sprintf("Tag %s now points at %s", tag, manifest.Digest))
 	}
 
-	// Deletion is best-effort and never fails the job by itself — a
-	// registry rejecting it (Docker Hub's public API, most notably)
-	// or the delete call otherwise failing both become a warning here,
-	// per spec, not a job failure.
-	if cfg.DeleteSource && !failed {
-		s.logInfo(job, fmt.Sprintf("Deleting source tag %s...", source))
-		if err := client.DeleteTag(repository, manifest.Digest); err != nil {
-			var warning string
-			if errors.Is(err, registryutil.ErrDeletionUnsupported) {
-				warning = fmt.Sprintf("registry does not support tag deletion; source tag %q was not removed", source)
-			} else {
-				warning = fmt.Sprintf("failed to delete source tag %q: %v", source, err)
-			}
-			result.Warnings = append(result.Warnings, warning)
-			s.logInfo(job, "Warning: "+warning)
-		} else {
-			result.SourceDeleted = true
-			s.logInfo(job, fmt.Sprintf("Source tag %s deleted", source))
-		}
+	// Deletion is deliberately disabled, not just best-effort: the
+	// source tag and every tag just promoted above point at the
+	// identical digest, and many registries cascade a manifest delete
+	// (even one requested via a tag reference) to every tag sharing
+	// that digest — see registryutil.DeleteTag's doc comment. Actually
+	// calling delete here risks silently removing the tags this step
+	// just created, which is worse than not cleaning up the source tag
+	// at all. Until there's a registry-safe way to confirm a tag has no
+	// other references, delete_source only produces a warning.
+	if cfg.DeleteSource {
+		warning := fmt.Sprintf("source tag %q was not deleted: automatic deletion is disabled because it shares a digest with the tag(s) just promoted, and deleting it could remove those too", source)
+		result.Warnings = append(result.Warnings, warning)
+		s.logInfo(job, "Warning: "+warning)
 	}
 
 	if err := s.store.SetDockerPublishResult(job.JobID, result); err != nil {

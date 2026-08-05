@@ -156,17 +156,28 @@ func (c *Client) PutManifest(repository, tag string, m *Manifest) error {
 	return nil
 }
 
-// DeleteTag deletes repository's manifest at digest. The registry API
-// only supports deleting by digest, not by tag name directly — callers
-// resolve a tag to its digest via GetManifest first.
+// DeleteTag deletes repository's tag reference. Registries interpret a
+// DELETE against a *tag* reference as unlinking just that tag; a DELETE
+// against a *digest* reference removes the underlying manifest and
+// cascades to every tag pointing at it — the wrong operation whenever
+// other tags might share that digest (which is always true immediately
+// after a docker_publish promotion: the source and every freshly
+// promoted target tag point at the identical digest). Callers must pass
+// the tag name, never a resolved digest.
+//
+// Even tag-reference deletion isn't universally guaranteed safe: some
+// registry implementations resolve the tag to its digest internally
+// before deleting, and would cascade-delete other tags anyway. Forge's
+// own docker_publish step does not call this during a delete_source
+// promotion for exactly that reason — see executeDockerPublish.
 //
 // Returns ErrDeletionUnsupported (never a generic error) when the
 // registry rejects the delete for lack of support rather than a real
 // problem, so callers can turn that into a non-fatal warning per the
 // spec: "if the target registry doesn't support tag deletion ... record
 // a warning and shall not fail the job by default."
-func (c *Client) DeleteTag(repository, digest string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.manifestURL(repository, digest), nil)
+func (c *Client) DeleteTag(repository, tag string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.manifestURL(repository, tag), nil)
 	if err != nil {
 		return err
 	}
@@ -184,7 +195,7 @@ func (c *Client) DeleteTag(repository, digest string) error {
 		return ErrDeletionUnsupported
 	default:
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("delete manifest %s:%s: registry returned %s: %s", repository, digest, resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("delete manifest %s:%s: registry returned %s: %s", repository, tag, resp.Status, strings.TrimSpace(string(body)))
 	}
 }
 

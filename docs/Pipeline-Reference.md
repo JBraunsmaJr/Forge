@@ -496,7 +496,6 @@ A `docker_publish` step adds one or more tags to an already-pushed image without
     tags:
       - "${{ env.FORGE_BUILD_NUMBER }}"
       - latest
-    delete_source: true
   secrets: [REGISTRY_USERNAME, REGISTRY_PASSWORD]
 ```
 
@@ -508,13 +507,13 @@ A `docker_publish` step adds one or more tags to an already-pushed image without
 | `repository`    | string   | yes      | Repository within the registry, e.g. `myorg/myapp`. Supports `${{ env.VAR }}`.    |
 | `source`        | string   | yes      | The tag being promoted from. Supports `${{ env.VAR }}`.                          |
 | `tags`          | string[] | yes      | One or more target tags being promoted to. Each supports `${{ env.VAR }}`.        |
-| `delete_source` | bool     | no       | Remove the source tag after all target tags are successfully applied. Default `false`. |
+| `delete_source` | bool     | no       | Currently a no-op — see "Deletion is disabled" below. Reserved for a future registry-safe implementation. |
 
 `registry`, `repository`, `source`, and `tags` are required — a `docker_publish` block missing any of them is rejected by `forge validate` (and the UI's pipeline editor, since both run through the same validation path) before it's ever submitted, not first discovered when a run fails.
 
-**Authentication.** `docker_publish` authenticates using the same secret resolution order as any task step (project → org → global) via `secrets:`. It looks specifically for two conventional secret names: `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Neither is required for a registry that allows anonymous pulls.
+**Authentication.** `docker_publish` authenticates using the same secret resolution order as any task step (project → org → global) via `secrets:`. It looks specifically for two conventional secret names: `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Both can be omitted only for a registry that permits every operation this step performs anonymously — which in practice means anonymous *pushes* (promoting a tag is a write), not just anonymous pulls; most registries, including GHCR and Docker Hub, require authentication to push even to a public repository.
 
-**Deletion is best-effort.** If the registry doesn't support tag deletion (Docker Hub's public API is the most common example) or the delete call otherwise fails, the step records a warning rather than failing the job. Warnings, the tags actually applied, and the deletion outcome are all recorded per-job and retrievable via `forge status <run-id>` and the UI's step detail panel — not just from logs.
+**Deletion is disabled.** Setting `delete_source: true` currently has no effect beyond a warning in the step's output. The reason is a real safety concern, not a missing feature checkbox: a promotion always leaves the source tag and every newly-promoted target tag pointing at the identical digest, and deleting a tag on many registries cascades to every other tag sharing that digest — so an automatic delete here could silently remove the tags this step just created. Until there's a registry-safe way to confirm a tag has no other references, clean up stale source tags manually or with a separate, deliberate process. Warnings, the tags actually applied, and the source digest are all recorded per-job and retrievable via `forge status <run-id>` and the UI's step detail panel — not just from logs.
 
 **Ordering "promote only after tests pass"** needs no new mechanism: `depends_on`/`condition` work exactly as they do for any other step type, so a `docker_publish` step simply depends on whatever step(s) must succeed first.
 

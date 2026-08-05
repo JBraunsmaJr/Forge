@@ -9,8 +9,14 @@ apk add --no-cache docker-cli docker-cli-compose iproute2
 # derive its tag here from $FORGE_BUILD_NUMBER (a real env var in this
 # container) and export it so the integration suite's buildImage() can
 # pull and reuse it instead of every shard rebuilding it from scratch —
-# see tests/integration/suite_test.go's pullImage().
-export FORGE_IMAGE="ghcr.io/jbraunsmajr/forge/forge:test-${FORGE_BUILD_NUMBER}"
+# see tests/integration/suite_test.go's pullImage(). Only derive it when
+# nothing was already supplied (an externally-set FORGE_IMAGE always
+# wins) and a real build number is actually available (a plain local
+# run of this script with FORGE_BUILD_NUMBER unset would otherwise
+# produce a bogus "test-" tag with nothing after it).
+if [ -z "${FORGE_IMAGE:-}" ] && [ -n "${FORGE_BUILD_NUMBER:-}" ]; then
+  export FORGE_IMAGE="ghcr.io/jbraunsmajr/forge/forge:test-${FORGE_BUILD_NUMBER}"
+fi
 
 # Debug: check if artifact was downloaded
 ls -la
@@ -28,64 +34,34 @@ fi
 
 go build -o /usr/local/bin/forge ./cmd/forge
 
-SUITE_FIXTURE="tests/integration/suite_test.go"
-TEST_PKGS=""
-
-if [ -n "${FORGE_TEST_FILES:-}" ]; then
-  # We have sharded files/packages.
-  # Check if we have any directories. If we do, we can't mix with suite_test.go as a file.
-  has_dir=0
-  for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do
-    if [ -d "$p" ]; then
-      has_dir=1
-      break
-    fi
-  done
-
-  if [ "$has_dir" -eq 1 ]; then
-    # Use package mode.
-    for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do
-      # Only include integration tests to avoid running unit tests in this expensive step
-      # if the history was poisoned by a previous run.
-      case "$p" in
-        tests/integration*)
-          TEST_PKGS="$TEST_PKGS ./$p"
-          ;;
-      esac
-    done
-  else
-    # All are files. We can mix them with suite_test.go.
-    # Note: suite_test.go is always needed as it contains TestMain (stack setup).
-    TEST_PKGS="./$SUITE_FIXTURE"
-    for p in $(echo "$FORGE_TEST_FILES" | tr ',' ' '); do
-      case "$p" in
-        tests/integration*)
-          if [ "$p" != "$SUITE_FIXTURE" ]; then
-            TEST_PKGS="$TEST_PKGS ./$p"
-          fi
-          ;;
-      esac
-    done
+# FORGE_TEST_FILES holds this shard's assigned top-level test function
+# names (e.g. "TestAuth_Login"), not file paths — go test -json has no
+# way to report which .go file a test is defined in, so Forge's
+# per-test-duration history (and therefore shard assignment) for Go is
+# keyed by test name instead. See cmd/forge/cmd_report.go's fromGoTest
+# for the full explanation.
+#
+# ${VAR+set} (not ${VAR:-}) deliberately distinguishes "not running as
+# a shard at all" (FORGE_TEST_FILES unset entirely — run everything)
+# from "running as a shard that was assigned zero tests" (set to an
+# empty string — skip; this can legitimately happen with more shards
+# configured than there are test functions).
+if [ -n "${FORGE_TEST_FILES+set}" ]; then
+  if [ -z "$FORGE_TEST_FILES" ]; then
+    echo "Shard ${FORGE_SHARD_INDEX:-?} assigned no tests. Skipping."
+    exit 0
   fi
+  RUN_REGEX="^($(echo "$FORGE_TEST_FILES" | tr ',' '|'))\$"
 else
-  # Cold start or no history for this shard.
-  TEST_PKGS="./tests/integration/..."
-fi
-
-if [ -z "$TEST_PKGS" ] || [ "$TEST_PKGS" = "./$SUITE_FIXTURE" ]; then
-  # If we are in a shard that only got poisoned history (unit tests),
-  # just exit successfully. Shard 0 or other shards will handle the actual
-  # integration tests if they were sharded correctly.
-  if [ -n "${FORGE_TEST_FILES:-}" ]; then
-     echo "Shard $FORGE_SHARD_INDEX assigned no integration tests. Skipping."
-     exit 0
-  fi
+  # Not running under Forge's split expansion (e.g. a plain local
+  # `go test` via this script) — run everything.
+  RUN_REGEX=".*"
 fi
 
 # We don't want the exit code here to fail the script
 set +e
 
-go test -v -json $TEST_PKGS 2>&1 | tee /tmp/go-test-output.json | forge report stream-go-test
+go test -v -json -run "$RUN_REGEX" ./tests/integration/... 2>&1 | tee /tmp/go-test-output.json | forge report stream-go-test
 test_status=$?
 
 # Now things can start failing again

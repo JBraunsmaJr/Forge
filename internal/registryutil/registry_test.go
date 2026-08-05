@@ -102,7 +102,7 @@ func TestPromotionFlow(t *testing.T) {
 		t.Error("expected PUT to reach the registry")
 	}
 
-	if err := client.DeleteTag("myorg/myapp", digest); err != nil {
+	if err := client.DeleteTag("myorg/myapp", "test-42"); err != nil {
 		t.Fatalf("DeleteTag: %v", err)
 	}
 	if !deleteCalled {
@@ -126,7 +126,7 @@ func TestDeleteTag_UnsupportedReturnsTypedError(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "", "")
-	err := client.DeleteTag("myorg/myapp", "sha256:doesnotmatter")
+	err := client.DeleteTag("myorg/myapp", "test-42")
 	if err != ErrDeletionUnsupported {
 		t.Fatalf("got err %v, want ErrDeletionUnsupported", err)
 	}
