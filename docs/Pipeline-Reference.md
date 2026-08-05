@@ -480,6 +480,46 @@ Ensure your SCM token has sufficient permissions to create releases and upload a
 
 ---
 
+### `type: docker_publish`
+
+A `docker_publish` step adds one or more tags to an already-pushed image without rebuilding it — typically used to promote a test-specific tag to its real release tag(s) only after tests pass. Like `release` steps, `docker_publish` steps run on the scheduler and require neither an agent nor `docker_socket`: no image content is re-uploaded, since the source tag's manifest already references blobs that exist in the registry (issue #57).
+
+```yaml
+- id: promote-image
+  type: docker_publish
+  depends_on: [integration-tests]
+  condition: success()
+  docker_publish:
+    registry: ghcr.io
+    repository: myorg/myapp
+    source: "test-${{ env.FORGE_BUILD_NUMBER }}"
+    tags:
+      - "${{ env.FORGE_BUILD_NUMBER }}"
+      - latest
+    delete_source: true
+  secrets: [REGISTRY_USERNAME, REGISTRY_PASSWORD]
+```
+
+**docker_publish step fields:**
+
+| Field           | Type     | Required | Description                                                                    |
+|-----------------|----------|----------|----------------------------------------------------------------------------------|
+| `registry`      | string   | yes      | Registry host, e.g. `ghcr.io`, `docker.io`. Supports `${{ env.VAR }}`.            |
+| `repository`    | string   | yes      | Repository within the registry, e.g. `myorg/myapp`. Supports `${{ env.VAR }}`.    |
+| `source`        | string   | yes      | The tag being promoted from. Supports `${{ env.VAR }}`.                          |
+| `tags`          | string[] | yes      | One or more target tags being promoted to. Each supports `${{ env.VAR }}`.        |
+| `delete_source` | bool     | no       | Remove the source tag after all target tags are successfully applied. Default `false`. |
+
+`registry`, `repository`, `source`, and `tags` are required — a `docker_publish` block missing any of them is rejected by `forge validate` (and the UI's pipeline editor, since both run through the same validation path) before it's ever submitted, not first discovered when a run fails.
+
+**Authentication.** `docker_publish` authenticates using the same secret resolution order as any task step (project → org → global) via `secrets:`. It looks specifically for two conventional secret names: `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Neither is required for a registry that allows anonymous pulls.
+
+**Deletion is best-effort.** If the registry doesn't support tag deletion (Docker Hub's public API is the most common example) or the delete call otherwise fails, the step records a warning rather than failing the job. Warnings, the tags actually applied, and the deletion outcome are all recorded per-job and retrievable via `forge status <run-id>` and the UI's step detail panel — not just from logs.
+
+**Ordering "promote only after tests pass"** needs no new mechanism: `depends_on`/`condition` work exactly as they do for any other step type, so a `docker_publish` step simply depends on whatever step(s) must succeed first.
+
+---
+
 ## Complete Example
 
 ```yaml
@@ -521,13 +561,12 @@ steps:
       download:
         - name: app-binary
           dest: dist/app
-    run: |
-      chmod +x dist/app
-      docker build -t myapp:${GIT_SHA:-dev} .
-    artifacts:
       upload:
         - path: image-digest.txt
           name: image-digest
+    run: |
+      chmod +x dist/app
+      docker build -t myapp:${GIT_SHA:-dev} .
 
   # Deploy to staging via a reusable child pipeline
   - id: deploy-staging

@@ -168,41 +168,46 @@ type BuildCounter struct {
 
 // Job represents the jobs table.
 type Job struct {
-	ID                string         `gorm:"primaryKey"`
-	RunID             string         `gorm:"not null;index:jobs_run_id_idx"`
-	Run               Run            `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	StepID            string         `gorm:"not null"`
-	StepType          string         `gorm:"not null;default:'task'"`
-	Image             string         `gorm:"not null;default:''"`
-	Command           datatypes.JSON `gorm:"not null;default:'[]'"`
-	WorkDir           string         `gorm:"not null;default:'/workspace'"`
-	Env               datatypes.JSON `gorm:"not null;default:'{}'"`
-	Inputs            datatypes.JSON `gorm:"not null;default:'[]'"`
-	TimeoutNS         int64          `gorm:"not null;default:1800000000000"`
-	DependsOn         datatypes.JSON `gorm:"not null;default:'[]'"`
-	SecretNames       datatypes.JSON `gorm:"not null;default:'[]'"`
-	DockerSocket      bool           `gorm:"not null;default:false"`
-	PolicySource      string         `gorm:"not null;default:''"`
-	Condition         string         `gorm:"not null;default:''"`
-	AlwaysRun         bool           `gorm:"not null;default:false"`
-	Entrypoint        datatypes.JSON `gorm:"not null;default:'[]'"`
-	PipelineRef       datatypes.JSON
-	ReleaseConfig     datatypes.JSON
-	ArtifactUploads   datatypes.JSON `gorm:"not null;default:'[]'"`
-	ArtifactDownloads datatypes.JSON `gorm:"not null;default:'[]'"`
-	EmittedStepIDs    datatypes.JSON `gorm:"not null;default:'[]'"`
-	Status            string         `gorm:"not null;default:'pending';index:jobs_status_idx"`
-	LeaseID           string         `gorm:"not null;default:''"`
-	AgentID           string         `gorm:"not null;default:''"`
-	LeasedAt          *time.Time
-	HeartbeatAt       *time.Time `gorm:"index:jobs_hb_idx,where:status = 'running'"`
-	ExitCode          int        `gorm:"not null;default:0"`
-	DurationMS        int64      `gorm:"not null;default:0"`
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
-	TestReport        string `gorm:"not null;default:''"`
-	Split             datatypes.JSON
-	With              datatypes.JSON `gorm:"column:with;not null;default:'{}'"`
+	ID            string         `gorm:"primaryKey"`
+	RunID         string         `gorm:"not null;index:jobs_run_id_idx"`
+	Run           Run            `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	StepID        string         `gorm:"not null"`
+	StepType      string         `gorm:"not null;default:'task'"`
+	Image         string         `gorm:"not null;default:''"`
+	Command       datatypes.JSON `gorm:"not null;default:'[]'"`
+	WorkDir       string         `gorm:"not null;default:'/workspace'"`
+	Env           datatypes.JSON `gorm:"not null;default:'{}'"`
+	Inputs        datatypes.JSON `gorm:"not null;default:'[]'"`
+	TimeoutNS     int64          `gorm:"not null;default:1800000000000"`
+	DependsOn     datatypes.JSON `gorm:"not null;default:'[]'"`
+	SecretNames   datatypes.JSON `gorm:"not null;default:'[]'"`
+	DockerSocket  bool           `gorm:"not null;default:false"`
+	PolicySource  string         `gorm:"not null;default:''"`
+	Condition     string         `gorm:"not null;default:''"`
+	AlwaysRun     bool           `gorm:"not null;default:false"`
+	Entrypoint    datatypes.JSON `gorm:"not null;default:'[]'"`
+	PipelineRef   datatypes.JSON
+	ReleaseConfig datatypes.JSON
+	// DockerPublishConfig/DockerPublishResult back the docker_publish
+	// step type (issue #57): the configured promotion, and its outcome
+	// (tags applied, deletion status, warnings) once executed.
+	DockerPublishConfig datatypes.JSON
+	DockerPublishResult datatypes.JSON
+	ArtifactUploads     datatypes.JSON `gorm:"not null;default:'[]'"`
+	ArtifactDownloads   datatypes.JSON `gorm:"not null;default:'[]'"`
+	EmittedStepIDs      datatypes.JSON `gorm:"not null;default:'[]'"`
+	Status              string         `gorm:"not null;default:'pending';index:jobs_status_idx"`
+	LeaseID             string         `gorm:"not null;default:''"`
+	AgentID             string         `gorm:"not null;default:''"`
+	LeasedAt            *time.Time
+	HeartbeatAt         *time.Time `gorm:"index:jobs_hb_idx,where:status = 'running'"`
+	ExitCode            int        `gorm:"not null;default:0"`
+	DurationMS          int64      `gorm:"not null;default:0"`
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	TestReport          string `gorm:"not null;default:''"`
+	Split               datatypes.JSON
+	With                datatypes.JSON `gorm:"column:with;not null;default:'{}'"`
 }
 
 // TestFileDuration represents the test_file_durations table.

@@ -150,6 +150,8 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 					status = string(api.JobStatusApproval)
 				} else if stepType == "release" {
 					status = string(api.JobStatusRelease)
+				} else if stepType == "docker_publish" {
+					status = string(api.JobStatusDockerPublish)
 				} else {
 					status = "queued"
 				}
@@ -402,6 +404,7 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 
 	pipelineRefJSON := toJSON(step.PipelineRef)
 	releaseConfigJSON := toJSON(step.Release)
+	dockerPublishConfigJSON := toJSON(step.DockerPublish)
 	artifactUploadsJSON := toJSON(step.ArtifactUploads)
 	artifactDownloadsJSON := toJSON(step.ArtifactDownloads)
 
@@ -410,15 +413,15 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 			id, run_id, step_id, step_type, image, entrypoint, command, work_dir,
 			env, inputs, timeout_ns, depends_on, secret_names,
 			policy_source, condition, always_run, docker_socket, pipeline_ref,
-			release_config, artifact_uploads, artifact_downloads, status,
+			release_config, docker_publish_config, artifact_uploads, artifact_downloads, status,
 			test_report, split, "with"
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
 		jobID, runID, step.ID, stepType, step.Image, toJSON(step.Entrypoint),
 		toJSON(command), workDir,
 		toJSON(step.Env), toJSON(step.Inputs), int64(timeout),
 		toJSON(step.DependsOn), toJSON(step.SecretNames),
 		step.PolicySource, step.Condition, step.AlwaysRun, step.DockerSocket, pipelineRefJSON,
-		releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
+		releaseConfigJSON, dockerPublishConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
 		status, step.TestReport, toJSON(step.Split), toJSON(step.With),
 	)
 	return err
@@ -466,6 +469,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			jobs.always_run,
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.docker_publish_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
@@ -525,6 +529,7 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 			jobs.always_run,
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.docker_publish_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
@@ -539,12 +544,76 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 	return s.scanJobSpec(row, leaseID)
 }
 
+// LeaseDockerPublishJob atomically finds and claims the next queued
+// docker_publish job, mirroring LeaseReleaseJob: docker_publish steps
+// execute on the scheduler like release steps do, never requiring an
+// agent or docker_socket (issue #57).
+func (s *Store) LeaseDockerPublishJob() (*api.JobSpec, bool) {
+	leaseID := newID()
+	now := time.Now()
+
+	row := s.db.QueryRow(`
+		WITH next AS (
+			SELECT id FROM jobs
+			WHERE  status = 'docker_publish'
+			LIMIT  1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs
+		SET    status       = 'running',
+		       lease_id     = $1,
+		       agent_id     = 'scheduler',
+		       leased_at    = $2,
+		       heartbeat_at = $2,
+		       started_at   = $2
+		FROM   next, runs
+		WHERE  jobs.id = next.id AND jobs.run_id = runs.id
+		RETURNING
+			jobs.id, jobs.run_id, jobs.step_id, jobs.image, jobs.entrypoint,
+			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
+			jobs.timeout_ns, jobs.secret_names, jobs.step_type,
+			jobs.docker_socket,
+			COALESCE(jobs.condition, ''),
+			jobs.always_run,
+			COALESCE(jobs.pipeline_ref::text, 'null'),
+			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.docker_publish_config::text, 'null'),
+			COALESCE(jobs.artifact_uploads::text,   '[]'),
+			COALESCE(jobs.artifact_downloads::text, '[]'),
+			runs.workspace_dir,
+			runs.applied_step_ids,
+			jobs.test_report,
+			COALESCE(jobs.split::text, 'null'),
+			COALESCE(jobs."with"::text, '{}')
+		`,
+		leaseID, now,
+	)
+
+	return s.scanJobSpec(row, leaseID)
+}
+
+// SetDockerPublishResult persists a docker_publish step's outcome —
+// tags applied, deletion outcome, and any warnings — so it's
+// retrievable per-job via RunDetail (the CLI's forge status and the
+// UI's step detail panel), not just from job logs (issue #57).
+func (s *Store) SetDockerPublishResult(jobID string, result api.DockerPublishResult) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal docker_publish result: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE jobs SET docker_publish_result = $1 WHERE id = $2`, data, jobID); err != nil {
+		return fmt.Errorf("save docker_publish result: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	var (
 		jobID, runID, stepID, image, stepType      string
 		entrypointJSON, commandJSON, envJSON       []byte
 		inputsJSON, secretsJSON                    []byte
 		pipelineRefJSON, releaseConfigJSON         string
+		dockerPublishConfigJSON                    string
 		artifactUploadsJSON, artifactDownloadsJSON string
 		workDir, workspaceDir                      string
 		appliedStepIDsJSON                         []byte
@@ -564,6 +633,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		&alwaysRun,
 		&pipelineRefJSON,
 		&releaseConfigJSON,
+		&dockerPublishConfigJSON,
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 		&workspaceDir,
 		&appliedStepIDsJSON,
@@ -597,6 +667,11 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	var releaseConfig *api.ReleaseConfig
 	if releaseConfigJSON != "null" && releaseConfigJSON != "" {
 		json.Unmarshal([]byte(releaseConfigJSON), &releaseConfig)
+	}
+
+	var dockerPublishConfig *api.DockerPublishConfig
+	if dockerPublishConfigJSON != "null" && dockerPublishConfigJSON != "" {
+		json.Unmarshal([]byte(dockerPublishConfigJSON), &dockerPublishConfig)
 	}
 
 	var artifactUploads []api.ArtifactUploadSpec
@@ -650,6 +725,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		RepoURL:           repoURL,
 		PipelineRef:       pipelineRef,
 		Release:           releaseConfig,
+		DockerPublish:     dockerPublishConfig,
 		ArtifactUploads:   artifactUploads,
 		ArtifactDownloads: artifactDownloads,
 		TestReport:        testReport,
@@ -932,7 +1008,7 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 				break
 			}
 
-			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "waiting" || dep.status == "approval" || dep.status == "release" {
+			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "waiting" || dep.status == "approval" || dep.status == "release" || dep.status == "docker_publish" {
 				allFinished = false
 				break
 			}
@@ -972,6 +1048,8 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 						newStatus = string(api.JobStatusApproval)
 					} else if job.stepType == "release" {
 						newStatus = string(api.JobStatusRelease)
+					} else if job.stepType == "docker_publish" {
+						newStatus = string(api.JobStatusDockerPublish)
 					} else {
 						newStatus = string(api.JobStatusQueued)
 					}
@@ -1245,7 +1323,8 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	rows, err := s.db.Query(`
 		SELECT j.id, j.step_id, j.status, j.depends_on,
 		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id,
-		       rc.category, rc.pattern_id, rc.description, rc.matched_line, rc.suggested_fix
+		       rc.category, rc.pattern_id, rc.description, rc.matched_line, rc.suggested_fix,
+		       COALESCE(j.docker_publish_config::text, 'null'), COALESCE(j.docker_publish_result::text, 'null')
 		FROM   jobs j
 		LEFT JOIN runs r ON r.parent_job_id = j.id
 		LEFT JOIN job_root_causes rc ON rc.job_id = j.id
@@ -1261,9 +1340,11 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		var depsJSON []byte
 		var childRunID sql.NullString
 		var rcCategory, rcPatternID, rcDescription, rcMatchedLine, rcSuggestedFix sql.NullString
+		var dockerPublishConfigJSON, dockerPublishResultJSON string
 		rows.Scan(&j.JobID, &j.StepID, &j.Status, &depsJSON,
 			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID,
-			&rcCategory, &rcPatternID, &rcDescription, &rcMatchedLine, &rcSuggestedFix)
+			&rcCategory, &rcPatternID, &rcDescription, &rcMatchedLine, &rcSuggestedFix,
+			&dockerPublishConfigJSON, &dockerPublishResultJSON)
 		json.Unmarshal(depsJSON, &j.DependsOn)
 		if j.DependsOn == nil {
 			j.DependsOn = []string{}
@@ -1279,6 +1360,12 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 				MatchedLine:  rcMatchedLine.String,
 				SuggestedFix: rcSuggestedFix.String,
 			}
+		}
+		if dockerPublishConfigJSON != "null" && dockerPublishConfigJSON != "" {
+			json.Unmarshal([]byte(dockerPublishConfigJSON), &j.DockerPublish)
+		}
+		if dockerPublishResultJSON != "null" && dockerPublishResultJSON != "" {
+			json.Unmarshal([]byte(dockerPublishResultJSON), &j.DockerPublishResult)
 		}
 		jobs = append(jobs, j)
 		statuses = append(statuses, j.Status)
@@ -1566,6 +1653,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 	hasQueued := false
 	hasApproval := false
 	hasRelease := false
+	hasDockerPublish := false
 	hasPending := false
 	hasFailed := false
 	hasCanceled := false
@@ -1582,6 +1670,8 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 			hasApproval = true
 		case api.JobStatusRelease:
 			hasRelease = true
+		case api.JobStatusDockerPublish:
+			hasDockerPublish = true
 		case api.JobStatusPending:
 			hasPending = true
 		case api.JobStatusFailed, api.JobStatusTimedOut:
@@ -1591,7 +1681,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 		}
 	}
 
-	if hasRunning || hasWaiting || hasQueued || hasRelease {
+	if hasRunning || hasWaiting || hasQueued || hasRelease || hasDockerPublish {
 		return api.JobStatusRunning
 	}
 	if hasApproval {

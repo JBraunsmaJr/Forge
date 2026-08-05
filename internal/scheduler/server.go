@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -30,6 +31,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/registryutil"
 	"github.com/JBraunsmaJr/forge/internal/rootcause"
 	"github.com/JBraunsmaJr/forge/internal/scm"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
@@ -441,6 +443,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/audit/export", s.handleListAuditLogs)
 
 	go s.releaseMonitor(ctx)
+	go s.dockerPublishMonitor(ctx)
 
 	// Start gRPC server for internal communication (agents)
 	grpcAddr := getenv("FORGE_GRPC_ADDR", ":50051")
@@ -986,6 +989,151 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 		} else {
 			s.logInfo(job, fmt.Sprintf("Uploaded %s", meta.Filename))
 		}
+	}
+
+	exitCode := 0
+	if failed {
+		exitCode = 1
+	}
+	s.store.Complete(job.JobID, job.LeaseID, exitCode, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+	s.publishRunDetail(job.RunID)
+}
+
+func (s *Server) dockerPublishMonitor(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for {
+				job, ok := s.store.LeaseDockerPublishJob()
+				if !ok {
+					break
+				}
+				fmt.Printf("[scheduler] processing docker_publish job %s for run %s\n", job.JobID[:8], job.RunID[:8])
+				go s.executeDockerPublish(ctx, job)
+			}
+		}
+	}
+}
+
+// dockerPublishSecretUsername/Password are the conventional secret
+// names a docker_publish step declares in its secrets: list when the
+// target registry requires authentication. They're resolved exactly
+// the way any task step's secrets are — project → org → global — just
+// on the scheduler instead of an agent, since docker_publish never
+// touches one (issue #57).
+const (
+	dockerPublishSecretUsername = "REGISTRY_USERNAME"
+	dockerPublishSecretPassword = "REGISTRY_PASSWORD"
+)
+
+func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[scheduler] PANIC in executeDockerPublish for job %s: %v\n", job.JobID, r)
+			s.logError(job, fmt.Sprintf("INTERNAL ERROR: %v", r))
+			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+			s.publishRunDetail(job.RunID)
+		}
+	}()
+
+	if job.DockerPublish == nil {
+		s.logError(job, "docker_publish configuration is missing")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+	cfg := job.DockerPublish
+	start := time.Now()
+
+	registry := interpolate(cfg.Registry, job.Env)
+	repository := interpolate(cfg.Repository, job.Env)
+	source := interpolate(cfg.Source, job.Env)
+	var targetTags []string
+	for _, t := range cfg.Tags {
+		targetTags = append(targetTags, interpolate(t, job.Env))
+	}
+
+	fail := func(msg string) {
+		s.logError(job, msg)
+		s.store.Complete(job.JobID, job.LeaseID, 1, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+	}
+
+	// Resolve registry credentials the same way task steps resolve any
+	// other secret: project → org → global, via the step's declared
+	// secrets: list. A registry that allows anonymous pulls (and, less
+	// commonly, anonymous pushes) needs neither declared.
+	var username, password string
+	if s.secrets != nil {
+		for _, name := range job.SecretNames {
+			if name != dockerPublishSecretUsername && name != dockerPublishSecretPassword {
+				continue
+			}
+			val, err := s.secrets.GetScoped(name, job.OrgID, job.ProjectID)
+			if err != nil {
+				fail(fmt.Sprintf("Failed to resolve secret %q: %v", name, err))
+				return
+			}
+			if name == dockerPublishSecretUsername {
+				username = val
+			} else {
+				password = val
+			}
+		}
+	}
+
+	client := registryutil.NewClient(registryutil.NormalizeRegistryHost(registry), username, password)
+
+	s.logInfo(job, fmt.Sprintf("Fetching manifest for %s/%s:%s...", registry, repository, source))
+	manifest, err := client.GetManifest(repository, source)
+	if err != nil {
+		fail(fmt.Sprintf("Failed to fetch source manifest: %v", err))
+		return
+	}
+	s.logInfo(job, fmt.Sprintf("Source digest: %s", manifest.Digest))
+
+	result := api.DockerPublishResult{SourceDigest: manifest.Digest}
+	failed := false
+
+	for _, tag := range targetTags {
+		s.logInfo(job, fmt.Sprintf("Promoting %s to %s...", source, tag))
+		if err := client.PutManifest(repository, tag, manifest); err != nil {
+			s.logError(job, fmt.Sprintf("Failed to promote to tag %q: %v", tag, err))
+			failed = true
+			continue
+		}
+		result.TagsApplied = append(result.TagsApplied, tag)
+		s.logInfo(job, fmt.Sprintf("Tag %s now points at %s", tag, manifest.Digest))
+	}
+
+	// Deletion is best-effort and never fails the job by itself — a
+	// registry rejecting it (Docker Hub's public API, most notably)
+	// or the delete call otherwise failing both become a warning here,
+	// per spec, not a job failure.
+	if cfg.DeleteSource && !failed {
+		s.logInfo(job, fmt.Sprintf("Deleting source tag %s...", source))
+		if err := client.DeleteTag(repository, manifest.Digest); err != nil {
+			var warning string
+			if errors.Is(err, registryutil.ErrDeletionUnsupported) {
+				warning = fmt.Sprintf("registry does not support tag deletion; source tag %q was not removed", source)
+			} else {
+				warning = fmt.Sprintf("failed to delete source tag %q: %v", source, err)
+			}
+			result.Warnings = append(result.Warnings, warning)
+			s.logInfo(job, "Warning: "+warning)
+		} else {
+			result.SourceDeleted = true
+			s.logInfo(job, fmt.Sprintf("Source tag %s deleted", source))
+		}
+	}
+
+	if err := s.store.SetDockerPublishResult(job.JobID, result); err != nil {
+		s.logError(job, fmt.Sprintf("Failed to save docker_publish result: %v", err))
 	}
 
 	exitCode := 0

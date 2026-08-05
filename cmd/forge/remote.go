@@ -294,6 +294,31 @@ func runStatus(cmd *cobra.Command, args []string) {
 		}
 		fmt.Printf("  %s %-20s %s\n", jobIcon(job), id, job)
 	}
+
+	// Best-effort: pull step-level detail for any docker_publish steps'
+	// outcome (tags applied, deletion status, warnings) — issue #57.
+	// Silently skipped if the detail call fails; the summary above is
+	// still complete without it.
+	if detailResp, err := cliGet(schedulerURL + "/api/v1/runs/" + runID + "/detail"); err == nil {
+		defer detailResp.Body.Close()
+		var detail api.RunDetail
+		if json.NewDecoder(detailResp.Body).Decode(&detail) == nil {
+			for _, j := range detail.Jobs {
+				if j.DockerPublishResult == nil {
+					continue
+				}
+				r := j.DockerPublishResult
+				fmt.Printf("  docker_publish %s: tags applied %v", j.StepID, r.TagsApplied)
+				if r.SourceDeleted {
+					fmt.Printf(", source deleted")
+				}
+				fmt.Println()
+				for _, w := range r.Warnings {
+					fmt.Printf("    ⚠ %s\n", w)
+				}
+			}
+		}
+	}
 }
 
 func runTrigger(cmd *cobra.Command, args []string) {

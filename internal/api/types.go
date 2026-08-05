@@ -19,6 +19,10 @@ const (
 	JobStatusCanceled JobStatus = "canceled"  // canceled before it ran
 	JobStatusRelease  JobStatus = "release"   // queued for SCM release (handled by scheduler)
 	JobStatusWaiting  JobStatus = "waiting"   // waiting for child run, slot released
+	// JobStatusDockerPublish mirrors JobStatusRelease: queued for a
+	// scheduler-executed docker tag promotion, no agent required
+	// (issue #57).
+	JobStatusDockerPublish JobStatus = "docker_publish"
 )
 
 // JobSpec is what the scheduler sends to an agent when it leases a job.
@@ -32,13 +36,15 @@ type JobSpec struct {
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 	// Release is populated when Type == "release".
 	Release *ReleaseConfig `json:"release,omitempty"`
-	JobID   string         `json:"job_id"`
-	RunID   string         `json:"run_id"`
-	LeaseID string         `json:"lease_id"`
-	StepID  string         `json:"step_id"`
-	Image   string         `json:"image"`
-	WorkDir string         `json:"workdir"`
-	Type    string         `json:"type"` // "task" | "generator"
+	// DockerPublish is populated when Type == "docker_publish".
+	DockerPublish *DockerPublishConfig `json:"docker_publish,omitempty"`
+	JobID         string               `json:"job_id"`
+	RunID         string               `json:"run_id"`
+	LeaseID       string               `json:"lease_id"`
+	StepID        string               `json:"step_id"`
+	Image         string               `json:"image"`
+	WorkDir       string               `json:"workdir"`
+	Type          string               `json:"type"` // "task" | "generator"
 	// OrgID and ProjectID are used by the agent for scoped secret resolution.
 	// Secret lookup order: project → org → global → legacy.
 	OrgID        string `json:"org_id,omitempty"`
@@ -106,21 +112,23 @@ type StepDef struct {
 	// PipelineRef is populated when Type == "pipeline".
 	PipelineRef *PipelineRef `json:"pipeline_ref,omitempty"`
 	// Release is populated when Type == "release".
-	Release      *ReleaseConfig `json:"release,omitempty"`
-	ID           string         `json:"id"`
-	Image        string         `json:"image"`
-	Run          string         `json:"run,omitempty"`
-	WorkDir      string         `json:"workdir"`
-	Condition    string         `json:"condition,omitempty"`
-	Type         string         `json:"type"`
-	Uses         string         `json:"uses,omitempty"`
-	PolicySource string         `json:"policy_source,omitempty"`
-	Status       JobStatus      `json:"status,omitempty"`
-	Entrypoint   []string       `json:"entrypoint,omitempty"`
-	Command      []string       `json:"command,omitempty"`
-	DependsOn    []string       `json:"depends_on"`
-	Inputs       []string       `json:"inputs"`
-	SecretNames  []string       `json:"secret_names"`
+	Release *ReleaseConfig `json:"release,omitempty"`
+	// DockerPublish is populated when Type == "docker_publish".
+	DockerPublish *DockerPublishConfig `json:"docker_publish,omitempty"`
+	ID            string               `json:"id"`
+	Image         string               `json:"image"`
+	Run           string               `json:"run,omitempty"`
+	WorkDir       string               `json:"workdir"`
+	Condition     string               `json:"condition,omitempty"`
+	Type          string               `json:"type"`
+	Uses          string               `json:"uses,omitempty"`
+	PolicySource  string               `json:"policy_source,omitempty"`
+	Status        JobStatus            `json:"status,omitempty"`
+	Entrypoint    []string             `json:"entrypoint,omitempty"`
+	Command       []string             `json:"command,omitempty"`
+	DependsOn     []string             `json:"depends_on"`
+	Inputs        []string             `json:"inputs"`
+	SecretNames   []string             `json:"secret_names"`
 	// Artifact specs — carried through to the agent via the jobs table.
 	ArtifactUploads   []ArtifactUploadSpec   `json:"artifact_uploads,omitempty"`
 	ArtifactDownloads []ArtifactDownloadSpec `json:"artifact_downloads,omitempty"`
@@ -259,6 +267,12 @@ type JobDetail struct {
 	PolicySource string         `json:"policy_source,omitempty"`
 	ChildRunID   string         `json:"child_run_id,omitempty"`
 	RootCause    *RootCauseInfo `json:"root_cause,omitempty"`
+	// DockerPublish/DockerPublishResult are populated for docker_publish
+	// steps: the configured promotion and its outcome (tags applied,
+	// deletion status, warnings), so both are visible in job output —
+	// not just logs (issue #57).
+	DockerPublish       *DockerPublishConfig `json:"docker_publish,omitempty"`
+	DockerPublishResult *DockerPublishResult `json:"docker_publish_result,omitempty"`
 }
 
 // RootCauseInfo is an automatic classification of why a job failed,
@@ -694,6 +708,37 @@ type ReleaseConfig struct {
 	Tag       string   `json:"tag"`       // Git tag name
 	Body      string   `json:"body"`      // Release description
 	Artifacts []string `json:"artifacts"` // Names of artifacts to attach to the release
+}
+
+// DockerPublishConfig configures a docker_publish step: adding one or
+// more tags to an already-pushed image without rebuilding it, executed
+// on the scheduler like a release step (issue #57). Registry,
+// Repository, Source, and each entry in Tags support ${{ env.VAR }}
+// interpolation.
+type DockerPublishConfig struct {
+	Registry     string   `json:"registry"`      // e.g. "ghcr.io", "docker.io"
+	Repository   string   `json:"repository"`    // e.g. "myorg/myapp"
+	Source       string   `json:"source"`        // the tag being promoted from, e.g. "test-${{ env.FORGE_BUILD_NUMBER }}"
+	Tags         []string `json:"tags"`          // the tag(s) being promoted to
+	DeleteSource bool     `json:"delete_source"` // remove the source tag after successful promotion
+}
+
+// DockerPublishResult is a docker_publish step's outcome, recorded
+// per-job so it's retrievable via both CLI and UI job output — not
+// just logs (issue #57).
+type DockerPublishResult struct {
+	// TagsApplied are the target tags successfully pointed at the
+	// source image's digest.
+	TagsApplied []string `json:"tags_applied"`
+	// SourceDigest is the manifest digest the source tag resolved to.
+	SourceDigest string `json:"source_digest,omitempty"`
+	// SourceDeleted is true only if DeleteSource was requested and the
+	// deletion actually succeeded.
+	SourceDeleted bool `json:"source_deleted"`
+	// Warnings holds non-fatal problems — most commonly "the registry
+	// doesn't support tag deletion" — that are surfaced to the user
+	// without failing the job.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ArtifactMeta describes a stored artifact returned by the scheduler

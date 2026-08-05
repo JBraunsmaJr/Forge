@@ -61,6 +61,7 @@ type JSONStep struct {
 	AlwaysRun        bool                `json:"always_run"`
 	Matrix           map[string][]string `json:"matrix,omitempty"`
 	Release          jsonRelease         `json:"release,omitempty"`
+	DockerPublish    jsonDockerPublish   `json:"docker_publish,omitempty"`
 	DockerSocket     bool                `json:"docker_socket"`
 	Script           string              `json:"script,omitempty"`
 	Pipeline         string              `json:"pipeline,omitempty"`
@@ -91,6 +92,16 @@ type jsonRelease struct {
 	Tag       string   `json:"tag"`
 	Body      string   `json:"body"`
 	Artifacts []string `json:"artifacts"`
+}
+
+// jsonDockerPublish is the YAML/JSON shape of a docker_publish: block
+// (issue #57).
+type jsonDockerPublish struct {
+	Registry     string   `json:"registry"`
+	Repository   string   `json:"repository"`
+	Source       string   `json:"source"`
+	Tags         []string `json:"tags"`
+	DeleteSource bool     `json:"delete_source"`
 }
 
 // Compile reads a pipeline file (JSON or YAML) and returns the canonical IR.
@@ -334,6 +345,9 @@ func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep,
 	if js.Release.Tag == "" {
 		js.Release = template.Release
 	}
+	if js.DockerPublish.Repository == "" {
+		js.DockerPublish = template.DockerPublish
+	}
 	if js.Script == "" {
 		js.Script = template.Script
 	}
@@ -411,6 +425,7 @@ type jsStepTemplate struct {
 	AlwaysRun        bool              `json:"always_run"`
 	DockerSocket     bool              `json:"docker_socket"`
 	Release          jsonRelease       `json:"release,omitempty"`
+	DockerPublish    jsonDockerPublish `json:"docker_publish,omitempty"`
 	Script           string            `json:"script,omitempty"`
 	Pipeline         string            `json:"pipeline,omitempty"`
 	Wait             *bool             `json:"wait,omitempty"`
@@ -504,6 +519,13 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 			cloned.Release.Artifacts[j] = replacer(v)
 		}
 
+		cloned.DockerPublish.Registry = replacer(cloned.DockerPublish.Registry)
+		cloned.DockerPublish.Repository = replacer(cloned.DockerPublish.Repository)
+		cloned.DockerPublish.Source = replacer(cloned.DockerPublish.Source)
+		for j, v := range cloned.DockerPublish.Tags {
+			cloned.DockerPublish.Tags[j] = replacer(v)
+		}
+
 		step, err := compileStep(cloned, baseIndex+i)
 		if err != nil {
 			return nil, err
@@ -559,7 +581,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		stepType = "task"
 	}
 
-	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" {
+	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" && stepType != "docker_publish" {
 		return nil, fmt.Errorf("image is required")
 	}
 
@@ -588,6 +610,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 
 	var pipelineRef *pipeline.PipelineRef
 	var release *pipeline.ReleaseConfig
+	var dockerPublish *pipeline.DockerPublishConfig
 
 	if stepType == "pipeline" {
 		wait := true // default: block until child completes.
@@ -615,6 +638,36 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 			Artifacts: js.Release.Artifacts,
 		}
 		image = "_release_" // sentinel
+		command = nil
+	} else if stepType == "docker_publish" {
+		// Caught here (and therefore by forge validate and the UI's
+		// pipeline editor, both of which run through this same
+		// compileStep path) rather than first being discovered when a
+		// run is submitted.
+		var missing []string
+		if js.DockerPublish.Registry == "" {
+			missing = append(missing, "registry")
+		}
+		if js.DockerPublish.Repository == "" {
+			missing = append(missing, "repository")
+		}
+		if js.DockerPublish.Source == "" {
+			missing = append(missing, "source")
+		}
+		if len(js.DockerPublish.Tags) == 0 {
+			missing = append(missing, "tags")
+		}
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("docker_publish step missing required field(s): %s", strings.Join(missing, ", "))
+		}
+		dockerPublish = &pipeline.DockerPublishConfig{
+			Registry:     js.DockerPublish.Registry,
+			Repository:   js.DockerPublish.Repository,
+			Source:       js.DockerPublish.Source,
+			Tags:         js.DockerPublish.Tags,
+			DeleteSource: js.DockerPublish.DeleteSource,
+		}
+		image = "_docker_publish_" // sentinel
 		command = nil
 	} else if len(command) == 0 && stepType != "approval" && js.Uses == "" {
 		return nil, fmt.Errorf("either 'run', 'command', or 'pipeline' is required")
@@ -655,6 +708,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		Condition:         js.Condition,
 		AlwaysRun:         js.AlwaysRun,
 		Release:           release,
+		DockerPublish:     dockerPublish,
 		Split:             js.Split,
 		TestReport:        js.TestReport,
 	}, nil
