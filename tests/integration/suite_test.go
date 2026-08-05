@@ -203,9 +203,60 @@ var buildkitTransientExportErrors = []string{
 	"content digest",
 }
 
-// buildImage runs `docker build` for the given image and dockerfile, retrying
-// a few times on the known transient BuildKit export race.
+// buildImage ensures imageName exists locally, preferring to reuse an
+// already-built image over building one from source.
+//
+// In CI, the pipeline builds and pushes the forge image exactly once
+// (see .forge/pipeline.yml's build-image step) before integration-tests
+// ever runs, and FORGE_IMAGE points at that pushed tag. Every sharded
+// integration-test job then hit this function and, previously,
+// unconditionally rebuilt the same multi-stage image again — up to
+// shards-many full concurrent `docker build`s of the same Dockerfile,
+// which is both wasted work (the image already exists) and real memory
+// pressure (this is what was producing "signal: killed" OOM kills on
+// constrained runners, on top of the BuildKit export race the retry
+// loop below was already working around).
+//
+// pullImage is tried first; buildImage only builds from source when
+// there's nothing to pull — no FORGE_IMAGE set, no registry access, or
+// a plain local `go test ./tests/integration/...` run with no CI
+// context — so this stays correct outside CI too.
 func buildImage(repoRoot, imageName, dockerfile string) error {
+	if pullImage(imageName) {
+		return nil
+	}
+	return buildImageFromSource(repoRoot, imageName, dockerfile)
+}
+
+// pullImage attempts to pull imageName so buildImage can reuse an
+// already-built image instead of rebuilding it. Returns false — never
+// an error — on any failure (image doesn't exist remotely, no registry
+// auth, offline, imageName empty): building from source is always a
+// correct fallback, just a slower one.
+func pullImage(imageName string) bool {
+	if imageName == "" {
+		return false
+	}
+
+	pullCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(pullCtx, "docker", "pull", imageName)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("[integration] could not pull %s (%v); building from source instead\n", imageName, err)
+		return false
+	}
+
+	fmt.Printf("[integration] reusing pre-built image %s\n", imageName)
+	return true
+}
+
+// buildImageFromSource runs `docker build` for the given image and
+// dockerfile, retrying a few times on the known transient BuildKit
+// export race.
+func buildImageFromSource(repoRoot, imageName, dockerfile string) error {
 	const maxAttempts = 3
 	var lastErr error
 	var lastOutput string

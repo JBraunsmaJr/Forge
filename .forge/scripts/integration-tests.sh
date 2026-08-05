@@ -5,11 +5,12 @@ set -eo pipefail
 
 apk add --no-cache docker-cli docker-cli-compose iproute2
 
-# Pull the test image if provided to speed up integration tests
-if [ -n "${FORGE_IMAGE:-}" ]; then
-  echo "Pulling test image: $FORGE_IMAGE"
-  docker pull "$FORGE_IMAGE" || true
-fi
+# The test image was already built and pushed once by build-image;
+# derive its tag here from $FORGE_BUILD_NUMBER (a real env var in this
+# container) and export it so the integration suite's buildImage() can
+# pull and reuse it instead of every shard rebuilding it from scratch —
+# see tests/integration/suite_test.go's pullImage().
+export FORGE_IMAGE="ghcr.io/jbraunsmajr/forge/forge:test-${FORGE_BUILD_NUMBER}"
 
 # Debug: check if artifact was downloaded
 ls -la
