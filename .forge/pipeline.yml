@@ -27,12 +27,12 @@ steps:
         - path: ui-dist.tar.gz
 
   - id: build-image
-    name: Build Image
+    name: Build Test Image
     uses: ./templates/docker-build.yml
     depends_on: [ build-ui ]
     timeout: 10m
     with:
-      image: ghcr.io/jbraunsmajr/forge/forge:test-${{ env.FORGE_BUILD_NUMBER }}
+      image: ghcr.io/jbraunsmajr/forge/forge:test-${FORGE_BUILD_NUMBER}
       dockerfile: Dockerfile
       context: .
 
@@ -41,8 +41,6 @@ steps:
     image: golang:1.26.5-alpine
     docker_socket: true
     depends_on: [ build-image ]
-    env:
-      FORGE_IMAGE: ghcr.io/jbraunsmajr/forge/forge:test-${{ env.FORGE_BUILD_NUMBER }}
     artifacts:
       download:
         - name: ui-dist.tar.gz
@@ -54,8 +52,6 @@ steps:
     image: golang:1.26.5-alpine
     docker_socket: true
     depends_on: [ build-image ]
-    env:
-      FORGE_IMAGE: ghcr.io/jbraunsmajr/forge/forge:test-${{ env.FORGE_BUILD_NUMBER }}
     artifacts:
       download:
         - name: ui-dist.tar.gz
@@ -78,9 +74,9 @@ steps:
     docker_publish:
       registry: ghcr.io
       repository: jbraunsmajr/forge/forge
-      source: test-${{ env.FORGE_BUILD_NUMBER }}
+      source: "test-${{ env.FORGE_BUILD_NUMBER }}"
       tags:
-        - ${{ env.FORGE_BRANCH }}
+        - "${{ env.FORGE_BUILD_NUMBER }}"
       delete_source: true
 
   - id: main-pipeline
