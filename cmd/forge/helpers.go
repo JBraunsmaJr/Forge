@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/buildnumber"
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
@@ -41,6 +42,19 @@ func cliSchedulerURL() string {
 // cliPost make a POST request
 func cliPost(url, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	if t := cliToken(); t != "" {
+		req.Header.Set("Authorization", "Bearer "+t)
+	}
+	return http.DefaultClient.Do(req)
+}
+
+// cliPut make a PUT request
+func cliPut(url, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest("PUT", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +191,11 @@ func runOnce(pipelinePath, workspaceDir, envFile string, secretFlags []string, r
 		if after, ok := strings.CutPrefix(ref, "refs/tags/"); ok {
 			step.Env["FORGE_COMMIT_TAG"] = after
 		}
+		// No scheduler/project context locally, so this can't be a real,
+		// scheduler-assigned build number — use the fallback value
+		// (issue #57), which is visibly distinguishable from one.
+		step.Env["FORGE_BUILD_NUMBER"] = buildnumber.LocalFallback
+		step.Env["FORGE_BUILD_COUNTER"] = "0"
 
 		if len(step.Secrets) == 0 {
 			continue

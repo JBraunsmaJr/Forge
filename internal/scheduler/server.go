@@ -374,6 +374,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.handleGetProjectWebhook)
 	mux.HandleFunc("GET /api/v1/projects/{id}/failure-stats", s.handleFailureStats)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
+	mux.HandleFunc("GET /api/v1/projects/{id}/build-format", s.handleGetBuildFormat)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/build-format", s.handleSetBuildFormat)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/version", s.handleSetVersion)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/version-tag-filter", s.handleSetVersionTagFilter)
 
 	// SCM webhooks - HMAC secured, excempt from token auth
 	mux.HandleFunc("POST /api/v1/webhook/github/{id}", s.handleGitHubWebhook)

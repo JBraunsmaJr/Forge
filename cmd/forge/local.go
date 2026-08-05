@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JBraunsmaJr/forge/internal/buildnumber"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/localenv"
@@ -355,6 +356,8 @@ func runGeneratePreview(cmd *cobra.Command, args []string) {
 		}
 		step.Env["FORGE_REF"] = ref
 		step.Env["FORGE_COMMIT_SHA"] = commitSHA
+		step.Env["FORGE_BUILD_NUMBER"] = buildnumber.LocalFallback
+		step.Env["FORGE_BUILD_COUNTER"] = "0"
 
 		for _, name := range step.Secrets {
 			val, err := resolver.Resolve(name)

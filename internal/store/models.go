@@ -106,8 +106,64 @@ type Run struct {
 	ParentRunID      *string
 	ParentJobID      *string `gorm:"uniqueIndex:runs_parent_job_idx"`
 	PreferredAgentID *string
-	PipelineName     string    `gorm:"not null;default:''"`
-	CreatedAt        time.Time `gorm:"not null;default:now()"`
+	PipelineName     string `gorm:"not null;default:''"`
+	// BuildNumber is the rendered FORGE_BUILD_NUMBER assigned at
+	// submission time (issue #57). It is written once by SubmitRun and
+	// never updated afterwards: later edits to a (project, pipeline)'s
+	// format string must not change a past run's recorded build number.
+	// Reruns and type: pipeline child runs copy their parent's value
+	// here rather than minting a new one.
+	BuildNumber string `gorm:"not null;default:''"`
+	// BuildCounterValue is the raw monotonic counter FORGE_BUILD_COUNTER
+	// was rendered from, stored alongside BuildNumber for the same
+	// immutability and inheritance reasons.
+	BuildCounterValue int64     `gorm:"not null;default:0"`
+	CreatedAt         time.Time `gorm:"not null;default:now()"`
+}
+
+// BuildFormat represents the build_formats table: per-(project,
+// pipeline) configuration for how build numbers render, and the
+// major/minor version consumed by %major%/%minor% tokens (issue #57).
+// One row per (ProjectID, PipelineName); a scope with no row yet
+// behaves as buildnumber.DefaultFormat with major/minor both 0.
+type BuildFormat struct {
+	ID           string  `gorm:"primaryKey"`
+	ProjectID    string  `gorm:"not null;uniqueIndex:build_formats_project_pipeline_idx,priority:1"`
+	Project      Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	PipelineName string  `gorm:"not null;uniqueIndex:build_formats_project_pipeline_idx,priority:2"`
+	Format       string  `gorm:"not null;default:'%year%-%month%.%counter%'"`
+	Major        int     `gorm:"not null;default:0"`
+	Minor        int     `gorm:"not null;default:0"`
+	// VersionSource records how Major/Minor were last set: "" (never
+	// set), "manual", or "tag:<ref>" for a tag-derived update. Combined
+	// with VersionSetBy this is what the audit trail and the UI's
+	// settings panel show as "manually set" vs "tag-derived, by <ref>".
+	VersionSource string `gorm:"not null;default:''"`
+	// VersionSetBy is the acting user for a manual set, or "tag push"
+	// for a tag-derived update.
+	VersionSetBy string `gorm:"not null;default:''"`
+	// VersionTagFilter is the branch/ref glob that a pushed tag's target
+	// branch must match for it to be allowed to update Major/Minor.
+	// Empty means "the project's default branch", resolved at tag-push
+	// time rather than stored statically here.
+	VersionTagFilter string    `gorm:"not null;default:''"`
+	UpdatedAt        time.Time `gorm:"not null;default:now()"`
+}
+
+// BuildCounter represents the build_counters table: the raw monotonic
+// counter for a (project, pipeline, version key) scope (issue #57).
+// VersionKey is the non-counter portion of the rendered format (see
+// internal/buildnumber.Format.VersionKey) — a run whose VersionKey
+// differs from the last one recorded in this scope starts a fresh row
+// (and therefore a fresh counter) at 1.
+type BuildCounter struct {
+	ID           string    `gorm:"primaryKey"`
+	ProjectID    string    `gorm:"not null;uniqueIndex:build_counters_scope_idx,priority:1"`
+	Project      Project   `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	PipelineName string    `gorm:"not null;uniqueIndex:build_counters_scope_idx,priority:2"`
+	VersionKey   string    `gorm:"not null;uniqueIndex:build_counters_scope_idx,priority:3"`
+	Value        int64     `gorm:"not null;default:0"`
+	UpdatedAt    time.Time `gorm:"not null;default:now()"`
 }
 
 // Job represents the jobs table.

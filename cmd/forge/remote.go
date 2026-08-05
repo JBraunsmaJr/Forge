@@ -284,6 +284,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 	json.NewDecoder(resp.Body).Decode(&run)
 
 	fmt.Printf("Run %s: %s\n", run.RunID, run.Status)
+	if run.BuildNumber != "" {
+		fmt.Printf("Build: %s\n", run.BuildNumber)
+	}
 	for i, job := range run.Jobs {
 		id := ""
 		if i < len(run.JobIDs) {

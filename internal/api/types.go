@@ -193,11 +193,14 @@ type LogSearchResult struct {
 
 // RunStatus is returned when the CLI polls for a run's progress.
 type RunStatus struct {
-	RunID  string      `json:"run_id"`
-	Name   string      `json:"name"`
-	Status JobStatus   `json:"status"` // overall: derived from job statuses
-	Jobs   []JobStatus `json:"jobs"`
-	JobIDs []string    `json:"job_ids"`
+	RunID  string    `json:"run_id"`
+	Name   string    `json:"name"`
+	Status JobStatus `json:"status"` // overall: derived from job statuses
+	// BuildNumber is the FORGE_BUILD_NUMBER assigned to this run at
+	// submission time (issue #57).
+	BuildNumber string      `json:"build_number,omitempty"`
+	Jobs        []JobStatus `json:"jobs"`
+	JobIDs      []string    `json:"job_ids"`
 }
 
 // ErrorResponse is returned by the server on any error.
@@ -229,6 +232,10 @@ type RunDetail struct {
 	SCMProvider      string                             `json:"scm_provider,omitempty"`
 	ShardAssignments map[string][]ShardAssignmentDetail `json:"shard_assignments,omitempty"`
 	ParentRunID      string                             `json:"parent_run_id,omitempty"`
+	// BuildNumber is the FORGE_BUILD_NUMBER assigned to this run at
+	// submission time (issue #57). Reruns and type: pipeline child runs
+	// carry over their parent's value rather than getting their own.
+	BuildNumber string `json:"build_number,omitempty"`
 }
 
 type ShardAssignmentDetail struct {
@@ -517,6 +524,52 @@ type UpdateProjectRequest struct {
 	ScheduledPath *string  `json:"scheduled_pipeline_path,omitempty"`
 	SCMToken      *string  `json:"scm_token,omitempty"`
 	BranchFilter  []string `json:"branch_filter,omitempty"`
+}
+
+// BuildFormatInfo describes the build-number format and version state
+// configured for a (project, pipeline) scope (issue #57).
+type BuildFormatInfo struct {
+	ProjectID    string `json:"project_id"`
+	PipelineName string `json:"pipeline_name"`
+	Format       string `json:"format"`
+	Major        int    `json:"major"`
+	Minor        int    `json:"minor"`
+	// VersionSource is "", "manual", or "tag:<ref>".
+	VersionSource string `json:"version_source,omitempty"`
+	// VersionSetBy is the acting user for a manual set, or "tag push"
+	// for a tag-derived update.
+	VersionSetBy string `json:"version_set_by,omitempty"`
+	// VersionTagFilter is the branch/ref glob restricting which pushed
+	// tags may update Major/Minor; empty means the project's default
+	// branch.
+	VersionTagFilter string `json:"version_tag_filter,omitempty"`
+	// SampleBuildNumber previews what a build submitted right now would
+	// render as, given the current format/major/minor — backs the UI's
+	// live preview as the format is edited.
+	SampleBuildNumber string `json:"sample_build_number"`
+}
+
+// SetBuildFormatRequest configures the build-number format string for
+// a (project, pipeline) scope.
+type SetBuildFormatRequest struct {
+	PipelineName string `json:"pipeline_name"`
+	Format       string `json:"format"`
+}
+
+// SetVersionRequest explicitly (manually) sets the major/minor version
+// used by %major%/%minor% tokens for a (project, pipeline) scope.
+type SetVersionRequest struct {
+	PipelineName string `json:"pipeline_name"`
+	Major        int    `json:"major"`
+	Minor        int    `json:"minor"`
+}
+
+// SetVersionTagFilterRequest configures the branch/ref filter that
+// restricts which pushed tags can update the tag-derived major/minor
+// version for a (project, pipeline) scope.
+type SetVersionTagFilterRequest struct {
+	PipelineName string `json:"pipeline_name"`
+	Filter       string `json:"filter"` // empty = project's default branch
 }
 
 // ManualTriggerRequest is used to manually start a pipeline run.

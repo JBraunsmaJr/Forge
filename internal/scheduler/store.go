@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/buildnumber"
 	"github.com/JBraunsmaJr/forge/internal/rootcause"
 )
 
@@ -77,6 +79,14 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 		}
 	}
 
+	// Assign this run's build number before inserting it, so the value
+	// can be written in the same INSERT and is immediately available to
+	// stamp into every step's env below (issue #57).
+	buildNumber, buildCounterValue, err := s.assignBuildNumber(tx, p)
+	if err != nil {
+		return "", fmt.Errorf("assign build number: %w", err)
+	}
+
 	// NULL out optional foreign-key-ish columns when empty.
 	nullable := func(v string) any {
 		if v == "" {
@@ -86,9 +96,9 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), nullable(p.ProjectID), p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
+		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id, build_number, build_counter_value)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), nullable(p.ProjectID), p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID), buildNumber, buildCounterValue,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -105,6 +115,16 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	steps = expandedSteps
 
 	for _, step := range steps {
+		// Every step in the run gets the same build number/counter,
+		// including steps expanded from a single matrix: step — they're
+		// all still jobs under this one run, so stamping it here rather
+		// than per-expanded-step covers them automatically.
+		if step.Env == nil {
+			step.Env = make(map[string]string)
+		}
+		step.Env["FORGE_BUILD_NUMBER"] = buildNumber
+		step.Env["FORGE_BUILD_COUNTER"] = strconv.FormatInt(buildCounterValue, 10)
+
 		command := step.Command
 		if len(command) == 0 && step.Run != "" {
 			command = []string{"sh", "-c", step.Run}
@@ -180,6 +200,196 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 		return "", fmt.Errorf("commit: %w", err)
 	}
 	return runID, nil
+}
+
+// assignBuildNumber determines the build number and raw counter value
+// for a new run (issue #57).
+//
+//   - Reruns and type: pipeline child runs (both set ParentRunID —
+//     reruns via rerunParams, child runs via SubmitRunParams.ParentRunID
+//     on the same request that also carries ParentJobID) inherit the
+//     parent run's already-assigned build number verbatim. Neither
+//     mints a new counter value: a rerun must reproduce its original
+//     run's build number, and a child run must equal its parent's.
+//   - A run with no ProjectID (no scheduler project context) falls back
+//     to buildnumber.LocalFallback, matching the `forge run` CLI so
+//     pipelines referencing FORGE_BUILD_NUMBER don't fall outside CI.
+//   - Everything else renders the configured format against an
+//     atomically incremented counter, scoped to (project, pipeline,
+//     version key).
+func (s *Store) assignBuildNumber(tx *sql.Tx, p SubmitRunParams) (string, int64, error) {
+	if p.ParentRunID != "" {
+		var buildNumber string
+		var counterValue int64
+		err := tx.QueryRow(`SELECT build_number, build_counter_value FROM runs WHERE id = $1`, p.ParentRunID).Scan(&buildNumber, &counterValue)
+		if err == nil {
+			return buildNumber, counterValue, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", 0, fmt.Errorf("load parent run build number: %w", err)
+		}
+		// Parent run vanished — shouldn't happen, but fall through and
+		// mint a fresh build number rather than failing the submission.
+	}
+
+	if p.ProjectID == "" {
+		return buildnumber.LocalFallback, 0, nil
+	}
+
+	pipelineName := p.PipelineName
+	if pipelineName == "" {
+		pipelineName = p.Name
+	}
+
+	rawFormat, major, minor, _, _, err := s.getBuildFormat(tx, p.ProjectID, pipelineName)
+	if err != nil {
+		return "", 0, err
+	}
+	format, err := buildnumber.Parse(rawFormat)
+	if err != nil {
+		// A stored format is validated on save (see SetBuildFormat) and
+		// should never be invalid here, but a corrupt row shouldn't take
+		// down run submission — fall back to the default format instead.
+		format, _ = buildnumber.Parse(buildnumber.DefaultFormat)
+	}
+
+	now := time.Now().UTC()
+	versionKey := format.VersionKey(major, minor, now)
+
+	counterValue, err := s.incrementBuildCounter(tx, p.ProjectID, pipelineName, versionKey)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return format.Render(counterValue, major, minor, now), counterValue, nil
+}
+
+// incrementBuildCounter atomically increments and returns the counter
+// for (projectID, pipelineName, versionKey), starting at 1 the first
+// time that exact scope is seen.
+//
+// The INSERT ... ON CONFLICT ... DO UPDATE runs inside the caller's
+// transaction (SubmitRun's), so Postgres holds a row-level lock on the
+// (project, pipeline, version_key) row for the rest of that
+// transaction: concurrent SubmitRun calls for the same scope serialize
+// on this statement and each receive a distinct, sequential value — no
+// gaps, no duplicates — without introducing any new locking beyond what
+// SubmitRun's existing transaction already provides.
+func (s *Store) incrementBuildCounter(tx *sql.Tx, projectID, pipelineName, versionKey string) (int64, error) {
+	var value int64
+	err := tx.QueryRow(`
+		INSERT INTO build_counters (id, project_id, pipeline_name, version_key, value, updated_at)
+		VALUES ($1, $2, $3, $4, 1, now())
+		ON CONFLICT (project_id, pipeline_name, version_key)
+		DO UPDATE SET value = build_counters.value + 1, updated_at = now()
+		RETURNING value`,
+		newID(), projectID, pipelineName, versionKey,
+	).Scan(&value)
+	if err != nil {
+		return 0, fmt.Errorf("increment build counter: %w", err)
+	}
+	return value, nil
+}
+
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx, letting
+// loadBuildFormat back both the transactional read inside SubmitRun and
+// the plain read used by the build-format API/CLI commands.
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// loadBuildFormat loads the configured format string and major/minor
+// version for a (project, pipeline) scope, defaulting to
+// buildnumber.DefaultFormat and 0/0 when nothing has been configured.
+func loadBuildFormat(q rowQuerier, projectID, pipelineName string) (format string, major, minor int, source, setBy string, err error) {
+	err = q.QueryRow(
+		`SELECT format, major, minor, version_source, version_set_by FROM build_formats WHERE project_id = $1 AND pipeline_name = $2`,
+		projectID, pipelineName,
+	).Scan(&format, &major, &minor, &source, &setBy)
+	if err == sql.ErrNoRows {
+		return buildnumber.DefaultFormat, 0, 0, "", "", nil
+	}
+	if err != nil {
+		return "", 0, 0, "", "", fmt.Errorf("load build format: %w", err)
+	}
+	return format, major, minor, source, setBy, nil
+}
+
+// getBuildFormat is loadBuildFormat scoped to SubmitRun's transaction.
+func (s *Store) getBuildFormat(tx *sql.Tx, projectID, pipelineName string) (format string, major, minor int, source, setBy string, err error) {
+	return loadBuildFormat(tx, projectID, pipelineName)
+}
+
+// GetBuildFormat is loadBuildFormat for read paths outside of
+// SubmitRun (the build-format API/CLI commands).
+func (s *Store) GetBuildFormat(projectID, pipelineName string) (format string, major, minor int, source, setBy string, err error) {
+	return loadBuildFormat(s.db, projectID, pipelineName)
+}
+
+// SetBuildFormat validates and persists the format string for a
+// (project, pipeline) scope. Rejecting an invalid format here — before
+// it's ever used to render a build number — is what satisfies "unknown
+// or malformed tokens ... rejected at validation time, not first
+// discovered at run time" for format strings (issue #57).
+func (s *Store) SetBuildFormat(projectID, pipelineName, format string) error {
+	if _, err := buildnumber.Parse(format); err != nil {
+		return fmt.Errorf("invalid format string: %w", err)
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO build_formats (id, project_id, pipeline_name, format, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (project_id, pipeline_name)
+		DO UPDATE SET format = $4, updated_at = now()`,
+		newID(), projectID, pipelineName, format,
+	)
+	if err != nil {
+		return fmt.Errorf("save build format: %w", err)
+	}
+	return nil
+}
+
+// SetVersion explicitly (manually) sets the major/minor version used by
+// %major%/%minor% tokens for a (project, pipeline) scope. actor
+// identifies who made the change for the audit trail. A later matching
+// tag push can still override this value, and a manual set can in turn
+// override a previous tag-derived value — whichever happened most
+// recently wins.
+func (s *Store) SetVersion(projectID, pipelineName string, major, minor int, actor string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO build_formats (id, project_id, pipeline_name, major, minor, version_source, version_set_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 'manual', $6, now())
+		ON CONFLICT (project_id, pipeline_name)
+		DO UPDATE SET major = $4, minor = $5, version_source = 'manual', version_set_by = $6, updated_at = now()`,
+		newID(), projectID, pipelineName, major, minor, actor,
+	)
+	if err != nil {
+		return fmt.Errorf("save version: %w", err)
+	}
+	return nil
+}
+
+// SetVersionTagFilter configures the branch/ref filter that restricts
+// which pushed tags are allowed to update the tag-derived major/minor
+// version for a (project, pipeline) scope, so a tag pushed on a stale
+// or feature branch can't unintentionally change mainline builds'
+// version. An empty filter means "the project's default branch".
+//
+// Tag-push-triggered version updates themselves (matching this filter
+// against the pushed ref and applying a semver-derived major/minor) are
+// a webhook-side concern and are not part of this change — see the
+// docker_publish/tag-derived-version follow-up.
+func (s *Store) SetVersionTagFilter(projectID, pipelineName, filter string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO build_formats (id, project_id, pipeline_name, version_tag_filter, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (project_id, pipeline_name)
+		DO UPDATE SET version_tag_filter = $4, updated_at = now()`,
+		newID(), projectID, pipelineName, filter,
+	)
+	if err != nil {
+		return fmt.Errorf("save version tag filter: %w", err)
+	}
+	return nil
 }
 
 // insertJob inserts a single job row inside a transaction.
@@ -937,15 +1147,16 @@ func (s *Store) RunStatus(runID string) (*api.RunStatus, bool) {
 		ids = []string{}
 	}
 
-	var name string
-	s.db.QueryRow(`SELECT name FROM runs WHERE id=$1`, runID).Scan(&name)
+	var name, buildNumber string
+	s.db.QueryRow(`SELECT name, build_number FROM runs WHERE id=$1`, runID).Scan(&name, &buildNumber)
 
 	return &api.RunStatus{
-		RunID:  runID,
-		Name:   name,
-		Status: overallStatus(statuses),
-		Jobs:   statuses,
-		JobIDs: ids,
+		RunID:       runID,
+		Name:        name,
+		BuildNumber: buildNumber,
+		Status:      overallStatus(statuses),
+		Jobs:        statuses,
+		JobIDs:      ids,
 	}, true
 }
 
@@ -1009,8 +1220,8 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	detail := &api.RunDetail{RunID: runID}
 	var orgID, projectID, commitSHA, scmProvider, parentRunID sql.NullString
 	err := s.db.QueryRow(
-		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider, parent_run_id FROM runs WHERE id=$1`, runID,
-	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider, &parentRunID)
+		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider, parent_run_id, build_number FROM runs WHERE id=$1`, runID,
+	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider, &parentRunID, &detail.BuildNumber)
 	if err != nil {
 		return nil, false
 	}
