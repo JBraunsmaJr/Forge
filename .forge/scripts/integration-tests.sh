@@ -41,20 +41,16 @@ go build -o /usr/local/bin/forge ./cmd/forge
 # keyed by test name instead. See cmd/forge/cmd_report.go's fromGoTest
 # for the full explanation.
 #
-# ${VAR+set} (not ${VAR:-}) deliberately distinguishes "not running as
-# a shard at all" (FORGE_TEST_FILES unset entirely — run everything)
-# from "running as a shard that was assigned zero tests" (set to an
-# empty string — skip; this can legitimately happen with more shards
-# configured than there are test functions).
-if [ -n "${FORGE_TEST_FILES+set}" ]; then
-  if [ -z "$FORGE_TEST_FILES" ]; then
-    echo "Shard ${FORGE_SHARD_INDEX:-?} assigned no tests. Skipping."
-    exit 0
-  fi
+# An empty FORGE_TEST_FILES here is NOT itself a "skip" signal — it's
+# ambiguous on its own between "this shard should run everything" (shard
+# 1 on a cold start) and "this shard was assigned nothing" (any other
+# shard, cold start or not). FORGE_TEST_SHARD_EMPTY, checked above, is
+# the one authoritative signal for the latter; if we got this far it
+# wasn't set, so treat an empty/unset FORGE_TEST_FILES as "nothing to
+# filter to" and run everything.
+if [ -n "${FORGE_TEST_FILES:-}" ]; then
   RUN_REGEX="^($(echo "$FORGE_TEST_FILES" | tr ',' '|'))\$"
 else
-  # Not running under Forge's split expansion (e.g. a plain local
-  # `go test` via this script) — run everything.
   RUN_REGEX=".*"
 fi
 
