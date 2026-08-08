@@ -21,7 +21,7 @@ func (s *Server) handleGetBuildFormat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawFormat, major, minor, source, setBy, err := s.store.GetBuildFormat(projectID, pipelineName)
+	rawFormat, major, minor, source, setBy, tagFilter, err := s.store.GetBuildFormat(projectID, pipelineName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -40,6 +40,7 @@ func (s *Server) handleGetBuildFormat(w http.ResponseWriter, r *http.Request) {
 		Minor:             minor,
 		VersionSource:     source,
 		VersionSetBy:      setBy,
+		VersionTagFilter:  tagFilter,
 		SampleBuildNumber: sample,
 	})
 }
@@ -63,8 +64,19 @@ func (s *Server) handleSetBuildFormat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.SetBuildFormat(projectID, req.PipelineName, req.Format); err != nil {
+	// Validate here first so a bad format is unambiguously a 400: once
+	// this passes, SetBuildFormat re-validates internally too (defense
+	// in depth for any other caller), but at that point the only way
+	// it can still fail is a genuine persistence problem, which
+	// deserves a 500 — matching handleSetVersion/handleSetVersionTagFilter
+	// rather than reporting a database error as a client mistake.
+	if _, err := buildnumber.Parse(req.Format); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.store.SetBuildFormat(projectID, req.PipelineName, req.Format); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.AuditLog(r, "build_format.set", "project", projectID, map[string]string{

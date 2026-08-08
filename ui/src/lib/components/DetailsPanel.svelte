@@ -39,6 +39,10 @@
         activeTab = 'logs';
     }
 
+    $: if (activeTab === 'publish' && !$selectedJob?.docker_publish && !$selectedJob?.docker_publish_result) {
+        activeTab = 'logs';
+    }
+
     $: if (!debugSession.sessionID && activeTab === 'terminal') {
         activeTab = 'logs';
     }
@@ -239,7 +243,7 @@
             </div>
         {:else if activeTab === 'publish'}
             <div class="publish-tab-content">
-                <DockerPublishCard config={$selectedJob?.docker_publish} result={$selectedJob?.docker_publish_result} />
+                <DockerPublishCard status={$selectedJob?.status} config={$selectedJob?.docker_publish} result={$selectedJob?.docker_publish_result} />
             </div>
         {/if}
     </div>

@@ -243,7 +243,7 @@ func (s *Store) assignBuildNumber(tx *sql.Tx, p SubmitRunParams) (string, int64,
 		pipelineName = p.Name
 	}
 
-	rawFormat, major, minor, _, _, err := s.getBuildFormat(tx, p.ProjectID, pipelineName)
+	rawFormat, major, minor, _, _, _, err := s.getBuildFormat(tx, p.ProjectID, pipelineName)
 	if err != nil {
 		return "", 0, err
 	}
@@ -271,12 +271,17 @@ func (s *Store) assignBuildNumber(tx *sql.Tx, p SubmitRunParams) (string, int64,
 // time that exact scope is seen.
 //
 // The INSERT ... ON CONFLICT ... DO UPDATE runs inside the caller's
-// transaction (SubmitRun's), so Postgres holds a row-level lock on the
-// (project, pipeline, version_key) row for the rest of that
-// transaction: concurrent SubmitRun calls for the same scope serialize
-// on this statement and each receive a distinct, sequential value — no
-// gaps, no duplicates — without introducing any new locking beyond what
-// SubmitRun's existing transaction already provides.
+// transaction (SubmitRun's), so Postgres acquires a row-level lock on
+// the (project, pipeline, version_key) row here and holds it until
+// that transaction commits or rolls back — not just for the duration
+// of this one statement, but for every statement SubmitRun runs after
+// it (job inserts included). That's what makes the sequence gap-free
+// and duplicate-free: concurrent SubmitRun calls for the same scope
+// serialize on this row and each get a distinct value. The trade-off
+// is contention, not just "a quick atomic increment" — a second
+// submission for the same project+pipeline+version-key scope blocks
+// here until the first submission's entire transaction finishes, not
+// just until its counter upsert does.
 func (s *Store) incrementBuildCounter(tx *sql.Tx, projectID, pipelineName, versionKey string) (int64, error) {
 	var value int64
 	err := tx.QueryRow(`
@@ -300,31 +305,32 @@ type rowQuerier interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// loadBuildFormat loads the configured format string and major/minor
-// version for a (project, pipeline) scope, defaulting to
-// buildnumber.DefaultFormat and 0/0 when nothing has been configured.
-func loadBuildFormat(q rowQuerier, projectID, pipelineName string) (format string, major, minor int, source, setBy string, err error) {
+// loadBuildFormat loads the configured format string, major/minor
+// version, and version-tag-filter for a (project, pipeline) scope,
+// defaulting to buildnumber.DefaultFormat and zero values when nothing
+// has been configured.
+func loadBuildFormat(q rowQuerier, projectID, pipelineName string) (format string, major, minor int, source, setBy, tagFilter string, err error) {
 	err = q.QueryRow(
-		`SELECT format, major, minor, version_source, version_set_by FROM build_formats WHERE project_id = $1 AND pipeline_name = $2`,
+		`SELECT format, major, minor, version_source, version_set_by, version_tag_filter FROM build_formats WHERE project_id = $1 AND pipeline_name = $2`,
 		projectID, pipelineName,
-	).Scan(&format, &major, &minor, &source, &setBy)
+	).Scan(&format, &major, &minor, &source, &setBy, &tagFilter)
 	if err == sql.ErrNoRows {
-		return buildnumber.DefaultFormat, 0, 0, "", "", nil
+		return buildnumber.DefaultFormat, 0, 0, "", "", "", nil
 	}
 	if err != nil {
-		return "", 0, 0, "", "", fmt.Errorf("load build format: %w", err)
+		return "", 0, 0, "", "", "", fmt.Errorf("load build format: %w", err)
 	}
-	return format, major, minor, source, setBy, nil
+	return format, major, minor, source, setBy, tagFilter, nil
 }
 
 // getBuildFormat is loadBuildFormat scoped to SubmitRun's transaction.
-func (s *Store) getBuildFormat(tx *sql.Tx, projectID, pipelineName string) (format string, major, minor int, source, setBy string, err error) {
+func (s *Store) getBuildFormat(tx *sql.Tx, projectID, pipelineName string) (format string, major, minor int, source, setBy, tagFilter string, err error) {
 	return loadBuildFormat(tx, projectID, pipelineName)
 }
 
 // GetBuildFormat is loadBuildFormat for read paths outside of
 // SubmitRun (the build-format API/CLI commands).
-func (s *Store) GetBuildFormat(projectID, pipelineName string) (format string, major, minor int, source, setBy string, err error) {
+func (s *Store) GetBuildFormat(projectID, pipelineName string) (format string, major, minor int, source, setBy, tagFilter string, err error) {
 	return loadBuildFormat(s.db, projectID, pipelineName)
 }
 
@@ -1254,7 +1260,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 
 	rows, err := s.db.Query(`
 		WITH aggregated AS (
-			SELECT r.id, r.name, r.created_at,
+			SELECT r.id, r.name, r.created_at, r.build_number,
 			       COUNT(j.id) AS job_count,
 			       CASE 
 			           WHEN bool_or(j.status IN ('running', 'waiting', 'queued', 'release')) THEN 'running'
@@ -1267,9 +1273,9 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 			FROM   runs r
 			LEFT   JOIN jobs j ON j.run_id = r.id
 			WHERE  ($1 = '' OR LOWER(r.name) LIKE '%' || LOWER($1) || '%')
-			GROUP  BY r.id, r.name, r.created_at
+			GROUP  BY r.id, r.name, r.created_at, r.build_number
 		)
-		SELECT id, name, created_at, job_count, status
+		SELECT id, name, created_at, job_count, status, build_number
 		FROM   aggregated
 		WHERE  ($4 = '' OR status = $4)
 		ORDER  BY created_at DESC
@@ -1284,7 +1290,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 	for rows.Next() {
 		var r api.RunSummary
 		var status string
-		if err := rows.Scan(&r.RunID, &r.Name, &r.CreatedAt, &r.JobCount, &status); err != nil {
+		if err := rows.Scan(&r.RunID, &r.Name, &r.CreatedAt, &r.JobCount, &status, &r.BuildNumber); err != nil {
 			continue
 		}
 		r.Status = api.JobStatus(status)

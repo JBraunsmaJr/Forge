@@ -94,7 +94,7 @@ export interface Job {
     root_cause?: RootCauseInfo;
     // docker_publish/docker_publish_result are populated only for
     // docker_publish-type jobs: the configured promotion and its
-    // outcome (tags applied, deletion status, warnings) — issue #57.
+    // outcome (tags applied, deletion status, warnings).
     docker_publish?: DockerPublishConfig;
     docker_publish_result?: DockerPublishResult;
 }
@@ -105,6 +105,9 @@ export interface Run {
     status: string;
     job_count: number;
     created_at: string;
+    // build_number is the FORGE_BUILD_NUMBER assigned to this run at
+    // submission time.
+    build_number?: string;
 }
 
 export interface RunComparison {
@@ -120,7 +123,7 @@ export interface RunDetail extends Run {
     jobs: Job[];
     shard_assignments?: Record<string, ShardAssignmentDetail[]>;
     // build_number is the FORGE_BUILD_NUMBER assigned to this run at
-    // submission time (issue #57).
+    // submission time.
     build_number?: string;
 }
 

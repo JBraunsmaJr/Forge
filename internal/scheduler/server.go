@@ -998,22 +998,63 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 	s.publishRunDetail(job.RunID)
 }
 
+// maxConcurrentDockerPublish bounds how many docker_publish promotions
+// run at once. Unbounded concurrency here would let a large queued
+// backlog spawn a goroutine — and an outbound registry connection —
+// per job all at once: wasteful, and likely to trip a registry's own
+// rate limiting.
+const maxConcurrentDockerPublish = 5
+
 func (s *Server) dockerPublishMonitor(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+
+	sem := make(chan struct{}, maxConcurrentDockerPublish)
+	var wg sync.WaitGroup
+	// Wait for every already-launched promotion to actually finish
+	// before this monitor returns, so a server shutdown doesn't tear
+	// down (DB connections, etc.) out from under one mid-promotion.
+	defer wg.Wait()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		leaseLoop:
 			for {
+				select {
+				case <-ctx.Done():
+					// Stop leasing new work as soon as shutdown starts.
+					// Anything already leased and handed to a goroutine
+					// below still runs to completion via wg.Wait(); a
+					// job leased just before this check but never
+					// reaching the semaphore send is the one edge case
+					// left stuck at status "running" until a future
+					// pass — acceptable for a shutdown-timing race, not
+					// worth a lease-release RPC for.
+					break leaseLoop
+				default:
+				}
+
 				job, ok := s.store.LeaseDockerPublishJob()
 				if !ok {
-					break
+					break leaseLoop
 				}
 				fmt.Printf("[scheduler] processing docker_publish job %s for run %s\n", job.JobID[:8], job.RunID[:8])
-				go s.executeDockerPublish(ctx, job)
+
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					break leaseLoop
+				}
+
+				wg.Add(1)
+				go func(job *api.JobSpec) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					s.executeDockerPublish(ctx, job)
+				}(job)
 			}
 		}
 	}
@@ -1076,6 +1117,24 @@ func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
 		targetTags = append(targetTags, interpolate(t, job.Env))
 	}
 
+	// Validate every resolved tag before touching the registry at all.
+	// buildnumber.Parse only checks a format string's token structure —
+	// it has no way to know the string will end up as a Docker tag, so
+	// a configured format like "release/%counter%" parses fine and
+	// renders a slash straight into FORGE_BUILD_NUMBER. Catch that (or
+	// any other source of an invalid tag — a raw branch name, a typo)
+	// here, before it becomes a confusing registry API error.
+	if !registryutil.ValidTag(source) {
+		fail(fmt.Sprintf("source %q is not a valid Docker tag once ${{ env.* }} is resolved — check docker_publish.source and any build-number format it depends on", source))
+		return
+	}
+	for _, tag := range targetTags {
+		if !registryutil.ValidTag(tag) {
+			fail(fmt.Sprintf("target tag %q is not a valid Docker tag once ${{ env.* }} is resolved — check docker_publish.tags and any build-number format it depends on", tag))
+			return
+		}
+	}
+
 	// Resolve registry credentials the same way task steps resolve any
 	// other secret: project → org → global, via the step's declared
 	// secrets: list. A registry that allows anonymous pulls (and, less
@@ -1102,7 +1161,7 @@ func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
 	client := registryutil.NewClient(registryutil.NormalizeRegistryHost(registry), username, password)
 
 	s.logInfo(job, fmt.Sprintf("Fetching manifest for %s/%s:%s...", registry, repository, source))
-	manifest, err := client.GetManifest(repository, source)
+	manifest, err := client.GetManifest(ctx, repository, source)
 	if err != nil {
 		fail(fmt.Sprintf("Failed to fetch source manifest: %v", err))
 		return
@@ -1114,7 +1173,7 @@ func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
 
 	for _, tag := range targetTags {
 		s.logInfo(job, fmt.Sprintf("Promoting %s to %s...", source, tag))
-		if err := client.PutManifest(repository, tag, manifest); err != nil {
+		if err := client.PutManifest(ctx, repository, tag, manifest); err != nil {
 			s.logError(job, fmt.Sprintf("Failed to promote to tag %q: %v", tag, err))
 			failed = true
 			continue

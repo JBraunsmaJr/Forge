@@ -9,6 +9,18 @@
     let info: BuildFormatInfo | null = null;
     let loading = false;
     let loaded = false;
+    // loadedPipelineName is the pipeline whose data is actually
+    // currently loaded into format/major/minor/tagFilter below — kept
+    // distinct from the live pipelineName input, which the user can
+    // freely edit without reloading. Every save action submits against
+    // loadedPipelineName, never the live input, so editing the
+    // pipeline name field can't silently redirect a save meant for the
+    // loaded pipeline onto a different one.
+    let loadedPipelineName = '';
+    // Bumped on every load() call and checked when its response comes
+    // back, so a slow, now-superseded request can't overwrite state
+    // for whatever pipeline is current by the time it resolves.
+    let loadGeneration = 0;
 
     let format = '';
     let major = 0;
@@ -21,28 +33,57 @@
     let formatError = '';
     let versionError = '';
     let filterError = '';
+    let loadError = '';
     let savedMsg = '';
 
+    // True once the live input has diverged from whatever pipeline is
+    // actually loaded — saves are disabled in this state, since there
+    // would be no way to tell whether the displayed values are still
+    // meant for the pipeline named in the box.
+    $: pipelineChangedSinceLoad = loaded && pipelineName.trim() !== loadedPipelineName;
+
     async function load() {
-        if (!pipelineName.trim()) return;
+        const requestedPipeline = pipelineName.trim();
+        if (!requestedPipeline) return;
+
+        const generation = ++loadGeneration;
+        loaded = false;
+        loadedPipelineName = '';
         loading = true;
         formatError = '';
         versionError = '';
         filterError = '';
+        loadError = '';
         savedMsg = '';
         try {
-            info = await api.getBuildFormat(id, pipelineName.trim());
-            if (info) {
-                format = info.format;
-                major = info.major;
-                minor = info.minor;
-                tagFilter = info.version_tag_filter || '';
+            const result = await api.getBuildFormat(id, requestedPipeline);
+            // A newer load() started, or the input changed again,
+            // while this request was in flight — this response is
+            // stale, discard it rather than let it clobber whatever's
+            // current now.
+            if (generation !== loadGeneration || requestedPipeline !== pipelineName.trim()) {
+                return;
             }
+            if (!result) {
+                loadError = 'Failed to load build settings.';
+                return;
+            }
+            info = result;
+            format = info.format;
+            major = info.major;
+            minor = info.minor;
+            tagFilter = info.version_tag_filter || '';
+            loadedPipelineName = requestedPipeline;
             loaded = true;
         } catch (e) {
             console.error('Failed to load build format:', e);
+            if (generation === loadGeneration) {
+                loadError = 'Failed to load build settings.';
+            }
         } finally {
-            loading = false;
+            if (generation === loadGeneration) {
+                loading = false;
+            }
         }
     }
 
@@ -52,11 +93,12 @@
     $: preview = previewBuildNumber(format, major, minor, 1);
 
     async function saveFormat() {
+        if (!loadedPipelineName || pipelineChangedSinceLoad) return;
         savingFormat = true;
         formatError = '';
         savedMsg = '';
         try {
-            const res = await api.setBuildFormat(id, pipelineName.trim(), format);
+            const res = await api.setBuildFormat(id, loadedPipelineName, format);
             if (res.ok) {
                 savedMsg = 'Format saved.';
                 await load();
@@ -69,11 +111,12 @@
     }
 
     async function saveVersion() {
+        if (!loadedPipelineName || pipelineChangedSinceLoad) return;
         savingVersion = true;
         versionError = '';
         savedMsg = '';
         try {
-            const res = await api.setVersion(id, pipelineName.trim(), major, minor);
+            const res = await api.setVersion(id, loadedPipelineName, major, minor);
             if (res.ok) {
                 savedMsg = 'Version saved.';
                 await load();
@@ -86,11 +129,12 @@
     }
 
     async function saveFilter() {
+        if (!loadedPipelineName || pipelineChangedSinceLoad) return;
         savingFilter = true;
         filterError = '';
         savedMsg = '';
         try {
-            const res = await api.setVersionTagFilter(id, pipelineName.trim(), tagFilter);
+            const res = await api.setVersionTagFilter(id, loadedPipelineName, tagFilter);
             if (res.ok) {
                 savedMsg = 'Tag filter saved.';
                 await load();
@@ -124,6 +168,14 @@
         </button>
     </div>
     <p class="hint">Build format and version are configured per pipeline within this project — enter the pipeline's stable name (as it appears in run history) to load or create its settings.</p>
+    {#if loadError}<div class="error-msg">{loadError}</div>{/if}
+
+    {#if loaded && pipelineChangedSinceLoad}
+        <p class="pipeline-changed-notice">
+            <TriangleAlert size={12} />
+            Showing settings for "{loadedPipelineName}" — click Load to load "{pipelineName.trim()}" before saving.
+        </p>
+    {/if}
 
     {#if loaded}
         <div class="section">
@@ -139,7 +191,7 @@
                 {/if}
             </div>
             {#if formatError}<div class="error-msg">{formatError}</div>{/if}
-            <button class="btn-small btn-save" on:click={saveFormat} disabled={savingFormat || !format.trim()}>
+            <button class="btn-small btn-save" on:click={saveFormat} disabled={savingFormat || !format.trim() || pipelineChangedSinceLoad}>
                 <Save size={12} />
                 {savingFormat ? 'Saving…' : 'Save format'}
             </button>
@@ -160,7 +212,7 @@
                 <input type="number" bind:value={major} min="0" class="num-input" />
                 <span class="dot-sep">.</span>
                 <input type="number" bind:value={minor} min="0" class="num-input" />
-                <button class="btn-small btn-save" on:click={saveVersion} disabled={savingVersion}>
+                <button class="btn-small btn-save" on:click={saveVersion} disabled={savingVersion || pipelineChangedSinceLoad}>
                     <Save size={12} />
                     {savingVersion ? 'Saving…' : 'Save'}
                 </button>
@@ -173,7 +225,7 @@
             <div class="field-label">Tag-derived version branch filter</div>
             <div class="field-row">
                 <input type="text" bind:value={tagFilter} placeholder="(empty = project's default branch)" />
-                <button class="btn-small btn-save" on:click={saveFilter} disabled={savingFilter}>
+                <button class="btn-small btn-save" on:click={saveFilter} disabled={savingFilter || pipelineChangedSinceLoad}>
                     <Save size={12} />
                     {savingFilter ? 'Saving…' : 'Save'}
                 </button>
@@ -269,6 +321,14 @@
     }
     .preview-error {
         color: var(--amber, #d29922);
+    }
+    .pipeline-changed-notice {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--amber, #d29922);
+        margin: 8px 0 0;
     }
     .source-badge {
         font-size: 10px;

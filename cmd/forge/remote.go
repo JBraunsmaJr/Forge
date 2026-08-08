@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -266,6 +267,26 @@ func runSubmit(cmd *cobra.Command, args []string) {
 	fmt.Printf("✓ pipeline submitted: %s\n", res["id"])
 }
 
+// sanitizeForTerminal strips ASCII control characters (including ESC,
+// which starts terminal escape sequences, and embedded newlines/
+// carriage returns, which could otherwise forge extra fake log lines)
+// from text that ultimately came from a third party — here, a
+// docker_publish warning that can carry a registry's raw HTTP response
+// body — before it's printed to a terminal. Printable characters,
+// including non-ASCII text, pass through unchanged; only C0 control
+// characters (0x00-0x1F) and DEL (0x7F) are removed.
+func sanitizeForTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == 0x7f || (r < 0x20 && r != '\t') {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func runStatus(cmd *cobra.Command, args []string) {
 	runID := args[0]
 	schedulerURL := cliSchedulerURL()
@@ -309,12 +330,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 				}
 				r := j.DockerPublishResult
 				fmt.Printf("  docker_publish %s: tags applied %v", j.StepID, r.TagsApplied)
-				if r.SourceDeleted {
-					fmt.Printf(", source deleted")
+				if r.SourceDigest != "" {
+					fmt.Printf(", source digest %s", r.SourceDigest)
 				}
-				fmt.Println()
+				fmt.Printf(", source deleted: %t\n", r.SourceDeleted)
 				for _, w := range r.Warnings {
-					fmt.Printf("    ⚠ %s\n", w)
+					fmt.Printf("    ⚠ %s\n", sanitizeForTerminal(w))
 				}
 			}
 		}

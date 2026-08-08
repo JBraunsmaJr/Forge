@@ -136,6 +136,9 @@
                             <span class="badge badge-{run.status}">{statusBadge(run.status)}</span>
                             <span>{run.job_count} job{run.job_count !== 1 ? 's' : ''}</span>
                             <span>{timeAgo(run.created_at)}</span>
+                            {#if run.build_number}
+                                <span class="run-item-build">{run.build_number}</span>
+                            {/if}
                         </div>
                     </button>
                 {/each}
@@ -293,6 +296,15 @@
         gap: 8px;
         font-size: 11px;
         color: var(--muted);
+    }
+    .run-item-build {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 100px;
     }
     .badge {
         padding: 2px 7px;

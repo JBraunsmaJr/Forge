@@ -1,0 +1,4 @@
+name: Test
+steps:
+  - id: t
+    uses: templates/docker-build.yml

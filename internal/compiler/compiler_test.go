@@ -163,6 +163,55 @@ func TestCompile_MatrixExpansion(t *testing.T) {
 	}
 }
 
+// TestCompile_MatrixExpansion_DockerPublishTags is a regression test:
+// each matrix combination must end up with its own independently
+// interpolated docker_publish tag, not a shared slice mutated in place
+// by every combination in the same expansion (which would leave every
+// combo with whichever combo's replacer ran last).
+func TestCompile_MatrixExpansion_DockerPublishTags(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "matrix-docker-publish",
+		Steps: []JSONStep{
+			{
+				ID:   "publish",
+				Type: "docker_publish",
+				Matrix: map[string][]string{
+					"env": {"dev", "prod"},
+				},
+				DockerPublish: jsonDockerPublish{
+					Registry:   "ghcr.io",
+					Repository: "myorg/myapp",
+					Source:     "test-1",
+					Tags:       []string{"${{ matrix.env }}-latest"},
+				},
+			},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if len(p.Steps) != 2 {
+		t.Fatalf("expected 2 steps (one per matrix combo), got %d", len(p.Steps))
+	}
+
+	got := make(map[string]bool)
+	for _, s := range p.Steps {
+		if s.DockerPublish == nil {
+			t.Fatalf("step %s: DockerPublish is nil", s.ID)
+		}
+		if len(s.DockerPublish.Tags) != 1 {
+			t.Fatalf("step %s: expected 1 tag, got %v", s.ID, s.DockerPublish.Tags)
+		}
+		got[s.DockerPublish.Tags[0]] = true
+	}
+
+	if len(got) != 2 || !got["dev-latest"] || !got["prod-latest"] {
+		t.Errorf("expected distinct tags {dev-latest, prod-latest} per combo, got %v (bug: a shared backing array would leave both combos with the same, last-written tag)", got)
+	}
+}
+
 // TestCompile_ErrorCases uses t.Run to create subtests - one per error scenario.
 func TestCompile_ErrorCases(t *testing.T) {
 	t.Run("missing name", func(t *testing.T) {

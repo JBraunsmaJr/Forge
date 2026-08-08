@@ -1,9 +1,27 @@
 <script lang="ts">
     import type { DockerPublishConfig, DockerPublishResult } from '../api';
-    import { Container, Tag, Trash2, TriangleAlert, CheckCircle2 } from '@lucide/svelte';
+    import { Container, Tag, Trash2, TriangleAlert, CheckCircle2, Loader2, XCircle, Clock } from '@lucide/svelte';
 
     export let config: DockerPublishConfig | undefined;
     export let result: DockerPublishResult | undefined;
+    // status is the job's own status (queued/docker_publish/running/
+    // failed/etc) — server.go only calls SetDockerPublishResult once
+    // the step actually starts executing, so a queued, running, or
+    // early-failed job (e.g. it never got as far as fetching the
+    // source manifest) has no result yet. Without this, those states
+    // rendered an empty card with no explanation.
+    export let status: string | undefined = undefined;
+
+    const STATUS_LABEL: Record<string, string> = {
+        pending: 'Waiting on dependencies',
+        queued: 'Queued',
+        docker_publish: 'Queued for publish',
+        running: 'Publishing…',
+        failed: 'Failed',
+        timed_out: 'Timed out',
+        canceled: 'Canceled',
+        skipped: 'Skipped',
+    };
 </script>
 
 <div class="publish-card">
@@ -11,13 +29,26 @@
         <Container size={14} />
         <span class="pc-title">Docker publish</span>
         {#if config}
-            <span class="pc-target">{config.registry}/{config.repository}</span>
+            <span class="pc-target" title="Configured registry/repository — may still contain unresolved template tokens until this step actually runs">{config.registry}/{config.repository}</span>
         {/if}
     </div>
 
+    {#if !result && status && STATUS_LABEL[status]}
+        <div class="pc-status pc-status-{status}">
+            {#if status === 'running' || status === 'docker_publish'}
+                <Loader2 size={12} class="pc-spin" />
+            {:else if status === 'failed' || status === 'timed_out'}
+                <XCircle size={12} />
+            {:else}
+                <Clock size={12} />
+            {/if}
+            <span>{STATUS_LABEL[status]}</span>
+        </div>
+    {/if}
+
     {#if config}
         <div class="pc-source">
-            <span class="pc-label">Source</span>
+            <span class="pc-label">Configured source</span>
             <code>{config.source}</code>
         </div>
     {/if}
@@ -103,6 +134,24 @@
         font-size: 11px;
         color: var(--muted);
         margin-bottom: 4px;
+    }
+    .pc-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 10px;
+    }
+    .pc-status-failed, .pc-status-timed_out {
+        color: var(--red, #f85149);
+    }
+    :global(.pc-spin) {
+        animation: pc-spin 1s linear infinite;
+    }
+    @keyframes pc-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
     }
     .pc-source, .pc-digest {
         margin-bottom: 10px;

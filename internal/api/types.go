@@ -223,6 +223,9 @@ type RunSummary struct {
 	Status    JobStatus `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	JobCount  int       `json:"job_count"`
+	// BuildNumber is the FORGE_BUILD_NUMBER assigned to this run at
+	// submission time.
+	BuildNumber string `json:"build_number,omitempty"`
 }
 
 // RunDetail is the rich response used by the DAG view.
@@ -241,7 +244,7 @@ type RunDetail struct {
 	ShardAssignments map[string][]ShardAssignmentDetail `json:"shard_assignments,omitempty"`
 	ParentRunID      string                             `json:"parent_run_id,omitempty"`
 	// BuildNumber is the FORGE_BUILD_NUMBER assigned to this run at
-	// submission time (issue #57). Reruns and type: pipeline child runs
+	// submission time. Reruns and type: pipeline child runs
 	// carry over their parent's value rather than getting their own.
 	BuildNumber string `json:"build_number,omitempty"`
 }

@@ -10,6 +10,7 @@ package registryutil
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,9 +19,33 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// tagPattern matches Docker's own tag-name grammar (see
+// docker/distribution/reference): a tag must start with a word
+// character (letter, digit, or underscore) and contain only word
+// characters, periods, and hyphens after that, up to 128 characters
+// total. Notably: no slashes — a slash here almost always means
+// something upstream (a literal segment of a configured build-number
+// format, a raw branch name, etc.) leaked into what's meant to be just
+// the tag component of an image reference, not a full "repo/path:tag".
+var tagPattern = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$`)
+
+// ValidTag reports whether tag is valid as a Docker image tag on its
+// own — just the tag component, not a full "repository:tag" reference.
+// docker_publish uses this to validate its resolved source and target
+// tags (after ${{ env.* }} interpolation) before ever calling the
+// registry: buildnumber.Parse only validates a format string's token
+// structure, not whether what it (or any other part of the step's
+// configuration) actually renders to is a valid tag — a format like
+// "release/%counter%" parses just fine and renders a slash straight
+// into the tag.
+func ValidTag(tag string) bool {
+	return tagPattern.MatchString(tag)
+}
 
 // ManifestMediaTypes is sent as the Accept header on every manifest
 // GET, matching what `docker pull`/`docker push` accept: single-arch
@@ -62,11 +87,22 @@ type Client struct {
 // negotiates automatically regardless of whether credentials are set.
 func NewClient(baseURL, username, password string) *Client {
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		Username:   username,
-		Password:   password,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		token:      make(map[string]string),
+		BaseURL:  strings.TrimRight(baseURL, "/"),
+		Username: username,
+		Password: password,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			// Refuse to follow a redirect that downgrades to plain
+			// HTTP: Authorization headers (Basic credentials, bearer
+			// tokens) would otherwise be replayed in cleartext.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if req.URL.Scheme != "https" {
+					return fmt.Errorf("refusing to follow redirect to non-HTTPS URL: %s", req.URL)
+				}
+				return nil
+			},
+		},
+		token: make(map[string]string),
 	}
 }
 
@@ -97,15 +133,16 @@ type Manifest struct {
 
 // GetManifest fetches the manifest for repository:reference, where
 // reference is a tag (for reading the source tag) or a digest (for
-// re-checking after a promotion).
-func (c *Client) GetManifest(repository, reference string) (*Manifest, error) {
-	req, err := http.NewRequest(http.MethodGet, c.manifestURL(repository, reference), nil)
+// re-checking after a promotion). ctx allows an in-flight call to be
+// canceled (e.g. server shutdown) rather than running to completion.
+func (c *Client) GetManifest(ctx context.Context, repository, reference string) (*Manifest, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.manifestURL(repository, reference), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", strings.Join(ManifestMediaTypes, ", "))
 
-	resp, err := c.doAuthed(req, repository, "pull")
+	resp, err := c.doAuthed(ctx, req, repository, "pull")
 	if err != nil {
 		return nil, err
 	}
@@ -136,14 +173,14 @@ func (c *Client) GetManifest(repository, reference string) (*Manifest, error) {
 // PutManifest writes an already-fetched manifest under a new tag. No
 // image content is re-uploaded — this is exactly what makes tag
 // promotion fast and rebuild-free.
-func (c *Client) PutManifest(repository, tag string, m *Manifest) error {
-	req, err := http.NewRequest(http.MethodPut, c.manifestURL(repository, tag), bytes.NewReader(m.Body))
+func (c *Client) PutManifest(ctx context.Context, repository, tag string, m *Manifest) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.manifestURL(repository, tag), bytes.NewReader(m.Body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", m.ContentType)
 
-	resp, err := c.doAuthed(req, repository, "push,pull")
+	resp, err := c.doAuthed(ctx, req, repository, "push,pull")
 	if err != nil {
 		return err
 	}
@@ -176,13 +213,13 @@ func (c *Client) PutManifest(repository, tag string, m *Manifest) error {
 // problem, so callers can turn that into a non-fatal warning per the
 // spec: "if the target registry doesn't support tag deletion ... record
 // a warning and shall not fail the job by default."
-func (c *Client) DeleteTag(repository, tag string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.manifestURL(repository, tag), nil)
+func (c *Client) DeleteTag(ctx context.Context, repository, tag string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.manifestURL(repository, tag), nil)
 	if err != nil {
 		return err
 	}
 
-	resp, err := c.doAuthed(req, repository, "push,pull")
+	resp, err := c.doAuthed(ctx, req, repository, "push,pull")
 	if err != nil {
 		return err
 	}
@@ -211,7 +248,7 @@ func (c *Client) manifestURL(repository, reference string) string {
 // fetches it, retries once with it attached, and caches it for
 // subsequent calls against the same repository+scope within this
 // Client's lifetime (one docker_publish step run).
-func (c *Client) doAuthed(req *http.Request, repository, scope string) (*http.Response, error) {
+func (c *Client) doAuthed(ctx context.Context, req *http.Request, repository, scope string) (*http.Response, error) {
 	cacheKey := repository + ":" + scope
 
 	if tok, ok := c.token[cacheKey]; ok {
@@ -236,7 +273,7 @@ func (c *Client) doAuthed(req *http.Request, repository, scope string) (*http.Re
 		return resp, nil
 	}
 
-	tok, err := c.fetchToken(challenge, repository, scope)
+	tok, err := c.fetchToken(ctx, challenge, repository, scope)
 	if err != nil {
 		return nil, fmt.Errorf("registry auth: %w", err)
 	}
@@ -258,7 +295,7 @@ func (c *Client) doAuthed(req *http.Request, repository, scope string) (*http.Re
 // fetchToken parses a `Bearer realm="...",service="...",scope="..."`
 // WWW-Authenticate challenge and fetches a token from the named realm,
 // per the Docker Registry v2 token authentication spec.
-func (c *Client) fetchToken(challenge, repository, scope string) (string, error) {
+func (c *Client) fetchToken(ctx context.Context, challenge, repository, scope string) (string, error) {
 	params := parseBearerChallenge(challenge)
 	realm := params["realm"]
 	if realm == "" {
@@ -268,6 +305,14 @@ func (c *Client) fetchToken(challenge, repository, scope string) (string, error)
 	u, err := url.Parse(realm)
 	if err != nil {
 		return "", fmt.Errorf("invalid realm %q: %w", realm, err)
+	}
+	if u.Scheme != "https" {
+		// The realm comes from the registry's own WWW-Authenticate
+		// response — an external, not-fully-trusted source. Sending
+		// Basic credentials to a non-HTTPS realm would leak them in
+		// cleartext, whether that's a misconfigured registry or an
+		// active downgrade attempt.
+		return "", fmt.Errorf("refusing to fetch a token from a non-HTTPS realm: %s", realm)
 	}
 	q := u.Query()
 	if service := params["service"]; service != "" {
@@ -282,7 +327,7 @@ func (c *Client) fetchToken(challenge, repository, scope string) (string, error)
 	}
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return "", err
 	}

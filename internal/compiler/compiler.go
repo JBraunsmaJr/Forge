@@ -470,6 +470,14 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		if cloned.Env == nil {
 			cloned.Env = make(map[string]string)
 		}
+		// cloned is a shallow copy of js: Tags is a slice field, so
+		// without this, cloned.DockerPublish.Tags shares js's backing
+		// array across every combination in this expansion — the loop
+		// below would mutate one combo's tags in place and have that
+		// mutation bleed into every other combo (and into js itself).
+		if len(js.DockerPublish.Tags) > 0 {
+			cloned.DockerPublish.Tags = append([]string(nil), js.DockerPublish.Tags...)
+		}
 
 		// Build ID and Name suffix
 		var suffix strings.Builder
