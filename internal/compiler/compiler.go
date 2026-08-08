@@ -668,6 +668,18 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		if len(missing) > 0 {
 			return nil, fmt.Errorf("docker_publish step missing required field(s): %s", strings.Join(missing, ", "))
 		}
+		if js.DockerPublish.DeleteSource {
+			// Automatic deletion is disabled, not best-effort: the
+			// source tag and every promoted target tag share the same
+			// digest right after promotion, and deleting by digest (or
+			// even by tag reference, on some registries) can cascade
+			// and remove the tags this step just created — see
+			// registryutil.DeleteTag's doc comment. Rejecting
+			// delete_source: true here means that's caught while
+			// editing the pipeline, not discovered as a silently
+			// ignored setting after a run.
+			return nil, fmt.Errorf("docker_publish: delete_source is not currently supported (it would risk deleting the tags just promoted, since they share a digest with the source tag) — omit it or set it to false")
+		}
 		dockerPublish = &pipeline.DockerPublishConfig{
 			Registry:     js.DockerPublish.Registry,
 			Repository:   js.DockerPublish.Repository,

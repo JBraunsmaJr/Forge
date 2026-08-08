@@ -51,7 +51,7 @@ steps:
       export GOOS=${{ matrix.os }}
       export GOARCH=${{ matrix.arch }}
       EXT=""
-      if ["$GOOS" = "windows"]; then EXT=".exe"; fi
+      if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
       OUT="forge-${GOOS}-${GOARCH}${EXT}"
       mkdir -p dist
       go build -ldflags="-s -w" -o "dist/${OUT}" ./cmd/forge

@@ -140,15 +140,36 @@ func init() {
 // file paths for other frameworks, and the calling script builds a
 // `-run "^(Name1|Name2)$"` regex from it — see
 // .forge/scripts/integration-tests.sh.
+// fromGoTest converts `go test -json` output into a Forge test report.
 //
-// This does mean two different packages' identically-named top-level
-// tests (e.g. two "TestBasic" in different packages) would collide
-// under this scheme, since durations here are keyed by name alone with
-// no package qualifier. That's a non-issue for a single-package suite
-// (Go doesn't allow two functions of the same name in one package,
-// so no collision is possible) — which is the only case this is
-// currently used for — but would need a package-qualified key before
-// reusing this against a multi-package `go test ./...` invocation.
+// Granularity note: entries are keyed by top-level test FUNCTION NAME
+// (e.g. "TestAuth_Login"), not by source file. go test -json has no
+// concept of "which .go file is this test defined in" — that's
+// compile-time-only information the test binary doesn't retain at
+// runtime, so file-level splitting isn't something Go's own tooling
+// can report. Test-function-name is the finest granularity actually
+// available, and it composes with go test's own -run flag: Forge's
+// shard-assignment logic (internal/scheduler/test_split.go) puts each
+// shard's assigned names into FORGE_TEST_FILES exactly like it would
+// file paths for other frameworks, and the calling script builds a
+// `-run "^(Name1|Name2)$"` regex from it — see
+// .forge/scripts/integration-tests.sh.
+//
+// Package-collision note: two different packages' identically-named
+// top-level tests (e.g. two "TestBasic" in different packages) are
+// tracked as separate entries internally (keyed by package+test, not
+// test name alone), so their durations/outcomes never silently merge
+// or overwrite each other — that used to happen when this was keyed by
+// name alone. The *emitted* Path stays the plain test name in the
+// common case (a single-package run, e.g. today's ./tests/integration/...
+// usage, where no collision is structurally possible — Go doesn't
+// allow two functions of the same name in one package), since that's
+// what go test's own -run flag matches against. Only when a name
+// really is ambiguous across packages does the emitted Path get a
+// "package: name" prefix to keep the two entries distinguishable — at
+// which point selecting that shard's tests via a plain -run regex
+// would need further work to scope by package too; today's only
+// caller never triggers this case.
 func fromGoTest(inputPath, outputPath string) error {
 	f, err := os.Open(inputPath)
 	if err != nil {
@@ -164,16 +185,25 @@ func fromGoTest(inputPath, outputPath string) error {
 	}
 
 	type testStats struct {
+		pkg        string
 		durationMS int64
 		passed     bool
 		failed     bool
 		skipped    bool
 	}
+	// Keyed by package + a separator unlikely to appear in either a
+	// package path or a test name, so a same-named test in two
+	// different packages never collides in this map.
+	const keySep = "\x1f"
 	tests := make(map[string]*testStats)
 	// Preserve first-seen order so the report's file list isn't
 	// randomized run to run (map iteration order isn't stable, and a
 	// stable order makes diffing/reading reports across runs saner).
 	var order []string
+	// How many distinct packages have produced a top-level test with
+	// this exact name — >1 means the name is genuinely ambiguous and
+	// needs disambiguating when emitted.
+	nameSeenInPackages := make(map[string]map[string]bool)
 
 	scanner := bufio.NewScanner(f)
 	// go test output lines can be long (giant assertion diffs).
@@ -194,11 +224,16 @@ func fromGoTest(inputPath, outputPath string) error {
 			// top-level name, not per-subtest.
 			continue
 		}
-		t, ok := tests[e.Test]
+		key := e.Package + keySep + e.Test
+		t, ok := tests[key]
 		if !ok {
-			t = &testStats{}
-			tests[e.Test] = t
-			order = append(order, e.Test)
+			t = &testStats{pkg: e.Package}
+			tests[key] = t
+			order = append(order, key)
+			if nameSeenInPackages[e.Test] == nil {
+				nameSeenInPackages[e.Test] = make(map[string]bool)
+			}
+			nameSeenInPackages[e.Test][e.Package] = true
 		}
 		switch e.Action {
 		case "pass":
@@ -219,8 +254,17 @@ func fromGoTest(inputPath, outputPath string) error {
 
 	var files []api.TestFileResult
 	var totalDuration int64
-	for _, name := range order {
-		t := tests[name]
+	for _, key := range order {
+		t := tests[key]
+		name := key[len(t.pkg)+len(keySep):]
+
+		path := name
+		if len(nameSeenInPackages[name]) > 1 {
+			// Genuinely ambiguous — disambiguate rather than let two
+			// entries collide under the same emitted Path.
+			path = t.pkg + ": " + name
+		}
+
 		passed, failed, skipped := 0, 0, 0
 		switch {
 		case t.failed:
@@ -236,7 +280,7 @@ func fromGoTest(inputPath, outputPath string) error {
 			failed = 1
 		}
 		files = append(files, api.TestFileResult{
-			Path:       name, // top-level test function name — see doc comment above
+			Path:       path,
 			DurationMS: t.durationMS,
 			Tests:      1,
 			Passed:     passed,
