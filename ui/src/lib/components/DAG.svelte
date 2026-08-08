@@ -1,7 +1,7 @@
 <script lang="ts">
     import { activeRun, selectedJob, artifacts, navigateToRunID } from '../stores';
     import { api, wsUrl, type Job, type RunComparison, type RunDetail } from '../api';
-    import { RotateCcw, XCircle, TrendingUp, TrendingDown } from '@lucide/svelte';
+    import { RotateCcw, XCircle, TrendingUp, TrendingDown, Hash } from '@lucide/svelte';
     import { onDestroy } from 'svelte';
 
     import DetailsPanel from './DetailsPanel.svelte';
@@ -140,6 +140,13 @@
             Pipeline DAG — 
             {#if $activeRun}
                 {$activeRun.name}
+
+                {#if $activeRun.build_number}
+                    <span class="build-badge" title="FORGE_BUILD_NUMBER for this run">
+                        <Hash size={11} />
+                        {$activeRun.build_number}
+                    </span>
+                {/if}
 
                 {#if comparison && comparison.diff_ms !== 0}
                     <span class="comparison-badge" class:regression={comparison.regression_detected}>
@@ -296,6 +303,23 @@
         font-size: 10px;
         font-weight: 700;
         margin-left: 8px;
+    }
+
+    .build-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        background: var(--surface2);
+        color: var(--muted);
+        padding: 1px 8px;
+        border-radius: 8px;
+        font-size: 10px;
+        font-weight: 700;
+        font-family: var(--font-mono);
+        margin-left: 12px;
+        vertical-align: middle;
+        text-transform: none;
+        letter-spacing: 0;
     }
 
     .comparison-badge {

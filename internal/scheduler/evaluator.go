@@ -9,8 +9,15 @@ import (
 
 // evaluateCondition handler simple Forge condition expressions.
 // Supported: "success()", "failure()", "always()", "tag()", "branch(...)" or empty (default to success).
+// Any of these may be prefixed with "!" to negate it, e.g. "!branch(main)"
+// for "every branch except main".
 func evaluateCondition(condition string, runPassed bool, ref string) bool {
 	condition = strings.TrimSpace(condition)
+
+	if after, ok := strings.CutPrefix(condition, "!"); ok {
+		return !evaluateCondition(strings.TrimSpace(after), runPassed, ref)
+	}
+
 	condLower := strings.ToLower(condition)
 
 	if condLower == "" || condLower == "success()" {
@@ -46,22 +53,27 @@ func evaluateCondition(condition string, runPassed bool, ref string) bool {
 	return false
 }
 
-// PruneSteps removes steps that will never run in the current session based on static conditions (like tag()).
+// PruneSteps removes steps that will never run in the current session based on static conditions (like tag() or !branch(main)).
 // It also removes any steps that depend on a removed step.
 func PruneSteps(steps []api.StepDef, ref string) []api.StepDef {
 	removed := make(map[string]bool)
 
 	// Phase 1: Direct removal based on static conditions.
-	// We only prune if we are CERTAIN it won't run.
+	// We only prune if we are CERTAIN it won't run. Recognizing the
+	// shape here (tag()/branch(...), with or without a leading "!")
+	// is only about deciding whether a condition is statically
+	// determinable at all from ref alone — the actual true/false
+	// determination (including negation) is left entirely to
+	// evaluateCondition, so there's exactly one place that logic lives.
 	for _, s := range steps {
 		cond := strings.TrimSpace(strings.ToLower(s.Condition))
-		if cond == "tag()" && !strings.HasPrefix(ref, "refs/tags/") {
+		cond = strings.TrimPrefix(cond, "!")
+		cond = strings.TrimSpace(cond)
+
+		isStaticTag := cond == "tag()"
+		isStaticBranch := strings.HasPrefix(cond, "branch(") && strings.HasSuffix(cond, ")")
+		if (isStaticTag || isStaticBranch) && !evaluateCondition(s.Condition, true, ref) {
 			removed[s.ID] = true
-		}
-		if strings.HasPrefix(cond, "branch(") && strings.HasSuffix(cond, ")") {
-			if !evaluateCondition(s.Condition, true, ref) {
-				removed[s.ID] = true
-			}
 		}
 	}
 

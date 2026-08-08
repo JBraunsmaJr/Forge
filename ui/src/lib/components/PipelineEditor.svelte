@@ -9,7 +9,7 @@
 
     interface Step {
         id: string;
-        type: 'command' | 'generator' | 'pipeline' | 'release' | 'approval';
+        type: 'command' | 'generator' | 'pipeline' | 'release' | 'approval' | 'docker_publish';
         image: string;
         command: string;
         depends_on: string[];
@@ -19,6 +19,7 @@
         secrets: string[];
         inputs: string[];
         release: { name: string, tag: string, body: string, artifacts: string[] };
+        docker_publish: { registry: string, repository: string, source: string, tags: string[], delete_source: boolean };
         condition: string;
         docker_socket: boolean;
         timeout: string;
@@ -38,6 +39,7 @@
             id: 'lint', type: 'command', image: 'golangci/golangci-lint:v1.64', command: 'golangci-lint run', depends_on: [], 
             artifact_uploads: [], artifact_downloads: [], env: [], secrets: [], 
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
+            docker_publish: { registry: '', repository: '', source: '', tags: [], delete_source: false },
             condition: '', docker_socket: false, 
             timeout: '5m', workdir: '', always_run: false,
             pipeline_ref: { name: '', path: '' }, matrix: [], with: [],
@@ -48,6 +50,7 @@
             id: 'test', type: 'command', image: 'golang:1.26', command: 'go test ./...', depends_on: ['lint'], 
             artifact_uploads: [], artifact_downloads: [], env: [], secrets: [], 
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
+            docker_publish: { registry: '', repository: '', source: '', tags: [], delete_source: false },
             condition: '', docker_socket: false, 
             timeout: '10m', workdir: '', always_run: false,
             pipeline_ref: { name: '', path: '' }, matrix: [], with: [],
@@ -62,6 +65,7 @@
             id, type: 'command', image: 'alpine:latest', command: 'echo hello', depends_on: [], 
             artifact_uploads: [], artifact_downloads: [], env: [], secrets: [], 
             inputs: [], release: { name: '', tag: '', body: '', artifacts: [] },
+            docker_publish: { registry: '', repository: '', source: '', tags: [], delete_source: false },
             condition: '', docker_socket: false, 
             timeout: '', workdir: '', always_run: false,
             pipeline_ref: { name: '', path: '' }, matrix: [], with: [],
@@ -159,6 +163,11 @@
         steps = [...steps];
     }
 
+    function removeDockerPublishTag(stepIndex: number, tag: string) {
+        steps[stepIndex].docker_publish.tags = steps[stepIndex].docker_publish.tags.filter(t => t !== tag);
+        steps = [...steps];
+    }
+
     $: yaml = generateYAML(pipelineName, steps);
 
     function generateYAML(name: string, steps: Step[]) {
@@ -174,7 +183,7 @@
                 if (s.pipeline_ref.path) {
                     lines.push(`      path: ${s.pipeline_ref.path}`);
                 }
-            } else if (s.type !== 'approval' && s.type !== 'release') {
+            } else if (s.type !== 'approval' && s.type !== 'release' && s.type !== 'docker_publish') {
                 lines.push(`    image: ${s.image}`);
                 if (s.command.includes('\n')) {
                     lines.push(`    run: |`);
@@ -203,6 +212,17 @@
                 if (s.release.artifacts.length > 0) {
                     lines.push(`      artifacts: [${s.release.artifacts.join(', ')}]`);
                 }
+            }
+
+            if (s.type === 'docker_publish' && s.docker_publish.repository) {
+                lines.push(`    docker_publish:`);
+                if (s.docker_publish.registry) lines.push(`      registry: ${s.docker_publish.registry}`);
+                lines.push(`      repository: ${s.docker_publish.repository}`);
+                if (s.docker_publish.source) lines.push(`      source: ${s.docker_publish.source}`);
+                if (s.docker_publish.tags.length > 0) {
+                    lines.push(`      tags: [${s.docker_publish.tags.join(', ')}]`);
+                }
+                if (s.docker_publish.delete_source) lines.push(`      delete_source: true`);
             }
             
             if (s.matrix.length > 0) {
@@ -370,10 +390,11 @@
                                             <option value="generator">Generator (Dynamic)</option>
                                             <option value="pipeline">Trigger Pipeline</option>
                                             <option value="release">SCM Release</option>
+                                            <option value="docker_publish">Docker Publish</option>
                                             <option value="approval">Manual Approval</option>
                                         </select>
                                     </div>
-                                    {#if step.type !== 'pipeline' && step.type !== 'approval' && step.type !== 'release'}
+                                    {#if step.type !== 'pipeline' && step.type !== 'approval' && step.type !== 'release' && step.type !== 'docker_publish'}
                                         <div class="field">
                                             <label for="step-image-{step.id}">Docker Image</label>
                                             <input id="step-image-{step.id}" type="text" bind:value={step.image} placeholder="e.g. alpine:latest" />
@@ -434,7 +455,57 @@
                                             />
                                         </div>
                                     </div>
-                                {:else if step.type !== 'approval' && step.type !== 'release'}
+                                {:else if step.type === 'docker_publish'}
+                                    <div class="grid-2">
+                                        <div class="field">
+                                            <label for="step-dp-registry-{step.id}">Registry</label>
+                                            <input id="step-dp-registry-{step.id}" type="text" bind:value={step.docker_publish.registry} placeholder="e.g. ghcr.io" />
+                                        </div>
+                                        <div class="field">
+                                            <label for="step-dp-repo-{step.id}">Repository</label>
+                                            <input id="step-dp-repo-{step.id}" type="text" bind:value={step.docker_publish.repository} placeholder="e.g. myorg/myapp" />
+                                        </div>
+                                    </div>
+                                    <div class="field">
+                                        <label for="step-dp-source-{step.id}">Source Tag</label>
+                                        <input id="step-dp-source-{step.id}" type="text" bind:value={step.docker_publish.source} placeholder="e.g. test-BUILD_NUMBER (supports env interpolation)" />
+                                    </div>
+                                    <div class="sub-section" style="margin-bottom: 12px;">
+                                        <span class="label">Target Tags</span>
+                                        <div class="dep-chips">
+                                            {#each step.docker_publish.tags as tag}
+                                                <span class="chip">
+                                                    {tag}
+                                                    <button class="chip-remove" on:click={() => removeDockerPublishTag(i, tag)} title="Remove Tag">&times;</button>
+                                                </span>
+                                            {/each}
+                                            <input
+                                                type="text"
+                                                class="chip-input"
+                                                placeholder="+ Add Tag..."
+                                                on:keydown={(e) => {
+                                                    if (e.key === 'Enter') {
+                                                        e.preventDefault();
+                                                        const val = e.currentTarget.value.trim();
+                                                        if (val) {
+                                                            step.docker_publish.tags = [...step.docker_publish.tags, val];
+                                                            e.currentTarget.value = '';
+                                                            steps = [...steps];
+                                                        }
+                                                    }
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div class="field-row">
+                                        <div class="checkbox-group">
+                                            <label class="checkbox-label">
+                                                <input type="checkbox" bind:checked={step.docker_publish.delete_source} />
+                                                Delete source tag after promotion
+                                            </label>
+                                        </div>
+                                    </div>
+                                {:else if step.type !== 'approval' && step.type !== 'release' && step.type !== 'docker_publish'}
                                     <div class="field">
                                         <label for="step-command-{step.id}">Command / Script</label>
                                         <textarea id="step-command-{step.id}" bind:value={step.command} rows="3" placeholder="Enter shell commands..."></textarea>
@@ -892,6 +963,7 @@
     .step-type-badge.generator { background: #9e6a0322; color: #d29922; border: 1px solid #9e6a0344; }
     .step-type-badge.pipeline { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
     .step-type-badge.release { background: #8957e522; color: #a371f7; border: 1px solid #8957e544; }
+    .step-type-badge.docker_publish { background: #39c5cf22; color: #39c5cf; border: 1px solid #39c5cf44; }
     .step-type-badge.approval { background: #d2992222; color: #f0883e; border: 1px solid #d2992244; }
 
     .id-input {

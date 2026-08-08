@@ -85,6 +85,8 @@ func autoMigrate(db *gorm.DB) error {
 		&ProjectHealthSnapshot{},
 		&APIToken{},
 		&AuditLog{},
+		&BuildFormat{},
+		&BuildCounter{},
 		&Run{},
 		&Job{},
 		&TestFileDuration{},

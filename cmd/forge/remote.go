@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -266,6 +267,26 @@ func runSubmit(cmd *cobra.Command, args []string) {
 	fmt.Printf("✓ pipeline submitted: %s\n", res["id"])
 }
 
+// sanitizeForTerminal strips ASCII control characters (including ESC,
+// which starts terminal escape sequences, and embedded newlines/
+// carriage returns, which could otherwise forge extra fake log lines)
+// from text that ultimately came from a third party — here, a
+// docker_publish warning that can carry a registry's raw HTTP response
+// body — before it's printed to a terminal. Printable characters,
+// including non-ASCII text, pass through unchanged; only C0 control
+// characters (0x00-0x1F) and DEL (0x7F) are removed.
+func sanitizeForTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == 0x7f || (r < 0x20 && r != '\t') {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func runStatus(cmd *cobra.Command, args []string) {
 	runID := args[0]
 	schedulerURL := cliSchedulerURL()
@@ -284,12 +305,40 @@ func runStatus(cmd *cobra.Command, args []string) {
 	json.NewDecoder(resp.Body).Decode(&run)
 
 	fmt.Printf("Run %s: %s\n", run.RunID, run.Status)
+	if run.BuildNumber != "" {
+		fmt.Printf("Build: %s\n", run.BuildNumber)
+	}
 	for i, job := range run.Jobs {
 		id := ""
 		if i < len(run.JobIDs) {
 			id = run.JobIDs[i]
 		}
 		fmt.Printf("  %s %-20s %s\n", jobIcon(job), id, job)
+	}
+
+	// Best-effort: pull step-level detail for any docker_publish steps'
+	// outcome (tags applied, deletion status, warnings) — issue #57.
+	// Silently skipped if the detail call fails; the summary above is
+	// still complete without it.
+	if detailResp, err := cliGet(schedulerURL + "/api/v1/runs/" + runID + "/detail"); err == nil {
+		defer detailResp.Body.Close()
+		var detail api.RunDetail
+		if json.NewDecoder(detailResp.Body).Decode(&detail) == nil {
+			for _, j := range detail.Jobs {
+				if j.DockerPublishResult == nil {
+					continue
+				}
+				r := j.DockerPublishResult
+				fmt.Printf("  docker_publish %s: tags applied %v", j.StepID, r.TagsApplied)
+				if r.SourceDigest != "" {
+					fmt.Printf(", source digest %s", r.SourceDigest)
+				}
+				fmt.Printf(", source deleted: %t\n", r.SourceDeleted)
+				for _, w := range r.Warnings {
+					fmt.Printf("    ⚠ %s\n", sanitizeForTerminal(w))
+				}
+			}
+		}
 	}
 }
 

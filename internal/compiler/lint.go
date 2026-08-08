@@ -65,7 +65,7 @@ func (r *LintReport) warnf(step, format string, args ...any) {
 // else silently becomes a plain task there — Lint is what catches the typo
 // before that silent fallback hides it.
 var recognizedTypes = map[string]bool{
-	"": true, "task": true, "generator": true, "pipeline": true, "approval": true, "release": true,
+	"": true, "task": true, "generator": true, "pipeline": true, "approval": true, "release": true, "docker_publish": true,
 }
 
 // Lint performs an offline structural and style check of a pipeline file
@@ -391,7 +391,7 @@ func checkRawSteps(report *LintReport, steps []JSONStep, workspaceDir string) {
 		label := stepLabel(js.ID, i)
 
 		if js.Type != "" && !recognizedTypes[js.Type] {
-			report.errorf(label, "unrecognized type %q (expected one of: task, generator, pipeline, approval, release)", js.Type)
+			report.errorf(label, "unrecognized type %q (expected one of: task, generator, pipeline, approval, release, docker_publish)", js.Type)
 		}
 
 		if js.Timeout == "" {

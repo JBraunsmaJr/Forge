@@ -1398,9 +1398,13 @@ func (a *Agent) reportSkipped(spec *api.JobSpec, condition string) error {
 
 // isSchedulerCondition returns true for conditions the scheduler evaluates
 // itself (success(), failure(), always()).  These must not be re-evaluated
-// by the agent since the scheduler has already acted on them.
+// by the agent since the scheduler has already acted on them. A leading "!"
+// negates any of these forms (see evaluateCondition) and is still a
+// scheduler condition — "!tag()" is exactly as scheduler-static as "tag()".
 func isSchedulerCondition(cond string) bool {
 	c := strings.TrimSpace(strings.ToLower(cond))
+	c = strings.TrimPrefix(c, "!")
+	c = strings.TrimSpace(c)
 	return c == "" || c == "success()" || c == "failure()" || c == "always()" || c == "tag()" || strings.HasPrefix(c, "branch(")
 }
 

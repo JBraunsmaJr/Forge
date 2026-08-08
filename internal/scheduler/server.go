@@ -30,6 +30,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
+	"github.com/JBraunsmaJr/forge/internal/registryutil"
 	"github.com/JBraunsmaJr/forge/internal/rootcause"
 	"github.com/JBraunsmaJr/forge/internal/scm"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
@@ -374,6 +375,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.handleGetProjectWebhook)
 	mux.HandleFunc("GET /api/v1/projects/{id}/failure-stats", s.handleFailureStats)
 	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
+	mux.HandleFunc("GET /api/v1/projects/{id}/build-format", s.handleGetBuildFormat)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/build-format", s.handleSetBuildFormat)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/version", s.handleSetVersion)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/version-tag-filter", s.handleSetVersionTagFilter)
 
 	// SCM webhooks - HMAC secured, excempt from token auth
 	mux.HandleFunc("POST /api/v1/webhook/github/{id}", s.handleGitHubWebhook)
@@ -437,6 +442,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/v1/audit/export", s.handleListAuditLogs)
 
 	go s.releaseMonitor(ctx)
+	go s.dockerPublishMonitor(ctx)
 
 	// Start gRPC server for internal communication (agents)
 	grpcAddr := getenv("FORGE_GRPC_ADDR", ":50051")
@@ -982,6 +988,217 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 		} else {
 			s.logInfo(job, fmt.Sprintf("Uploaded %s", meta.Filename))
 		}
+	}
+
+	exitCode := 0
+	if failed {
+		exitCode = 1
+	}
+	s.store.Complete(job.JobID, job.LeaseID, exitCode, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+	s.publishRunDetail(job.RunID)
+}
+
+// maxConcurrentDockerPublish bounds how many docker_publish promotions
+// run at once. Unbounded concurrency here would let a large queued
+// backlog spawn a goroutine — and an outbound registry connection —
+// per job all at once: wasteful, and likely to trip a registry's own
+// rate limiting.
+const maxConcurrentDockerPublish = 5
+
+func (s *Server) dockerPublishMonitor(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	sem := make(chan struct{}, maxConcurrentDockerPublish)
+	var wg sync.WaitGroup
+	// Wait for every already-launched promotion to actually finish
+	// before this monitor returns, so a server shutdown doesn't tear
+	// down (DB connections, etc.) out from under one mid-promotion.
+	defer wg.Wait()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		leaseLoop:
+			for {
+				select {
+				case <-ctx.Done():
+					// Stop leasing new work as soon as shutdown starts.
+					// Anything already leased and handed to a goroutine
+					// below still runs to completion via wg.Wait(); a
+					// job leased just before this check but never
+					// reaching the semaphore send is the one edge case
+					// left stuck at status "running" until a future
+					// pass — acceptable for a shutdown-timing race, not
+					// worth a lease-release RPC for.
+					break leaseLoop
+				default:
+				}
+
+				job, ok := s.store.LeaseDockerPublishJob()
+				if !ok {
+					break leaseLoop
+				}
+				fmt.Printf("[scheduler] processing docker_publish job %s for run %s\n", job.JobID[:8], job.RunID[:8])
+
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					break leaseLoop
+				}
+
+				wg.Add(1)
+				go func(job *api.JobSpec) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					s.executeDockerPublish(ctx, job)
+				}(job)
+			}
+		}
+	}
+}
+
+// dockerPublishSecretUsername/Password are the conventional secret
+// names a docker_publish step declares in its secrets: list when the
+// target registry requires authentication. They're resolved exactly
+// the way any task step's secrets are — project → org → global — just
+// on the scheduler instead of an agent, since docker_publish never
+// touches one (issue #57).
+const (
+	dockerPublishSecretUsername = "REGISTRY_USERNAME"
+	dockerPublishSecretPassword = "REGISTRY_PASSWORD"
+)
+
+func (s *Server) executeDockerPublish(ctx context.Context, job *api.JobSpec) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[scheduler] PANIC in executeDockerPublish for job %s: %v\n", job.JobID, r)
+			s.logError(job, fmt.Sprintf("INTERNAL ERROR: %v", r))
+			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+			s.publishRunDetail(job.RunID)
+		}
+	}()
+
+	if job.DockerPublish == nil {
+		s.logError(job, "docker_publish configuration is missing")
+		s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+		return
+	}
+	cfg := job.DockerPublish
+	start := time.Now()
+
+	fail := func(msg string) {
+		s.logError(job, msg)
+		s.store.Complete(job.JobID, job.LeaseID, 1, int64(time.Since(start)/time.Millisecond), nil, nil, false, false)
+		s.publishRunDetail(job.RunID)
+	}
+
+	// Defense in depth: never let a pull_request-triggered run reach a
+	// credentialed registry promotion, regardless of what the pipeline's
+	// own condition: happens to say. A PR run builds and tests the PR
+	// author's own source (not necessarily reviewed yet, and — for a
+	// fork PR — not even from someone with write access), so letting it
+	// reach docker_publish would let an external contributor get
+	// arbitrary code built, promoted, and published under this
+	// project's real image tags.
+	if job.Env["FORGE_EVENT"] == "pull_request" {
+		fail("docker_publish is not permitted on pull_request-triggered runs")
+		return
+	}
+
+	registry := interpolate(cfg.Registry, job.Env)
+	repository := interpolate(cfg.Repository, job.Env)
+	source := interpolate(cfg.Source, job.Env)
+	var targetTags []string
+	for _, t := range cfg.Tags {
+		targetTags = append(targetTags, interpolate(t, job.Env))
+	}
+
+	// Validate every resolved tag before touching the registry at all.
+	// buildnumber.Parse only checks a format string's token structure —
+	// it has no way to know the string will end up as a Docker tag, so
+	// a configured format like "release/%counter%" parses fine and
+	// renders a slash straight into FORGE_BUILD_NUMBER. Catch that (or
+	// any other source of an invalid tag — a raw branch name, a typo)
+	// here, before it becomes a confusing registry API error.
+	if !registryutil.ValidTag(source) {
+		fail(fmt.Sprintf("source %q is not a valid Docker tag once ${{ env.* }} is resolved — check docker_publish.source and any build-number format it depends on", source))
+		return
+	}
+	for _, tag := range targetTags {
+		if !registryutil.ValidTag(tag) {
+			fail(fmt.Sprintf("target tag %q is not a valid Docker tag once ${{ env.* }} is resolved — check docker_publish.tags and any build-number format it depends on", tag))
+			return
+		}
+	}
+
+	// Resolve registry credentials the same way task steps resolve any
+	// other secret: project → org → global, via the step's declared
+	// secrets: list. A registry that allows anonymous pulls (and, less
+	// commonly, anonymous pushes) needs neither declared.
+	var username, password string
+	if s.secrets != nil {
+		for _, name := range job.SecretNames {
+			if name != dockerPublishSecretUsername && name != dockerPublishSecretPassword {
+				continue
+			}
+			val, err := s.secrets.GetScoped(name, job.OrgID, job.ProjectID)
+			if err != nil {
+				fail(fmt.Sprintf("Failed to resolve secret %q: %v", name, err))
+				return
+			}
+			if name == dockerPublishSecretUsername {
+				username = val
+			} else {
+				password = val
+			}
+		}
+	}
+
+	client := registryutil.NewClient(registryutil.NormalizeRegistryHost(registry), username, password)
+
+	s.logInfo(job, fmt.Sprintf("Fetching manifest for %s/%s:%s...", registry, repository, source))
+	manifest, err := client.GetManifest(ctx, repository, source)
+	if err != nil {
+		fail(fmt.Sprintf("Failed to fetch source manifest: %v", err))
+		return
+	}
+	s.logInfo(job, fmt.Sprintf("Source digest: %s", manifest.Digest))
+
+	result := api.DockerPublishResult{SourceDigest: manifest.Digest}
+	failed := false
+
+	for _, tag := range targetTags {
+		s.logInfo(job, fmt.Sprintf("Promoting %s to %s...", source, tag))
+		if err := client.PutManifest(ctx, repository, tag, manifest); err != nil {
+			s.logError(job, fmt.Sprintf("Failed to promote to tag %q: %v", tag, err))
+			failed = true
+			continue
+		}
+		result.TagsApplied = append(result.TagsApplied, tag)
+		s.logInfo(job, fmt.Sprintf("Tag %s now points at %s", tag, manifest.Digest))
+	}
+
+	// Deletion is deliberately disabled, not just best-effort: the
+	// source tag and every tag just promoted above point at the
+	// identical digest, and many registries cascade a manifest delete
+	// (even one requested via a tag reference) to every tag sharing
+	// that digest — see registryutil.DeleteTag's doc comment. Actually
+	// calling delete here risks silently removing the tags this step
+	// just created, which is worse than not cleaning up the source tag
+	// at all. Until there's a registry-safe way to confirm a tag has no
+	// other references, delete_source only produces a warning.
+	if cfg.DeleteSource {
+		warning := fmt.Sprintf("source tag %q was not deleted: automatic deletion is disabled because it shares a digest with the tag(s) just promoted, and deleting it could remove those too", source)
+		result.Warnings = append(result.Warnings, warning)
+		s.logInfo(job, "Warning: "+warning)
+	}
+
+	if err := s.store.SetDockerPublishResult(job.JobID, result); err != nil {
+		s.logError(job, fmt.Sprintf("Failed to save docker_publish result: %v", err))
 	}
 
 	exitCode := 0

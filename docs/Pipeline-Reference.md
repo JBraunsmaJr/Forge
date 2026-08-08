@@ -101,6 +101,70 @@ Secret resolution order (highest priority first):
 3. Global: `secret set NAME value`
 4. Legacy path (backward compatibility)
 
+### Build Numbers
+
+Every run is assigned a build number: a stable, configurable identifier available to every step in that run as two environment variables:
+
+| Variable              | Description                                                              |
+|------------------------|--------------------------------------------------------------------------|
+| `FORGE_BUILD_NUMBER`   | The rendered build number, e.g. `2026-08.14` or `2.4.87`.                |
+| `FORGE_BUILD_COUNTER`  | The raw monotonic counter the build number was rendered from, e.g. `14`. |
+
+Both are resolvable anywhere `${{ env.* }}` already works (`release:`, `matrix:`, `docker_publish:` blocks, and `env:`/`secrets:` steps), and are set on every step in the run — including steps expanded from a `matrix:` block, which all share their parent run's one build number.
+
+**Local execution.** Running `forge run` with no scheduler/project context sets `FORGE_BUILD_NUMBER=local` and `FORGE_BUILD_COUNTER=0` so pipelines referencing these variables don't fail outside CI. `local` is not a value any configured format can ever render, so it's always distinguishable from a real, scheduler-assigned build number.
+
+**Reruns and child pipelines.** Rerunning a run reuses that run's original build number rather than minting a new one. A child run created by a `type: pipeline` step inherits its parent run's build number.
+
+#### Format strings
+
+Each (project, pipeline name) has a configurable format string, defaulting to `%year%-%month%.%counter%`. A format combines literal text with tokens:
+
+| Token          | Renders as                                             |
+|----------------|---------------------------------------------------------|
+| `%counter%`    | The raw counter, e.g. `87`.                              |
+| `%counter:N%`  | The counter, zero-padded to N digits, e.g. `%counter:3%` → `009`. |
+| `%year%`       | Current UTC year, e.g. `2026`.                           |
+| `%month%`      | Current UTC month, zero-padded, e.g. `08`.                |
+| `%day%`        | Current UTC day of month, zero-padded, e.g. `04`.          |
+| `%major%`      | The pipeline's configured major version.                  |
+| `%minor%`      | The pipeline's configured minor version.                  |
+
+A format must contain exactly one `%counter%`/`%counter:N%` token; unknown or malformed tokens are rejected when the format is saved, not when a run is submitted.
+
+The counter is scoped to (project, pipeline, version key), where the version key is the format's rendered output with the counter token removed. Whenever a run's version key differs from the last-recorded one for that scope (e.g. the calendar month rolled over, or the major/minor version changed), the counter for the new version key restarts at 1. A format with no date or major/minor token (e.g. `1.4.%counter%`) has a version key that never changes, so it keeps a single, ever-incrementing counter — identical to a pipeline with no versioning scheme at all.
+
+Examples:
+
+| Format                        | Renders as (counter=14, major=2, minor=4, 2026-08-04 UTC) |
+|--------------------------------|-------------------------------------------------------------|
+| `%year%-%month%.%counter%`     | `2026-08.14`                                                 |
+| `%major%.%minor%.%counter%`    | `2.4.14`                                                      |
+| `1.4.%counter%`                | `1.4.14`                                                      |
+| `%counter:3%`                  | `014`                                                         |
+
+#### Major/minor version management
+
+The major/minor version consumed by `%major%`/`%minor%` can be set explicitly, or derived automatically from a pushed git tag matching `vMAJOR.MINOR` or `vMAJOR.MINOR.PATCH` — restricted to a configurable branch/ref filter (default: the project's default branch) so a tag pushed on a stale or feature branch can't change the version used by mainline builds. An explicit set can override a tag-derived value at any time, and vice versa: whichever happened most recently wins. Every change is recorded with actor (user, or "tag push" plus the tag ref) and timestamp in the audit log.
+
+#### CLI
+
+```bash
+# View / set the build-number format for a pipeline
+forge project get-build-format <project-id> <pipeline-name>
+forge project set-build-format <project-id> <pipeline-name> '%year%-%month%.%counter%'
+
+# View / set the major/minor version
+forge project get-version <project-id> <pipeline-name>
+forge project set-version <project-id> <pipeline-name> <major> <minor>
+
+# Restrict which branches' tag pushes may update the tag-derived version
+forge project set-version-tag-filter <project-id> <pipeline-name> <branch-filter>
+
+# A run's build number is included in its status output
+forge status <run-id>
+```
+
 ### Artifacts
 
 ```yaml
@@ -416,6 +480,45 @@ Ensure your SCM token has sufficient permissions to create releases and upload a
 
 ---
 
+### `type: docker_publish`
+
+A `docker_publish` step adds one or more tags to an already-pushed image without rebuilding it — typically used to promote a test-specific tag to its real release tag(s) only after tests pass. Like `release` steps, `docker_publish` steps run on the scheduler and require neither an agent nor `docker_socket`: no image content is re-uploaded, since the source tag's manifest already references blobs that exist in the registry (issue #57).
+
+```yaml
+- id: promote-image
+  type: docker_publish
+  depends_on: [integration-tests]
+  condition: success()
+  docker_publish:
+    registry: ghcr.io
+    repository: myorg/myapp
+    source: "test-${{ env.FORGE_BUILD_NUMBER }}"
+    tags:
+      - "${{ env.FORGE_BUILD_NUMBER }}"
+      - latest
+  secrets: [REGISTRY_USERNAME, REGISTRY_PASSWORD]
+```
+
+**docker_publish step fields:**
+
+| Field           | Type     | Required | Description                                                                    |
+|-----------------|----------|----------|----------------------------------------------------------------------------------|
+| `registry`      | string   | yes      | Registry host, e.g. `ghcr.io`, `docker.io`. Supports `${{ env.VAR }}`.            |
+| `repository`    | string   | yes      | Repository within the registry, e.g. `myorg/myapp`. Supports `${{ env.VAR }}`.    |
+| `source`        | string   | yes      | The tag being promoted from. Supports `${{ env.VAR }}`.                          |
+| `tags`          | string[] | yes      | One or more target tags being promoted to. Each supports `${{ env.VAR }}`.        |
+| `delete_source` | bool     | no       | Not currently supported — see "Deletion is rejected, not ignored" below. Omit it or set it to `false`. |
+
+`registry`, `repository`, `source`, and `tags` are required — a `docker_publish` block missing any of them is rejected by `forge validate` (and the UI's pipeline editor, since both run through the same validation path) before it's ever submitted, not first discovered when a run fails.
+
+**Authentication.** `docker_publish` authenticates using the same secret resolution order as any task step (project → org → global) via `secrets:`. It looks specifically for two conventional secret names: `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Both can be omitted only for a registry that permits every operation this step performs anonymously — which in practice means anonymous *pushes* (promoting a tag is a write), not just anonymous pulls; most registries, including GHCR and Docker Hub, require authentication to push even to a public repository.
+
+**Deletion is rejected, not ignored.** Setting `delete_source: true` is a validation error — `forge validate` (and the UI's pipeline editor, since both run through the same validation path) rejects it before the pipeline is ever submitted, rather than silently accepting it and doing nothing. The reason is a real safety concern, not a missing feature checkbox: a promotion always leaves the source tag and every newly-promoted target tag pointing at the identical digest, and deleting a tag on many registries cascades to every other tag sharing that digest — so an automatic delete here could silently remove the tags this step just created. Until there's a registry-safe way to confirm a tag has no other references, clean up stale source tags manually or with a separate, deliberate process, and leave `delete_source` unset (or `false`) in your pipeline. The tags actually applied and the source digest are recorded per-job and retrievable via `forge status <run-id>` and the UI's step detail panel — not just from logs.
+
+**Ordering "promote only after tests pass"** needs no new mechanism: `depends_on`/`condition` work exactly as they do for any other step type, so a `docker_publish` step simply depends on whatever step(s) must succeed first.
+
+---
+
 ## Complete Example
 
 ```yaml
@@ -457,13 +560,12 @@ steps:
       download:
         - name: app-binary
           dest: dist/app
-    run: |
-      chmod +x dist/app
-      docker build -t myapp:${GIT_SHA:-dev} .
-    artifacts:
       upload:
         - path: image-digest.txt
           name: image-digest
+    run: |
+      chmod +x dist/app
+      docker build -t myapp:${GIT_SHA:-dev} .
 
   # Deploy to staging via a reusable child pipeline
   - id: deploy-staging

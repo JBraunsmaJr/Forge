@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
@@ -160,6 +161,55 @@ func TestCompile_MatrixExpansion(t *testing.T) {
 	}
 	if !foundLinux || !foundWindows {
 		t.Errorf("missing expected dependencies: %v", releaseStep.DependsOn)
+	}
+}
+
+// TestCompile_MatrixExpansion_DockerPublishTags is a regression test:
+// each matrix combination must end up with its own independently
+// interpolated docker_publish tag, not a shared slice mutated in place
+// by every combination in the same expansion (which would leave every
+// combo with whichever combo's replacer ran last).
+func TestCompile_MatrixExpansion_DockerPublishTags(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "matrix-docker-publish",
+		Steps: []JSONStep{
+			{
+				ID:   "publish",
+				Type: "docker_publish",
+				Matrix: map[string][]string{
+					"env": {"dev", "prod"},
+				},
+				DockerPublish: jsonDockerPublish{
+					Registry:   "ghcr.io",
+					Repository: "myorg/myapp",
+					Source:     "test-1",
+					Tags:       []string{"${{ matrix.env }}-latest"},
+				},
+			},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if len(p.Steps) != 2 {
+		t.Fatalf("expected 2 steps (one per matrix combo), got %d", len(p.Steps))
+	}
+
+	got := make(map[string]bool)
+	for _, s := range p.Steps {
+		if s.DockerPublish == nil {
+			t.Fatalf("step %s: DockerPublish is nil", s.ID)
+		}
+		if len(s.DockerPublish.Tags) != 1 {
+			t.Fatalf("step %s: expected 1 tag, got %v", s.ID, s.DockerPublish.Tags)
+		}
+		got[s.DockerPublish.Tags[0]] = true
+	}
+
+	if len(got) != 2 || !got["dev-latest"] || !got["prod-latest"] {
+		t.Errorf("expected distinct tags {dev-latest, prod-latest} per combo, got %v (bug: a shared backing array would leave both combos with the same, last-written tag)", got)
 	}
 }
 
@@ -341,5 +391,58 @@ steps:
 	}
 	if len(final.DependsOn) != 1 || final.DependsOn[0] != "my-template.step2" {
 		t.Errorf("expected final to depend on my-template.step2, got %v", final.DependsOn)
+	}
+}
+
+// TestCompile_DockerPublish_RejectsDeleteSource verifies delete_source:
+// true is a validation error, not a silently-accepted no-op — it's
+// caught at forge validate / compile time rather than only discovered
+// as an ignored setting after a run executes. delete_source omitted
+// (or explicitly false) must still compile fine.
+func TestCompile_DockerPublish_RejectsDeleteSource(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "docker-publish-delete-source",
+		Steps: []JSONStep{
+			{
+				ID:   "publish",
+				Type: "docker_publish",
+				DockerPublish: jsonDockerPublish{
+					Registry:     "ghcr.io",
+					Repository:   "myorg/myapp",
+					Source:       "test-1",
+					Tags:         []string{"latest"},
+					DeleteSource: true,
+				},
+			},
+		},
+	})
+
+	if _, err := Compile(path); err == nil {
+		t.Fatal("expected Compile to reject delete_source: true, got nil error")
+	} else if !strings.Contains(err.Error(), "delete_source") {
+		t.Errorf("expected error to mention delete_source, got: %v", err)
+	}
+}
+
+func TestCompile_DockerPublish_AllowsDeleteSourceFalse(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "docker-publish-no-delete-source",
+		Steps: []JSONStep{
+			{
+				ID:   "publish",
+				Type: "docker_publish",
+				DockerPublish: jsonDockerPublish{
+					Registry:     "ghcr.io",
+					Repository:   "myorg/myapp",
+					Source:       "test-1",
+					Tags:         []string{"latest"},
+					DeleteSource: false,
+				},
+			},
+		},
+	})
+
+	if _, err := Compile(path); err != nil {
+		t.Fatalf("expected delete_source: false to compile fine, got: %v", err)
 	}
 }

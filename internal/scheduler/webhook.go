@@ -353,17 +353,6 @@ func (s *Server) triggerWebhookRun(
 		}
 	}
 
-	pipeline, err := compiler.CompileData(pipelineJSON, pipelinePath)
-	if err != nil {
-		return "", fmt.Errorf("compiling pipeline: %w", err)
-	}
-
-	steps := make([]api.StepDef, len(pipeline.Steps))
-	for i, s := range pipeline.Steps {
-		steps[i] = s.ToAPIStep(nil)
-		injectSCMMetadata(steps[i].Env, meta)
-	}
-
 	runID := newID()
 	workspaceDir := filepath.Join(os.TempDir(), "forge-ws-"+runID[:12])
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
@@ -373,6 +362,17 @@ func (s *Server) triggerWebhookRun(
 
 	if err := s.extractSourceToDir(repoURL, commitSHA, workspaceDir); err != nil {
 		return "", fmt.Errorf("populating workspace from cache: %w", err)
+	}
+
+	pipeline, err := compiler.CompileData(pipelineJSON, filepath.Join(workspaceDir, pipelinePath))
+	if err != nil {
+		return "", fmt.Errorf("compiling pipeline: %w", err)
+	}
+
+	steps := make([]api.StepDef, len(pipeline.Steps))
+	for i, s := range pipeline.Steps {
+		steps[i] = s.ToAPIStep(nil)
+		injectSCMMetadata(steps[i].Env, meta)
 	}
 
 	if proj.OrgID != "" {

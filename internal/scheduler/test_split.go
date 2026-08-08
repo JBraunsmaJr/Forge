@@ -83,6 +83,8 @@ func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName stri
 			if coldStart && i > 0 {
 				// See coldStart above: only shard 1 runs the full suite.
 				shardStep.Env["FORGE_TEST_SHARD_EMPTY"] = "1"
+			} else if !coldStart && len(assignment.Files) == 0 {
+				shardStep.Env["FORGE_TEST_SHARD_EMPTY"] = "1"
 			}
 			expanded = append(expanded, shardStep)
 			shardIDs = append(shardIDs, shardID)

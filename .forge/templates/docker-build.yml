@@ -1,9 +1,9 @@
 name: Docker Build
 image: docker:27-cli
 docker_socket: true
-secrets: [ GITHUB_TOKEN, GITHUB_USER ]
+secrets: [REGISTRY_USERNAME, REGISTRY_PASSWORD]
 timeout: ${{ inputs.timeout }}
 run: |
-  echo "$GITHUB_TOKEN" | docker login ghcr.io -u $GITHUB_USER --password-stdin
+  echo "$REGISTRY_PASSWORD" | docker login ghcr.io -u $REGISTRY_USERNAME --password-stdin
   docker build -t ${{ inputs.image }} -f ${{ inputs.dockerfile }} ${{ inputs.context }}
   docker push ${{ inputs.image }}

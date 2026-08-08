@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/buildnumber"
 	"github.com/JBraunsmaJr/forge/internal/rootcause"
 )
 
@@ -77,6 +79,14 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 		}
 	}
 
+	// Assign this run's build number before inserting it, so the value
+	// can be written in the same INSERT and is immediately available to
+	// stamp into every step's env below (issue #57).
+	buildNumber, buildCounterValue, err := s.assignBuildNumber(tx, p)
+	if err != nil {
+		return "", fmt.Errorf("assign build number: %w", err)
+	}
+
 	// NULL out optional foreign-key-ish columns when empty.
 	nullable := func(v string) any {
 		if v == "" {
@@ -86,9 +96,9 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), nullable(p.ProjectID), p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID),
+		`INSERT INTO runs (id, name, pipeline_name, workspace_dir, applied_step_ids, org_id, project_id, ref, commit_sha, scm_provider, parent_run_id, preferred_agent_id, parent_job_id, build_number, build_counter_value)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		runID, p.Name, pipelineName, p.WorkspaceDir, stepIDsJSON, nullable(p.OrgID), nullable(p.ProjectID), p.Ref, p.CommitSHA, p.SCMProvider, nullable(p.ParentRunID), nullable(p.PreferredAgentID), nullable(p.ParentJobID), buildNumber, buildCounterValue,
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert run: %w", err)
@@ -105,6 +115,16 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	steps = expandedSteps
 
 	for _, step := range steps {
+		// Every step in the run gets the same build number/counter,
+		// including steps expanded from a single matrix: step — they're
+		// all still jobs under this one run, so stamping it here rather
+		// than per-expanded-step covers them automatically.
+		if step.Env == nil {
+			step.Env = make(map[string]string)
+		}
+		step.Env["FORGE_BUILD_NUMBER"] = buildNumber
+		step.Env["FORGE_BUILD_COUNTER"] = strconv.FormatInt(buildCounterValue, 10)
+
 		command := step.Command
 		if len(command) == 0 && step.Run != "" {
 			command = []string{"sh", "-c", step.Run}
@@ -130,6 +150,8 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 					status = string(api.JobStatusApproval)
 				} else if stepType == "release" {
 					status = string(api.JobStatusRelease)
+				} else if stepType == "docker_publish" {
+					status = string(api.JobStatusDockerPublish)
 				} else {
 					status = "queued"
 				}
@@ -182,6 +204,202 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 	return runID, nil
 }
 
+// assignBuildNumber determines the build number and raw counter value
+// for a new run (issue #57).
+//
+//   - Reruns and type: pipeline child runs (both set ParentRunID —
+//     reruns via rerunParams, child runs via SubmitRunParams.ParentRunID
+//     on the same request that also carries ParentJobID) inherit the
+//     parent run's already-assigned build number verbatim. Neither
+//     mints a new counter value: a rerun must reproduce its original
+//     run's build number, and a child run must equal its parent's.
+//   - A run with no ProjectID (no scheduler project context) falls back
+//     to buildnumber.LocalFallback, matching the `forge run` CLI so
+//     pipelines referencing FORGE_BUILD_NUMBER don't fall outside CI.
+//   - Everything else renders the configured format against an
+//     atomically incremented counter, scoped to (project, pipeline,
+//     version key).
+func (s *Store) assignBuildNumber(tx *sql.Tx, p SubmitRunParams) (string, int64, error) {
+	if p.ParentRunID != "" {
+		var buildNumber string
+		var counterValue int64
+		err := tx.QueryRow(`SELECT build_number, build_counter_value FROM runs WHERE id = $1`, p.ParentRunID).Scan(&buildNumber, &counterValue)
+		if err == nil {
+			return buildNumber, counterValue, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", 0, fmt.Errorf("load parent run build number: %w", err)
+		}
+		// Parent run vanished — shouldn't happen, but fall through and
+		// mint a fresh build number rather than failing the submission.
+	}
+
+	if p.ProjectID == "" {
+		return buildnumber.LocalFallback, 0, nil
+	}
+
+	pipelineName := p.PipelineName
+	if pipelineName == "" {
+		pipelineName = p.Name
+	}
+
+	rawFormat, major, minor, _, _, _, err := s.getBuildFormat(tx, p.ProjectID, pipelineName)
+	if err != nil {
+		return "", 0, err
+	}
+	format, err := buildnumber.Parse(rawFormat)
+	if err != nil {
+		// A stored format is validated on save (see SetBuildFormat) and
+		// should never be invalid here, but a corrupt row shouldn't take
+		// down run submission — fall back to the default format instead.
+		format, _ = buildnumber.Parse(buildnumber.DefaultFormat)
+	}
+
+	now := time.Now().UTC()
+	versionKey := format.VersionKey(major, minor, now)
+
+	counterValue, err := s.incrementBuildCounter(tx, p.ProjectID, pipelineName, versionKey)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return format.Render(counterValue, major, minor, now), counterValue, nil
+}
+
+// incrementBuildCounter atomically increments and returns the counter
+// for (projectID, pipelineName, versionKey), starting at 1 the first
+// time that exact scope is seen.
+//
+// The INSERT ... ON CONFLICT ... DO UPDATE runs inside the caller's
+// transaction (SubmitRun's), so Postgres acquires a row-level lock on
+// the (project, pipeline, version_key) row here and holds it until
+// that transaction commits or rolls back — not just for the duration
+// of this one statement, but for every statement SubmitRun runs after
+// it (job inserts included). That's what makes the sequence gap-free
+// and duplicate-free: concurrent SubmitRun calls for the same scope
+// serialize on this row and each get a distinct value. The trade-off
+// is contention, not just "a quick atomic increment" — a second
+// submission for the same project+pipeline+version-key scope blocks
+// here until the first submission's entire transaction finishes, not
+// just until its counter upsert does.
+func (s *Store) incrementBuildCounter(tx *sql.Tx, projectID, pipelineName, versionKey string) (int64, error) {
+	var value int64
+	err := tx.QueryRow(`
+		INSERT INTO build_counters (id, project_id, pipeline_name, version_key, value, updated_at)
+		VALUES ($1, $2, $3, $4, 1, now())
+		ON CONFLICT (project_id, pipeline_name, version_key)
+		DO UPDATE SET value = build_counters.value + 1, updated_at = now()
+		RETURNING value`,
+		newID(), projectID, pipelineName, versionKey,
+	).Scan(&value)
+	if err != nil {
+		return 0, fmt.Errorf("increment build counter: %w", err)
+	}
+	return value, nil
+}
+
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx, letting
+// loadBuildFormat back both the transactional read inside SubmitRun and
+// the plain read used by the build-format API/CLI commands.
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// loadBuildFormat loads the configured format string, major/minor
+// version, and version-tag-filter for a (project, pipeline) scope,
+// defaulting to buildnumber.DefaultFormat and zero values when nothing
+// has been configured.
+func loadBuildFormat(q rowQuerier, projectID, pipelineName string) (format string, major, minor int, source, setBy, tagFilter string, err error) {
+	err = q.QueryRow(
+		`SELECT format, major, minor, version_source, version_set_by, version_tag_filter FROM build_formats WHERE project_id = $1 AND pipeline_name = $2`,
+		projectID, pipelineName,
+	).Scan(&format, &major, &minor, &source, &setBy, &tagFilter)
+	if err == sql.ErrNoRows {
+		return buildnumber.DefaultFormat, 0, 0, "", "", "", nil
+	}
+	if err != nil {
+		return "", 0, 0, "", "", "", fmt.Errorf("load build format: %w", err)
+	}
+	return format, major, minor, source, setBy, tagFilter, nil
+}
+
+// getBuildFormat is loadBuildFormat scoped to SubmitRun's transaction.
+func (s *Store) getBuildFormat(tx *sql.Tx, projectID, pipelineName string) (format string, major, minor int, source, setBy, tagFilter string, err error) {
+	return loadBuildFormat(tx, projectID, pipelineName)
+}
+
+// GetBuildFormat is loadBuildFormat for read paths outside of
+// SubmitRun (the build-format API/CLI commands).
+func (s *Store) GetBuildFormat(projectID, pipelineName string) (format string, major, minor int, source, setBy, tagFilter string, err error) {
+	return loadBuildFormat(s.db, projectID, pipelineName)
+}
+
+// SetBuildFormat validates and persists the format string for a
+// (project, pipeline) scope. Rejecting an invalid format here — before
+// it's ever used to render a build number — is what satisfies "unknown
+// or malformed tokens ... rejected at validation time, not first
+// discovered at run time" for format strings (issue #57).
+func (s *Store) SetBuildFormat(projectID, pipelineName, format string) error {
+	if _, err := buildnumber.Parse(format); err != nil {
+		return fmt.Errorf("invalid format string: %w", err)
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO build_formats (id, project_id, pipeline_name, format, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (project_id, pipeline_name)
+		DO UPDATE SET format = $4, updated_at = now()`,
+		newID(), projectID, pipelineName, format,
+	)
+	if err != nil {
+		return fmt.Errorf("save build format: %w", err)
+	}
+	return nil
+}
+
+// SetVersion explicitly (manually) sets the major/minor version used by
+// %major%/%minor% tokens for a (project, pipeline) scope. actor
+// identifies who made the change for the audit trail. A later matching
+// tag push can still override this value, and a manual set can in turn
+// override a previous tag-derived value — whichever happened most
+// recently wins.
+func (s *Store) SetVersion(projectID, pipelineName string, major, minor int, actor string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO build_formats (id, project_id, pipeline_name, major, minor, version_source, version_set_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5, 'manual', $6, now())
+		ON CONFLICT (project_id, pipeline_name)
+		DO UPDATE SET major = $4, minor = $5, version_source = 'manual', version_set_by = $6, updated_at = now()`,
+		newID(), projectID, pipelineName, major, minor, actor,
+	)
+	if err != nil {
+		return fmt.Errorf("save version: %w", err)
+	}
+	return nil
+}
+
+// SetVersionTagFilter configures the branch/ref filter that restricts
+// which pushed tags are allowed to update the tag-derived major/minor
+// version for a (project, pipeline) scope, so a tag pushed on a stale
+// or feature branch can't unintentionally change mainline builds'
+// version. An empty filter means "the project's default branch".
+//
+// Tag-push-triggered version updates themselves (matching this filter
+// against the pushed ref and applying a semver-derived major/minor) are
+// a webhook-side concern and are not part of this change — see the
+// docker_publish/tag-derived-version follow-up.
+func (s *Store) SetVersionTagFilter(projectID, pipelineName, filter string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO build_formats (id, project_id, pipeline_name, version_tag_filter, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (project_id, pipeline_name)
+		DO UPDATE SET version_tag_filter = $4, updated_at = now()`,
+		newID(), projectID, pipelineName, filter,
+	)
+	if err != nil {
+		return fmt.Errorf("save version tag filter: %w", err)
+	}
+	return nil
+}
+
 // insertJob inserts a single job row inside a transaction.
 func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 	command []string, workDir, stepType string,
@@ -192,6 +410,7 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 
 	pipelineRefJSON := toJSON(step.PipelineRef)
 	releaseConfigJSON := toJSON(step.Release)
+	dockerPublishConfigJSON := toJSON(step.DockerPublish)
 	artifactUploadsJSON := toJSON(step.ArtifactUploads)
 	artifactDownloadsJSON := toJSON(step.ArtifactDownloads)
 
@@ -200,15 +419,15 @@ func insertJob(tx *sql.Tx, runID string, step api.StepDef,
 			id, run_id, step_id, step_type, image, entrypoint, command, work_dir,
 			env, inputs, timeout_ns, depends_on, secret_names,
 			policy_source, condition, always_run, docker_socket, pipeline_ref,
-			release_config, artifact_uploads, artifact_downloads, status,
+			release_config, docker_publish_config, artifact_uploads, artifact_downloads, status,
 			test_report, split, "with"
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
 		jobID, runID, step.ID, stepType, step.Image, toJSON(step.Entrypoint),
 		toJSON(command), workDir,
 		toJSON(step.Env), toJSON(step.Inputs), int64(timeout),
 		toJSON(step.DependsOn), toJSON(step.SecretNames),
 		step.PolicySource, step.Condition, step.AlwaysRun, step.DockerSocket, pipelineRefJSON,
-		releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
+		releaseConfigJSON, dockerPublishConfigJSON, artifactUploadsJSON, artifactDownloadsJSON,
 		status, step.TestReport, toJSON(step.Split), toJSON(step.With),
 	)
 	return err
@@ -256,6 +475,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 			jobs.always_run,
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.docker_publish_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
@@ -315,6 +535,7 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 			jobs.always_run,
 			COALESCE(jobs.pipeline_ref::text, 'null'),
 			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.docker_publish_config::text, 'null'),
 			COALESCE(jobs.artifact_uploads::text,   '[]'),
 			COALESCE(jobs.artifact_downloads::text, '[]'),
 			runs.workspace_dir,
@@ -329,12 +550,76 @@ func (s *Store) LeaseReleaseJob() (*api.JobSpec, bool) {
 	return s.scanJobSpec(row, leaseID)
 }
 
+// LeaseDockerPublishJob atomically finds and claims the next queued
+// docker_publish job, mirroring LeaseReleaseJob: docker_publish steps
+// execute on the scheduler like release steps do, never requiring an
+// agent or docker_socket (issue #57).
+func (s *Store) LeaseDockerPublishJob() (*api.JobSpec, bool) {
+	leaseID := newID()
+	now := time.Now()
+
+	row := s.db.QueryRow(`
+		WITH next AS (
+			SELECT id FROM jobs
+			WHERE  status = 'docker_publish'
+			LIMIT  1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs
+		SET    status       = 'running',
+		       lease_id     = $1,
+		       agent_id     = 'scheduler',
+		       leased_at    = $2,
+		       heartbeat_at = $2,
+		       started_at   = $2
+		FROM   next, runs
+		WHERE  jobs.id = next.id AND jobs.run_id = runs.id
+		RETURNING
+			jobs.id, jobs.run_id, jobs.step_id, jobs.image, jobs.entrypoint,
+			jobs.command, jobs.work_dir, jobs.env, jobs.inputs,
+			jobs.timeout_ns, jobs.secret_names, jobs.step_type,
+			jobs.docker_socket,
+			COALESCE(jobs.condition, ''),
+			jobs.always_run,
+			COALESCE(jobs.pipeline_ref::text, 'null'),
+			COALESCE(jobs.release_config::text, 'null'),
+			COALESCE(jobs.docker_publish_config::text, 'null'),
+			COALESCE(jobs.artifact_uploads::text,   '[]'),
+			COALESCE(jobs.artifact_downloads::text, '[]'),
+			runs.workspace_dir,
+			runs.applied_step_ids,
+			jobs.test_report,
+			COALESCE(jobs.split::text, 'null'),
+			COALESCE(jobs."with"::text, '{}')
+		`,
+		leaseID, now,
+	)
+
+	return s.scanJobSpec(row, leaseID)
+}
+
+// SetDockerPublishResult persists a docker_publish step's outcome —
+// tags applied, deletion outcome, and any warnings — so it's
+// retrievable per-job via RunDetail (the CLI's forge status and the
+// UI's step detail panel), not just from job logs (issue #57).
+func (s *Store) SetDockerPublishResult(jobID string, result api.DockerPublishResult) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal docker_publish result: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE jobs SET docker_publish_result = $1 WHERE id = $2`, data, jobID); err != nil {
+		return fmt.Errorf("save docker_publish result: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	var (
 		jobID, runID, stepID, image, stepType      string
 		entrypointJSON, commandJSON, envJSON       []byte
 		inputsJSON, secretsJSON                    []byte
 		pipelineRefJSON, releaseConfigJSON         string
+		dockerPublishConfigJSON                    string
 		artifactUploadsJSON, artifactDownloadsJSON string
 		workDir, workspaceDir                      string
 		appliedStepIDsJSON                         []byte
@@ -354,6 +639,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		&alwaysRun,
 		&pipelineRefJSON,
 		&releaseConfigJSON,
+		&dockerPublishConfigJSON,
 		&artifactUploadsJSON, &artifactDownloadsJSON,
 		&workspaceDir,
 		&appliedStepIDsJSON,
@@ -387,6 +673,11 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 	var releaseConfig *api.ReleaseConfig
 	if releaseConfigJSON != "null" && releaseConfigJSON != "" {
 		json.Unmarshal([]byte(releaseConfigJSON), &releaseConfig)
+	}
+
+	var dockerPublishConfig *api.DockerPublishConfig
+	if dockerPublishConfigJSON != "null" && dockerPublishConfigJSON != "" {
+		json.Unmarshal([]byte(dockerPublishConfigJSON), &dockerPublishConfig)
 	}
 
 	var artifactUploads []api.ArtifactUploadSpec
@@ -440,6 +731,7 @@ func (s *Store) scanJobSpec(row *sql.Row, leaseID string) (*api.JobSpec, bool) {
 		RepoURL:           repoURL,
 		PipelineRef:       pipelineRef,
 		Release:           releaseConfig,
+		DockerPublish:     dockerPublishConfig,
 		ArtifactUploads:   artifactUploads,
 		ArtifactDownloads: artifactDownloads,
 		TestReport:        testReport,
@@ -722,7 +1014,7 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 				break
 			}
 
-			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "waiting" || dep.status == "approval" || dep.status == "release" {
+			if dep.status == "pending" || dep.status == "queued" || dep.status == "running" || dep.status == "waiting" || dep.status == "approval" || dep.status == "release" || dep.status == "docker_publish" {
 				allFinished = false
 				break
 			}
@@ -762,6 +1054,8 @@ func (s *Store) unlockDownstream(tx *sql.Tx, runID string) error {
 						newStatus = string(api.JobStatusApproval)
 					} else if job.stepType == "release" {
 						newStatus = string(api.JobStatusRelease)
+					} else if job.stepType == "docker_publish" {
+						newStatus = string(api.JobStatusDockerPublish)
 					} else {
 						newStatus = string(api.JobStatusQueued)
 					}
@@ -937,15 +1231,16 @@ func (s *Store) RunStatus(runID string) (*api.RunStatus, bool) {
 		ids = []string{}
 	}
 
-	var name string
-	s.db.QueryRow(`SELECT name FROM runs WHERE id=$1`, runID).Scan(&name)
+	var name, buildNumber string
+	s.db.QueryRow(`SELECT name, build_number FROM runs WHERE id=$1`, runID).Scan(&name, &buildNumber)
 
 	return &api.RunStatus{
-		RunID:  runID,
-		Name:   name,
-		Status: overallStatus(statuses),
-		Jobs:   statuses,
-		JobIDs: ids,
+		RunID:       runID,
+		Name:        name,
+		BuildNumber: buildNumber,
+		Status:      overallStatus(statuses),
+		Jobs:        statuses,
+		JobIDs:      ids,
 	}, true
 }
 
@@ -965,7 +1260,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 
 	rows, err := s.db.Query(`
 		WITH aggregated AS (
-			SELECT r.id, r.name, r.created_at,
+			SELECT r.id, r.name, r.created_at, r.build_number,
 			       COUNT(j.id) AS job_count,
 			       CASE 
 			           WHEN bool_or(j.status IN ('running', 'waiting', 'queued', 'release')) THEN 'running'
@@ -978,9 +1273,9 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 			FROM   runs r
 			LEFT   JOIN jobs j ON j.run_id = r.id
 			WHERE  ($1 = '' OR LOWER(r.name) LIKE '%' || LOWER($1) || '%')
-			GROUP  BY r.id, r.name, r.created_at
+			GROUP  BY r.id, r.name, r.created_at, r.build_number
 		)
-		SELECT id, name, created_at, job_count, status
+		SELECT id, name, created_at, job_count, status, build_number
 		FROM   aggregated
 		WHERE  ($4 = '' OR status = $4)
 		ORDER  BY created_at DESC
@@ -995,7 +1290,7 @@ func (s *Store) ListRuns(opts ListRunsOptions) []api.RunSummary {
 	for rows.Next() {
 		var r api.RunSummary
 		var status string
-		if err := rows.Scan(&r.RunID, &r.Name, &r.CreatedAt, &r.JobCount, &status); err != nil {
+		if err := rows.Scan(&r.RunID, &r.Name, &r.CreatedAt, &r.JobCount, &status, &r.BuildNumber); err != nil {
 			continue
 		}
 		r.Status = api.JobStatus(status)
@@ -1009,8 +1304,8 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	detail := &api.RunDetail{RunID: runID}
 	var orgID, projectID, commitSHA, scmProvider, parentRunID sql.NullString
 	err := s.db.QueryRow(
-		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider, parent_run_id FROM runs WHERE id=$1`, runID,
-	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider, &parentRunID)
+		`SELECT name, created_at, org_id, project_id, commit_sha, scm_provider, parent_run_id, build_number FROM runs WHERE id=$1`, runID,
+	).Scan(&detail.Name, &detail.CreatedAt, &orgID, &projectID, &commitSHA, &scmProvider, &parentRunID, &detail.BuildNumber)
 	if err != nil {
 		return nil, false
 	}
@@ -1034,7 +1329,8 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 	rows, err := s.db.Query(`
 		SELECT j.id, j.step_id, j.status, j.depends_on,
 		       j.duration_ms, j.timeout_ns, j.started_at, j.finished_at, j.exit_code, j.policy_source, r.id,
-		       rc.category, rc.pattern_id, rc.description, rc.matched_line, rc.suggested_fix
+		       rc.category, rc.pattern_id, rc.description, rc.matched_line, rc.suggested_fix,
+		       COALESCE(j.docker_publish_config::text, 'null'), COALESCE(j.docker_publish_result::text, 'null')
 		FROM   jobs j
 		LEFT JOIN runs r ON r.parent_job_id = j.id
 		LEFT JOIN job_root_causes rc ON rc.job_id = j.id
@@ -1050,9 +1346,11 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 		var depsJSON []byte
 		var childRunID sql.NullString
 		var rcCategory, rcPatternID, rcDescription, rcMatchedLine, rcSuggestedFix sql.NullString
+		var dockerPublishConfigJSON, dockerPublishResultJSON string
 		rows.Scan(&j.JobID, &j.StepID, &j.Status, &depsJSON,
 			&j.DurationMs, &j.TimeoutNS, &j.StartedAt, &j.FinishedAt, &j.ExitCode, &j.PolicySource, &childRunID,
-			&rcCategory, &rcPatternID, &rcDescription, &rcMatchedLine, &rcSuggestedFix)
+			&rcCategory, &rcPatternID, &rcDescription, &rcMatchedLine, &rcSuggestedFix,
+			&dockerPublishConfigJSON, &dockerPublishResultJSON)
 		json.Unmarshal(depsJSON, &j.DependsOn)
 		if j.DependsOn == nil {
 			j.DependsOn = []string{}
@@ -1068,6 +1366,12 @@ func (s *Store) RunDetail(runID string) (*api.RunDetail, bool) {
 				MatchedLine:  rcMatchedLine.String,
 				SuggestedFix: rcSuggestedFix.String,
 			}
+		}
+		if dockerPublishConfigJSON != "null" && dockerPublishConfigJSON != "" {
+			json.Unmarshal([]byte(dockerPublishConfigJSON), &j.DockerPublish)
+		}
+		if dockerPublishResultJSON != "null" && dockerPublishResultJSON != "" {
+			json.Unmarshal([]byte(dockerPublishResultJSON), &j.DockerPublishResult)
 		}
 		jobs = append(jobs, j)
 		statuses = append(statuses, j.Status)
@@ -1355,6 +1659,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 	hasQueued := false
 	hasApproval := false
 	hasRelease := false
+	hasDockerPublish := false
 	hasPending := false
 	hasFailed := false
 	hasCanceled := false
@@ -1371,6 +1676,8 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 			hasApproval = true
 		case api.JobStatusRelease:
 			hasRelease = true
+		case api.JobStatusDockerPublish:
+			hasDockerPublish = true
 		case api.JobStatusPending:
 			hasPending = true
 		case api.JobStatusFailed, api.JobStatusTimedOut:
@@ -1380,7 +1687,7 @@ func overallStatus(statuses []api.JobStatus) api.JobStatus {
 		}
 	}
 
-	if hasRunning || hasWaiting || hasQueued || hasRelease {
+	if hasRunning || hasWaiting || hasQueued || hasRelease || hasDockerPublish {
 		return api.JobStatusRunning
 	}
 	if hasApproval {

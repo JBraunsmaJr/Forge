@@ -25,6 +25,9 @@ type Step struct {
 	// Release holds configuration for SCM releases (GitHub/GitLab).
 	// Only used if Type == "release".
 	Release *ReleaseConfig
+	// DockerPublish holds configuration for promoting an image's tags.
+	// Only used if Type == "docker_publish".
+	DockerPublish *DockerPublishConfig
 	// PipelineRef is non-nil when Type == "pipeline".
 	PipelineRef *PipelineRef
 	ID          string // unique within the pipeline, e.g. "lint"
@@ -105,6 +108,17 @@ type ReleaseConfig struct {
 	Artifacts []string // Names of artifacts to attach to the release
 }
 
+// DockerPublishConfig holds parameters for a docker_publish step:
+// promoting an already-pushed image to one or more new tags without
+// rebuilding it (issue #57).
+type DockerPublishConfig struct {
+	Registry     string   // e.g. "ghcr.io", "docker.io"
+	Repository   string   // e.g. "myorg/myapp"
+	Source       string   // the tag being promoted from
+	Tags         []string // the tag(s) being promoted to
+	DeleteSource bool     // remove the source tag after successful promotion
+}
+
 func (p *Pipeline) ToAPISteps(variables map[string]string) []api.StepDef {
 	steps := make([]api.StepDef, len(p.Steps))
 	for i, s := range p.Steps {
@@ -150,6 +164,17 @@ func (s *Step) ToAPIStep(variables map[string]string) api.StepDef {
 		}
 	}
 
+	var dockerPublish *api.DockerPublishConfig
+	if s.DockerPublish != nil {
+		dockerPublish = &api.DockerPublishConfig{
+			Registry:     s.DockerPublish.Registry,
+			Repository:   s.DockerPublish.Repository,
+			Source:       s.DockerPublish.Source,
+			Tags:         s.DockerPublish.Tags,
+			DeleteSource: s.DockerPublish.DeleteSource,
+		}
+	}
+
 	env := make(map[string]string)
 	for k, v := range s.Env {
 		env[k] = v
@@ -177,6 +202,7 @@ func (s *Step) ToAPIStep(variables map[string]string) api.StepDef {
 		ArtifactDownloads: downloads,
 		PipelineRef:       pipelineRef,
 		Release:           release,
+		DockerPublish:     dockerPublish,
 		Split:             s.Split,
 		TestReport:        s.TestReport,
 		With:              s.With,
