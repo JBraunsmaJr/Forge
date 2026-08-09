@@ -57,7 +57,7 @@
 </script>
 
 <g class="edges">
-    {#each resolvedJobs as j}
+    {#each resolvedJobs as j (j.job_id)}
         {#if layout.positions[j.job_id]}
             {#each j.depends_on || [] as depStep}
                 {#if byStep[depStep] && layout.positions[byStep[depStep].job_id]}
@@ -84,7 +84,7 @@
 </g>
 
 <g class="nodes">
-    {#each resolvedJobs as j}
+    {#each resolvedJobs as j (j.job_id)}
         {#if layout.positions[j.job_id]}
             {@const pos = layout.positions[j.job_id]}
             {@const c = STATUS_COLORS[j.status] || STATUS_COLORS.pending}
