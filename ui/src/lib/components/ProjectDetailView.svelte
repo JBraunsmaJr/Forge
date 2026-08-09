@@ -88,7 +88,7 @@
         saveError = '';
         savedMsg = '';
         try {
-            const req: any = {
+            const req: Parameters<typeof api.updateProject>[1] = {
                 name: form.name,
                 repo_url: form.repo_url,
                 pipeline_path: form.pipeline_path,
@@ -103,7 +103,8 @@
             const success = await api.updateProject(project.id, req);
             if (success) {
                 savedMsg = 'Saved.';
-                project = { ...project, ...req };
+                const { scm_token, ...persisted } = req;
+                project = { ...project, ...persisted };
                 form.scm_token = '';
                 dispatch('updated', project);
             } else {
@@ -120,7 +121,8 @@
     async function confirmDelete() {
         deleting = true;
         try {
-            await api.deleteProject(project.id);
+            const success = await api.deleteProject(project.id);
+            if (!success) throw new Error('Delete request failed');
             dispatch('deleted', project.id);
         } catch (e) {
             console.error('Failed to delete project:', e);
@@ -149,8 +151,8 @@
                         {project.repo_url}
                         <ExternalLink size={12} />
                     </a>
+                    <span class="dot-sep">·</span>
                 {/if}
-                <span class="dot-sep">·</span>
                 <span>Org: {orgs.find(o => o.id === project.org_id)?.name || 'None'}</span>
                 <span class="dot-sep">·</span>
                 <span>Created {new Date(project.created_at).toLocaleDateString()}</span>

@@ -121,7 +121,7 @@
         flex: 1;
         position: relative;
     }
-    :global(.search-icon) {
+    .input-wrapper :global(.search-icon) {
         position: absolute;
         left: 12px;
         top: 50%;

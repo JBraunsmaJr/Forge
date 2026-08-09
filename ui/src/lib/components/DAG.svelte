@@ -61,7 +61,13 @@
     // running. Shared by the manual-click path (onTogglePipeline) and
     // the auto-expand-on-load path below, so both stay in sync with
     // exactly the same fetch/cache/socket behavior.
-    async function ensurePipelineExpanded(j: Job, depth = 0): Promise<void> {
+    let expansionGeneration = 0;
+
+    async function ensurePipelineExpanded(
+        j: Job,
+        depth = 0,
+        generation = expansionGeneration,
+    ): Promise<void> {
         autoExpandConsidered.add(j.job_id);
         expandedPipelineJobs.add(j.job_id);
         expandedPipelineJobs = expandedPipelineJobs;
@@ -71,16 +77,28 @@
         if (!detail && !loadingChildRuns.has(j.child_run_id)) {
             loadingChildRuns.add(j.child_run_id);
             loadingChildRuns = loadingChildRuns;
-            const fetched = await api.runDetail(j.child_run_id);
-            loadingChildRuns.delete(j.child_run_id);
-            loadingChildRuns = loadingChildRuns;
-            if (fetched) {
-                childRunCache = { ...childRunCache, [j.child_run_id]: fetched };
-                detail = fetched;
+            let fetched: RunDetail | null = null;
+            try {
+                fetched = await api.runDetail(j.child_run_id);
+            } catch {
+                fetched = null;
+            } finally {
+                loadingChildRuns.delete(j.child_run_id);
+                loadingChildRuns = loadingChildRuns;
             }
+            if (generation !== expansionGeneration) return;
+            if (!fetched) {
+                expandedPipelineJobs.delete(j.job_id);
+                expandedPipelineJobs = expandedPipelineJobs;
+                autoExpandConsidered.delete(j.job_id);
+                return;
+            }
+            childRunCache = { ...childRunCache, [j.child_run_id]: fetched };
+            detail = fetched;
         }
         if (!detail) return;
 
+        if (generation !== expansionGeneration) return;
         if (detail.status !== 'passed' && detail.status !== 'failed') {
             openChildSocket(j.child_run_id);
         }
@@ -93,7 +111,7 @@
         if (depth + 1 < MAX_NEST_DEPTH) {
             for (const childJob of detail.jobs) {
                 if (childJob.child_run_id) {
-                    ensurePipelineExpanded(childJob, depth + 1);
+                    ensurePipelineExpanded(childJob, depth + 1, generation);
                 }
             }
         }
@@ -119,6 +137,7 @@
 
     let lastRunID: string | undefined;
     $: if ($activeRun?.run_id !== lastRunID) {
+        expansionGeneration += 1;
         lastRunID = $activeRun?.run_id;
         for (const runID of Object.keys(childSockets)) closeChildSocket(runID);
         expandedPipelineJobs = new Set();

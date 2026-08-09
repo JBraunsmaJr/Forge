@@ -186,7 +186,7 @@
         align-items: center;
         gap: 12px;
     }
-    :global(.header-icon) {
+    .title-section :global(.header-icon) {
         color: var(--accent);
     }
     h1 {

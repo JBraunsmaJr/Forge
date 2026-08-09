@@ -474,10 +474,8 @@
         padding: 2px 6px 2px 7px;
         border-radius: 10px;
         flex-shrink: 0;
-        cursor: pointer;
         font-family: inherit;
     }
-    .health-badge:hover { filter: brightness(1.2); }
     .color-warning { color: #e79504;}
     .color-bad { color: #f85149; }
     .color-info { color: #478bea;}

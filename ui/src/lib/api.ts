@@ -360,14 +360,14 @@ export const api = {
             body: JSON.stringify(req),
         }).then(r => r?.ok ? r.json() : null);
     },
-    updateProject: (id: string, req: { name?: string, repo_url?: string, pipeline_path?: string, scm_token?: string, branch_filter?: string[], org_id?: string }): Promise<boolean> =>
+    updateProject: (id: string, req: { name?: string, repo_url?: string, pipeline_path?: string, cron?: string, scheduled_pipeline_path?: string, scm_token?: string, branch_filter?: string[], org_id?: string }): Promise<boolean> =>
         fetchAuth(`/api/v1/projects/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(req),
         }).then(r => r?.status === 204),
-    deleteProject: (id: string): Promise<void> =>
-        fetchAuth(`/api/v1/projects/${id}`, { method: 'DELETE' }).then(() => {}),
+    deleteProject: (id: string): Promise<boolean> =>
+        fetchAuth(`/api/v1/projects/${id}`, { method: 'DELETE' }).then(r => !!r?.ok),
     // Admin-only: reveals the webhook URLs and secret for a project so it
     // can be (re-)configured in the SCM provider (issue #55).
     getProjectWebhook: (id: string): Promise<{ ok: boolean, status: number, data: ProjectWebhook | null }> =>
