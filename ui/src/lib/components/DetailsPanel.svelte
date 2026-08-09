@@ -288,7 +288,7 @@
     .shard-actual-passed { color: var(--ok, #4caf50); }
     .shard-actual-failed { color: var(--err, #f44336); }
 
-    .shard-est { font-size: 11px; color: var(--muted); font-weight: 600; }
+    .shard-est { font-size: var(--font-xs); color: var(--muted); font-weight: 600; }
     .shard-files {
         padding: 12px 14px;
         font-family: var(--font-mono);
@@ -332,7 +332,7 @@
         border: none;
         color: var(--muted);
         padding: 10px 16px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-weight: 700;
         text-transform: uppercase;
         cursor: pointer;
@@ -360,7 +360,7 @@
         color: white;
         border: none;
         padding: 4px 12px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-weight: 700;
         border-radius: 4px;
         cursor: pointer;
@@ -397,11 +397,11 @@
     }
     .ttl {
         font-family: var(--font-mono);
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
     }
     .status {
-        font-size: 11px;
+        font-size: var(--font-xs);
         display: flex;
         align-items: center;
         gap: 6px;
@@ -422,7 +422,7 @@
         border: 1px solid var(--border);
         color: var(--muted);
         padding: 4px 10px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-weight: 600;
         border-radius: 4px;
         cursor: pointer;

@@ -360,7 +360,7 @@ export const api = {
             body: JSON.stringify(req),
         }).then(r => r?.ok ? r.json() : null);
     },
-    updateProject: (id: string, req: { name?: string, repo_url?: string, pipeline_path?: string, scm_token?: string, branch_filter?: string[] }): Promise<boolean> =>
+    updateProject: (id: string, req: { name?: string, repo_url?: string, pipeline_path?: string, scm_token?: string, branch_filter?: string[], org_id?: string }): Promise<boolean> =>
         fetchAuth(`/api/v1/projects/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },

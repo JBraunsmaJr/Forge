@@ -186,7 +186,7 @@
         align-items: center;
         gap: 12px;
     }
-    .header-icon {
+    :global(.header-icon) {
         color: var(--accent);
     }
     h1 {
@@ -274,7 +274,7 @@
         white-space: pre-wrap;
         word-break: break-all;
         font-family: monospace;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         max-width: 300px;
     }
@@ -282,12 +282,5 @@
         text-align: center;
         padding: 64px;
         color: var(--muted);
-    }
-    .spin {
-        animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
     }
 </style>

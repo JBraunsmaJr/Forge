@@ -9,7 +9,7 @@ export const connStatus = writable<'idle' | 'connecting' | 'live' | 'reconnectin
 export const authRequired = writable(false);
 export const currentUser = writable<User | null>(null);
 
-export type View = 'runs' | 'projects' | 'orgs' | 'policies' | 'tokens' | 'agents' | 'editor' | 'search';
+export type View = 'runs' | 'projects' | 'orgs' | 'policies' | 'tokens' | 'agents' | 'editor' | 'search' | 'audit';
 export const currentView = writable<View>('runs');
 export const sidebarOpen = writable(false);
 export const navigateToRunID = writable<string | null>(null);

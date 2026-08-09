@@ -136,6 +136,13 @@ func (p *ProjectStore) UpdateProject(id string, req api.UpdateProjectRequest) er
 		}
 		updates["branch_filter"] = datatypes.JSON(branchFilterJSON)
 	}
+	if req.OrgID != nil {
+		if *req.OrgID == "" {
+			updates["org_id"] = nil
+		} else {
+			updates["org_id"] = *req.OrgID
+		}
+	}
 
 	if len(updates) > 0 {
 		return p.gdb.Model(&project).Updates(updates).Error

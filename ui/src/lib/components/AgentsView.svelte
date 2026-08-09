@@ -170,7 +170,7 @@
     .code-header {
         background: #222;
         padding: 8px 16px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: #888;
         border-bottom: 1px solid #333;
     }
@@ -226,7 +226,7 @@
         color: var(--text);
     }
     .status-badge {
-        font-size: 10px;
+        font-size: var(--font-2xs);
         text-transform: uppercase;
         font-weight: 700;
         padding: 2px 6px;
@@ -236,7 +236,7 @@
     .status-badge.offline { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
     
     .last-seen {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
     }
     .metrics-row {
@@ -250,7 +250,7 @@
         gap: 4px;
         color: var(--muted);
     }
-    .metric .label { font-size: 10px; text-transform: uppercase; }
+    .metric .label { font-size: var(--font-2xs); text-transform: uppercase; }
     .metric .value { font-size: 14px; color: var(--text); font-weight: 600; }
     
     .labels {
@@ -261,7 +261,7 @@
         padding-top: 12px;
     }
     .tag {
-        font-size: 10px;
+        font-size: var(--font-2xs);
         background: var(--surface2);
         color: var(--muted);
         padding: 2px 6px;

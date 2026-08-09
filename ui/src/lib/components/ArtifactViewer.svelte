@@ -120,20 +120,20 @@
     #artifact-panel.visible { display: flex; }
     #artifact-header { display: flex; align-items: center; gap: 10px; padding: 6px 16px;
         border-bottom: 1px solid var(--border); flex-shrink: 0; }
-    #artifact-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px;
+    #artifact-header h2 { font-size: var(--font-xs); font-weight: 600; letter-spacing: 1px;
         color: var(--muted); text-transform: uppercase; }
-    #artifact-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+    #artifact-count { font-size: var(--font-xs); color: var(--muted); margin-left: auto; }
     #artifact-body { flex: 1; overflow-y: auto; padding: 8px 16px; font-size: 12px; font-family: var(--font-mono); }
     #artifact-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
     .artifact-row { display: flex; align-items: center; gap: 12px; padding: 4px 0;
         border-bottom: 1px solid var(--border); }
     .artifact-row:last-child { border-bottom: none; }
     .artifact-name { color: var(--text); flex: 1; }
-    .artifact-size { color: var(--muted); font-size: 11px; }
+    .artifact-size { color: var(--muted); font-size: var(--font-xs); }
     .artifact-actions { display: flex; align-items: center; gap: 8px; }
-    .artifact-view { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11px; padding: 0; }
+    .artifact-view { background: none; border: none; color: var(--accent); cursor: pointer; font-size: var(--font-xs); padding: 0; }
     .artifact-view:hover { text-decoration: underline; }
-    .artifact-dl { color: var(--accent); text-decoration: none; font-size: 11px; }
+    .artifact-dl { color: var(--accent); text-decoration: none; font-size: var(--font-xs); }
     .artifact-dl:hover { text-decoration: underline; }
 
     .artifact-viewer-modal {
