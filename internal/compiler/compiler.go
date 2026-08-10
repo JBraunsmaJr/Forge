@@ -116,7 +116,14 @@ func Compile(path string) (*pipeline.Pipeline, error) {
 // CompileData parses pipeline data (JSON or YAML) and returns the canonical IR.
 // The filename is used to determine the format (via extension).
 func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
-	p, err := compileDataNoValidate(data, filename)
+	return CompileDataWithResolver(data, filename, nil)
+}
+
+// CompileDataWithResolver is CompileData with an optional step registry
+// resolver. It is primarily useful to embedders and tests which need to use a
+// private registry or a local HTTP server.
+func CompileDataWithResolver(data []byte, filename string, resolver StepResolver) (*pipeline.Pipeline, error) {
+	p, err := compileDataNoValidate(data, filename, resolver)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +137,7 @@ func CompileData(data []byte, filename string) (*pipeline.Pipeline, error) {
 // parsing, uses: template resolution, matrix expansion, With substitution,
 // per-step compilation — except the final p.Validate() gate (duplicate
 // IDs, dangling depends_on, cycles).
-func compileDataNoValidate(data []byte, filename string) (*pipeline.Pipeline, error) {
+func compileDataNoValidate(data []byte, filename string, resolver StepResolver) (*pipeline.Pipeline, error) {
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == ".yml" || ext == ".yaml" {
 		var err error
@@ -138,6 +145,13 @@ func compileDataNoValidate(data []byte, filename string) (*pipeline.Pipeline, er
 		if err != nil {
 			return nil, fmt.Errorf("parsing YAML pipeline %s: %w", filename, err)
 		}
+	}
+	// `with` values are user-facing template parameters. Keep them as strings
+	// in the compiler IR even when YAML authors use convenient scalar syntax
+	// such as `enabled: true` or `retries: 3`.
+	data, normalizeErr := normalizeWithValues(data)
+	if normalizeErr != nil {
+		return nil, fmt.Errorf("normalizing step inputs: %w", normalizeErr)
 	}
 
 	var jp jsonPipeline
@@ -159,8 +173,17 @@ func compileDataNoValidate(data []byte, filename string) (*pipeline.Pipeline, er
 		originalID := js.ID
 		var toCompile []JSONStep
 
-		if js.Uses != "" && (strings.HasPrefix(js.Uses, ".") || filepath.IsAbs(js.Uses)) {
-			resolved, err := resolveUses(js, filename)
+		if js.Uses != "" {
+			var resolved []JSONStep
+			var err error
+			if strings.HasPrefix(js.Uses, ".") || filepath.IsAbs(js.Uses) {
+				resolved, err = resolveUses(js, filename)
+			} else {
+				if resolver == nil {
+					resolver = NewHTTPStepResolverFromEnv()
+				}
+				resolved, err = resolver.Resolve(js)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("step %q uses %q: %w", js.ID, js.Uses, err)
 			}
@@ -230,6 +253,31 @@ func compileDataNoValidate(data []byte, filename string) (*pipeline.Pipeline, er
 	}
 
 	return p, nil
+}
+
+func normalizeWithValues(data []byte) ([]byte, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	if steps, ok := raw["steps"].([]any); ok {
+		for _, item := range steps {
+			step, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			with, ok := step["with"].(map[string]any)
+			if !ok {
+				continue
+			}
+			for key, value := range with {
+				if _, isString := value.(string); !isString {
+					with[key] = fmt.Sprint(value)
+				}
+			}
+		}
+	}
+	return json.Marshal(raw)
 }
 
 func resolveUses(js JSONStep, currentFile string) ([]JSONStep, error) {
