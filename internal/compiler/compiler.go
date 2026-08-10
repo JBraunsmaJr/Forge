@@ -2,6 +2,7 @@
 package compiler
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -256,8 +257,14 @@ func compileDataNoValidate(data []byte, filename string, resolver StepResolver) 
 }
 
 func normalizeWithValues(data []byte) ([]byte, error) {
+	// UseNumber preserves large integers exactly as written (e.g. a
+	// build number like 9007199254740993) instead of round-tripping
+	// them through float64, which silently loses precision above
+	// 2^53.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := decoder.Decode(&raw); err != nil {
 		return nil, err
 	}
 	if steps, ok := raw["steps"].([]any); ok {
@@ -271,8 +278,18 @@ func normalizeWithValues(data []byte) ([]byte, error) {
 				continue
 			}
 			for key, value := range with {
-				if _, isString := value.(string); !isString {
+				switch value := value.(type) {
+				case string:
+					// already the canonical shape, leave as-is
+				case bool, json.Number:
 					with[key] = fmt.Sprint(value)
+				default:
+					// arrays, objects, and null have no defined
+					// string representation for a `with:` input —
+					// fail loudly instead of silently coercing them
+					// (e.g. Sprint-ing a map) into something a step
+					// author never intended.
+					return nil, fmt.Errorf("step input %q must be a scalar string, number, or boolean", key)
 				}
 			}
 		}

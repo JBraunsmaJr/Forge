@@ -83,8 +83,16 @@
             } catch {
                 fetched = null;
             } finally {
-                loadingChildRuns.delete(j.child_run_id);
-                loadingChildRuns = loadingChildRuns;
+                // Only clear this generation's own loading flag. A stale
+                // request finishing after a later generation started must
+                // not clear the flag the new generation just set for the
+                // same run — otherwise a fast navigate-away-and-back
+                // arrives with a loading entry from the wrong generation
+                // and the current fetch is dropped as "already loading".
+                if (generation === expansionGeneration) {
+                    loadingChildRuns.delete(j.child_run_id);
+                    loadingChildRuns = loadingChildRuns;
+                }
             }
             if (generation !== expansionGeneration) return;
             if (!fetched) {
@@ -143,6 +151,11 @@
         expandedPipelineJobs = new Set();
         autoExpandConsidered = new Set();
         childRunCache = {};
+        // Also reset per-generation loading state, otherwise a
+        // still-in-flight request from before this navigation can be
+        // mistaken for "already loading" under the new generation and
+        // block the new fetch from ever starting.
+        loadingChildRuns = new Set();
         // Always show child pipeline structure, live or historical —
         // not just when a user happens to click to expand it while
         // watching a run execute.
