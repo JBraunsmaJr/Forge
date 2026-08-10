@@ -66,7 +66,7 @@
     }
     .rc-badge {
         margin-left: auto;
-        font-size: 10px;
+        font-size: var(--font-2xs);
         padding: 2px 8px;
         border-radius: 4px;
         font-weight: 700;
@@ -87,7 +87,7 @@
     }
     .rc-matched-line code {
         font-family: var(--font-mono);
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         white-space: pre;
     }
@@ -95,7 +95,7 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         margin-bottom: 8px;
     }

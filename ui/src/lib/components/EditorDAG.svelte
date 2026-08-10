@@ -23,7 +23,7 @@
     }
 
     const LABEL_MAX_CHARS = Math.max(4, Math.floor((NODE_W - 45 - 10) / 8.5));
-    const SUB_MAX_CHARS = Math.max(4, Math.floor((NODE_W - 45 - 10) / 6));
+    const SUB_MAX_CHARS = Math.max(4, Math.floor((NODE_W - 45 - 10) / 6.5)); // 6.5: matches the 11px->12px node-type font bump
 
     const TYPE_COLORS: Record<string, any> = {
         command:   { fill: '#0d1117', stroke: '#3fb950', text: '#3fb950', icon: Cpu },
@@ -226,7 +226,7 @@
         font-weight: 600;
     }
     .node-type {
-        font-size: 11px;
+        font-size: 12px;
     }
     svg {
         display: block;

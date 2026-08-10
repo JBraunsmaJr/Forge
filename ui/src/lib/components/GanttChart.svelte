@@ -78,7 +78,7 @@
         border-top: 1px solid var(--border);
     }
     .gantt-container h3 {
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-weight: 600;
         letter-spacing: 1px;
         color: var(--muted);
@@ -130,7 +130,7 @@
     }
     .gantt-duration {
         width: 60px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         text-align: right;
     }

@@ -128,9 +128,9 @@
     #log-panel.no-header { height: 100%; border-top: none; flex: 1; flex-shrink: 1; }
     #log-header { display: flex; align-items: center; gap: 10px; padding: 8px 16px;
         border-bottom: 1px solid var(--border); flex-shrink: 0; }
-    #log-header h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--muted);
+    #log-header h2 { font-size: var(--font-xs); font-weight: 600; letter-spacing: 1px; color: var(--muted);
         text-transform: uppercase; }
-    #log-job-id { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+    #log-job-id { font-family: var(--font-mono); font-size: var(--font-xs); color: var(--accent); }
     #log-body { flex: 1; overflow-y: auto; padding: 8px 0; }
     .log-line { display: flex; gap: 12px; padding: 2px 16px; font-family: var(--font-mono);
         font-size: 12px; line-height: 1.6; }

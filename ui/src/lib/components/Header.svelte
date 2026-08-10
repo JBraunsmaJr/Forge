@@ -131,7 +131,7 @@
         font-weight: 500;
     }
     .badge {
-        font-size: 10px;
+        font-size: var(--font-2xs);
         padding: 1px 6px;
         border-radius: 4px;
         text-transform: uppercase;

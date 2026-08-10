@@ -269,7 +269,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         margin-bottom: 6px;
     }
@@ -302,7 +302,7 @@
         font-weight: 700;
     }
     .hint {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         margin: 6px 0 0;
         line-height: 1.5;
@@ -326,12 +326,12 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--amber, #d29922);
         margin: 8px 0 0;
     }
     .source-badge {
-        font-size: 10px;
+        font-size: var(--font-2xs);
         font-weight: 600;
         padding: 1px 6px;
         border-radius: 8px;
@@ -347,7 +347,7 @@
         color: var(--text);
         padding: 4px 8px;
         border-radius: 4px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -366,12 +366,12 @@
     }
     .error-msg {
         color: var(--red);
-        font-size: 11px;
+        font-size: var(--font-xs);
         margin-top: 6px;
     }
     .saved-msg {
         color: #3fb950;
-        font-size: 11px;
+        font-size: var(--font-xs);
         margin-top: 10px;
     }
 </style>

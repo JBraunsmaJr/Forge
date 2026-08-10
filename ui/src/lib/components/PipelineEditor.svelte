@@ -845,7 +845,7 @@
         gap: 12px;
     }
 
-    .title-icon {
+    :global(.title-icon) {
         color: #58a6ff;
     }
 

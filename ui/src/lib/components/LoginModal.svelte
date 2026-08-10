@@ -108,7 +108,7 @@
         text-align: center;
         margin-bottom: 24px;
         color: var(--muted);
-        font-size: 11px;
+        font-size: var(--font-xs);
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }

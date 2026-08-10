@@ -125,13 +125,13 @@
     }
     .pc-target {
         margin-left: auto;
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-family: var(--font-mono);
         color: var(--muted);
     }
     .pc-label {
         display: block;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         margin-bottom: 4px;
     }
@@ -158,7 +158,7 @@
     }
     .pc-source code, .pc-digest code {
         font-family: var(--font-mono);
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--text);
         background: var(--bg);
         border-radius: 4px;
@@ -186,7 +186,7 @@
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 2px 8px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-family: var(--font-mono);
         color: var(--accent);
     }

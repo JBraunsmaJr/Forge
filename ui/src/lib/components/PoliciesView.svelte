@@ -313,7 +313,7 @@
         margin-bottom: 6px;
     }
     .item-meta {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         display: flex;
         gap: 8px;
@@ -321,7 +321,7 @@
     .badge-locked {
         background: #2e2614;
         color: #f0b429;
-        font-size: 10px;
+        font-size: var(--font-2xs);
         padding: 1px 6px;
         border-radius: 4px;
         text-transform: uppercase;
@@ -340,7 +340,7 @@
     small {
         display: block;
         margin-top: 4px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
     }
     small a {

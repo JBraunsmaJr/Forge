@@ -121,12 +121,13 @@
         flex: 1;
         position: relative;
     }
-    .search-icon {
+    .input-wrapper :global(.search-icon) {
         position: absolute;
         left: 12px;
         top: 50%;
         transform: translateY(-50%);
         color: var(--muted);
+        pointer-events: none;
     }
     input {
         width: 100%;
@@ -184,7 +185,7 @@
         align-items: center;
         gap: 12px;
         margin-bottom: 6px;
-        font-size: 11px;
+        font-size: var(--font-xs);
     }
     .timestamp {
         color: var(--muted);
@@ -243,11 +244,7 @@
     .tips li {
         margin-bottom: 4px;
     }
-    .spin {
-        animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-    }
+    /* .spin is defined globally in app.css (it's a real stylesheet,
+       not Svelte-scoped, so it already reaches this button's icon
+       without needing :global() here) — no local copy needed. */
 </style>

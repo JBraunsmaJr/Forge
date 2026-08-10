@@ -11,6 +11,16 @@
 
     let expandedSteps = new Set<string>();
     let expandedPipelineJobs = new Set<string>();
+    // Every job ID that's ever been auto-expanded or manually toggled —
+    // deliberately a plain Set, mutated in place and never reassigned,
+    // so Svelte's reactivity system does NOT treat it as a dependency
+    // of any $: block. See the two auto-expand reactive statements
+    // below for why that matters: they must react to new run data
+    // appearing, not to expandedPipelineJobs itself changing (which
+    // happens on every manual collapse too, and previously caused a
+    // collapse to be immediately undone by the very reactive block
+    // meant to catch a newly-started child pipeline).
+    let autoExpandConsidered = new Set<string>();
     let childRunCache: Record<string, RunDetail> = {};
     let loadingChildRuns = new Set<string>();
     let childSockets: Record<string, WebSocket> = {};
@@ -46,31 +56,87 @@
         childSockets[runID] = ws;
     }
 
+    // Fetches a child run's detail into the cache (if not already
+    // there), marks it expanded, and opens a live socket if it's still
+    // running. Shared by the manual-click path (onTogglePipeline) and
+    // the auto-expand-on-load path below, so both stay in sync with
+    // exactly the same fetch/cache/socket behavior.
+    let expansionGeneration = 0;
+
+    async function ensurePipelineExpanded(
+        j: Job,
+        depth = 0,
+        generation = expansionGeneration,
+    ): Promise<void> {
+        autoExpandConsidered.add(j.job_id);
+        expandedPipelineJobs.add(j.job_id);
+        expandedPipelineJobs = expandedPipelineJobs;
+
+        if (!j.child_run_id) return;
+        let detail = childRunCache[j.child_run_id];
+        if (!detail && !loadingChildRuns.has(j.child_run_id)) {
+            loadingChildRuns.add(j.child_run_id);
+            loadingChildRuns = loadingChildRuns;
+            let fetched: RunDetail | null = null;
+            try {
+                fetched = await api.runDetail(j.child_run_id);
+            } catch {
+                fetched = null;
+            } finally {
+                // Only clear this generation's own loading flag. A stale
+                // request finishing after a later generation started must
+                // not clear the flag the new generation just set for the
+                // same run — otherwise a fast navigate-away-and-back
+                // arrives with a loading entry from the wrong generation
+                // and the current fetch is dropped as "already loading".
+                if (generation === expansionGeneration) {
+                    loadingChildRuns.delete(j.child_run_id);
+                    loadingChildRuns = loadingChildRuns;
+                }
+            }
+            if (generation !== expansionGeneration) return;
+            if (!fetched) {
+                expandedPipelineJobs.delete(j.job_id);
+                expandedPipelineJobs = expandedPipelineJobs;
+                autoExpandConsidered.delete(j.job_id);
+                return;
+            }
+            childRunCache = { ...childRunCache, [j.child_run_id]: fetched };
+            detail = fetched;
+        }
+        if (!detail) return;
+
+        if (generation !== expansionGeneration) return;
+        if (detail.status !== 'passed' && detail.status !== 'failed') {
+            openChildSocket(j.child_run_id);
+        }
+
+        // Child pipelines should always be visible by default, not just
+        // the first level — recurse into this child's own pipeline-type
+        // jobs too, up to the same depth cap the renderer already
+        // enforces (MAX_NEST_DEPTH), so a long chain doesn't cascade
+        // into an unbounded burst of fetches on initial load.
+        if (depth + 1 < MAX_NEST_DEPTH) {
+            for (const childJob of detail.jobs) {
+                if (childJob.child_run_id) {
+                    ensurePipelineExpanded(childJob, depth + 1, generation);
+                }
+            }
+        }
+    }
+
     async function onTogglePipeline(j: Job) {
+        // A manual click is a deliberate choice either way — record it
+        // so the auto-expand reactive block below never second-guesses
+        // it, whether the user just opened or closed this node.
+        autoExpandConsidered.add(j.job_id);
         if (expandedPipelineJobs.has(j.job_id)) {
             expandedPipelineJobs.delete(j.job_id);
             expandedPipelineJobs = expandedPipelineJobs;
             if (j.child_run_id) closeChildSocket(j.child_run_id);
             return;
         }
-        expandedPipelineJobs.add(j.job_id);
-        expandedPipelineJobs = expandedPipelineJobs;
-
-        if (!j.child_run_id) return;
-        if (!childRunCache[j.child_run_id] && !loadingChildRuns.has(j.child_run_id)) {
-            loadingChildRuns.add(j.child_run_id);
-            loadingChildRuns = loadingChildRuns;
-            const detail = await api.runDetail(j.child_run_id);
-            loadingChildRuns.delete(j.child_run_id);
-            loadingChildRuns = loadingChildRuns;
-            if (detail) {
-                childRunCache = { ...childRunCache, [j.child_run_id]: detail };
-            }
-        }
-        const cached = childRunCache[j.child_run_id];
-        if (cached && cached.status !== 'passed' && cached.status !== 'failed') {
-            openChildSocket(j.child_run_id);
-        }
+        await ensurePipelineExpanded(j);
     }
 
     onDestroy(() => {
@@ -79,10 +145,44 @@
 
     let lastRunID: string | undefined;
     $: if ($activeRun?.run_id !== lastRunID) {
+        expansionGeneration += 1;
         lastRunID = $activeRun?.run_id;
         for (const runID of Object.keys(childSockets)) closeChildSocket(runID);
         expandedPipelineJobs = new Set();
+        autoExpandConsidered = new Set();
         childRunCache = {};
+        // Also reset per-generation loading state, otherwise a
+        // still-in-flight request from before this navigation can be
+        // mistaken for "already loading" under the new generation and
+        // block the new fetch from ever starting.
+        loadingChildRuns = new Set();
+        // Always show child pipeline structure, live or historical —
+        // not just when a user happens to click to expand it while
+        // watching a run execute.
+        for (const j of $activeRun?.jobs ?? []) {
+            if (j.child_run_id) ensurePipelineExpanded(j);
+        }
+    }
+
+    // Runs on every $activeRun update, including live websocket ticks —
+    // catches a pipeline job whose child_run_id only appears once that
+    // child run actually starts, not just ones already present when
+    // this run was first loaded above.
+    //
+    // Deliberately gated on autoExpandConsidered, not expandedPipelineJobs:
+    // the latter is reassigned (and so reactively re-triggers this block)
+    // on every manual collapse too, which previously meant collapsing a
+    // pipeline node immediately re-expanded it — this block would see
+    // "has child_run_id, not in expandedPipelineJobs" and treat a
+    // deliberate collapse as a new appearance to auto-expand.
+    // autoExpandConsidered is only ever added to, never reassigned, so
+    // it isn't itself a reactive dependency here — this block only
+    // re-runs when $activeRun changes, which is exactly the "did new
+    // data arrive" signal it's meant to react to.
+    $: for (const j of $activeRun?.jobs ?? []) {
+        if (j.child_run_id && !autoExpandConsidered.has(j.job_id)) {
+            ensurePipelineExpanded(j);
+        }
     }
 
     function fmtDuration(ms: number) {
@@ -137,13 +237,13 @@
 <div id="dag-panel">
     <div id="dag-header">
         <h2>
-            Pipeline DAG — 
+            <span class="dag-eyebrow">Pipeline DAG</span>
             {#if $activeRun}
-                {$activeRun.name}
+                <span class="dag-run-name">{$activeRun.name}</span>
 
                 {#if $activeRun.build_number}
                     <span class="build-badge" title="FORGE_BUILD_NUMBER for this run">
-                        <Hash size={11} />
+                        <Hash size={13} />
                         {$activeRun.build_number}
                     </span>
                 {/if}
@@ -151,9 +251,9 @@
                 {#if comparison && comparison.diff_ms !== 0}
                     <span class="comparison-badge" class:regression={comparison.regression_detected}>
                         {#if comparison.regression_detected}
-                            <TrendingUp size={12} />
+                            <TrendingUp size={13} />
                         {:else}
-                            <TrendingDown size={12} />
+                            <TrendingDown size={13} />
                         {/if}
                         {fmtDuration(Math.abs(comparison.diff_ms))} {comparison.diff_ms > 0 ? 'slower' : 'faster'} than avg
                     </span>
@@ -271,8 +371,17 @@
         border-bottom: 1px solid var(--border);
         padding-right: 20px;
     }
-    #dag-panel h2 { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--muted);
-        text-transform: uppercase; padding: 14px 20px 10px; margin: 0; border: none; }
+    #dag-panel h2 { font-weight: 600; color: var(--muted);
+        padding: 14px 20px 10px; margin: 0; border: none; display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+    .dag-eyebrow {
+        font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted);
+    }
+    .dag-eyebrow::after { content: '—'; margin-left: 8px; }
+    .dag-run-name {
+        font-size: var(--font-lg);
+        font-weight: 600;
+        color: var(--text);
+    }
     .actions { display: flex; gap: 8px; }
     .btn-cancel, .btn-rerun {
         background: var(--surface2);
@@ -280,7 +389,7 @@
         color: var(--text);
         border-radius: 4px;
         padding: 4px 10px;
-        font-size: 10px;
+        font-size: var(--font-xs);
         font-weight: 700;
         display: flex;
         align-items: center;
@@ -298,9 +407,9 @@
     .policy-badge {
         background: #2e1f5e;
         color: #a78bfa;
-        padding: 1px 6px;
+        padding: 2px 8px;
         border-radius: 8px;
-        font-size: 10px;
+        font-size: var(--font-xs);
         font-weight: 700;
         margin-left: 8px;
     }
@@ -311,9 +420,9 @@
         gap: 3px;
         background: var(--surface2);
         color: var(--muted);
-        padding: 1px 8px;
+        padding: 3px 10px;
         border-radius: 8px;
-        font-size: 10px;
+        font-size: var(--font-sm);
         font-weight: 700;
         font-family: var(--font-mono);
         margin-left: 12px;
@@ -328,9 +437,9 @@
         gap: 4px;
         background: rgba(16, 185, 129, 0.1);
         color: #10b981;
-        padding: 1px 8px;
+        padding: 3px 10px;
         border-radius: 8px;
-        font-size: 10px;
+        font-size: var(--font-sm);
         font-weight: 700;
         margin-left: 12px;
         vertical-align: middle;
@@ -355,52 +464,4 @@
         height: 100%;
         padding-right: 4px;
     }
-    .node-rerun-btn {
-        background: none;
-        border: none;
-        padding: 3px;
-        cursor: pointer;
-        color: var(--muted);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 4px;
-        transition: all 0.2s;
-    }
-    .node-rerun-btn:hover {
-        background: rgba(255,255,255,0.1);
-        color: var(--accent);
-    }
-    .node-rerun-btn.approve:hover {
-        color: #fbbf24;
-    }
-    .node-debug-link {
-        font-size: 10px;
-        font-weight: 700;
-        cursor: pointer;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        transition: all 0.2s;
-    }
-    .node-debug-link:hover { fill: #a78bfa; }
-    .node-expand-btn {
-        background: none;
-        border: none;
-        padding: 2px;
-        cursor: pointer;
-        color: var(--muted);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 4px;
-        transition: all 0.2s;
-    }
-    .node-expand-btn:hover {
-        background: rgba(255,255,255,0.1);
-        color: var(--accent);
-    }
-    .dag-label { font-family: 'Inter', system-ui, sans-serif; font-size: 13px; font-weight: 700;
-        pointer-events: none; }
-    .dag-sub { font-family: 'Inter', system-ui, sans-serif; font-size: 10px; font-weight: 500; pointer-events: none; }
-    .dag-sub.policy { font-size: 9px; }
 </style>

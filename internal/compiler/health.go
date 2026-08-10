@@ -244,7 +244,7 @@ func checkDuplicateStepLogic(report *HealthReport, stepCount int, raw *jsonPipel
 // set. Steps that depend on exactly the same prerequisites are always
 // scheduled in lockstep relative to each other
 func checkAlwaysTogether(report *HealthReport, path string, rawSource []byte) {
-	p, err := compileDataNoValidate(rawSource, path)
+	p, err := compileDataNoValidate(rawSource, path, nil)
 	if err != nil {
 		return
 	}

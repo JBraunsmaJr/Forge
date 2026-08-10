@@ -148,7 +148,7 @@
         color: var(--text);
         padding: 2px 8px;
         border-radius: 4px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -247,7 +247,7 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         margin-top: 12px;
         font-style: italic;

@@ -214,7 +214,7 @@
         flex-direction: column;
     }
     #pane h2 {
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-weight: 600;
         letter-spacing: 1px;
         color: var(--muted);
@@ -294,12 +294,12 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
     }
     .run-item-build {
         font-family: var(--font-mono);
-        font-size: 10px;
+        font-size: var(--font-2xs);
         color: var(--muted);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -309,7 +309,7 @@
     .badge {
         padding: 2px 7px;
         border-radius: 10px;
-        font-size: 10px;
+        font-size: var(--font-2xs);
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: .5px;

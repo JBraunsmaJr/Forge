@@ -25,8 +25,8 @@ export const STATUS_COLORS: Record<string, { fill: string; stroke: string; text:
     release:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
 };
 
-export const MIN_NODE_W = 160;
-export const NODE_H = 52;
+export const MIN_NODE_W = 172;
+export const NODE_H = 56;
 export const COL_GAP = 90;
 export const ROW_GAP = 24;
 export const PAD = 32;
@@ -85,8 +85,8 @@ function estimateNodeWidth(j: Job, shardAssignments: Record<string, ShardAssignm
     const subLen = (j.status.length + (j.duration_ms ? 10 : 0));
     const policyLen = j.policy_source ? j.policy_source.length + 2 : 0;
 
-    const labelW = labelLen * 8.5;
-    const subW = Math.max(subLen * 6, policyLen * 6);
+    const labelW = labelLen * 9.2;
+    const subW = Math.max(subLen * 6.6, policyLen * 6.6);
 
     const contentW = Math.max(labelW, subW);
     const actionsW = 65; // Artifact + Rerun + Debug link + margins

@@ -124,7 +124,7 @@ func lintData(path string, data []byte, workspaceDir string) (*LintReport, error
 	// submitting a pipeline but wrong for a linter that's supposed to show
 	// everything wrong in one pass. The checks below are a richer,
 	// collect-everything superset of what that fail-fast gate does.
-	p, compileErr := compileDataNoValidate(data, path)
+	p, compileErr := compileDataNoValidate(data, path, nil)
 	if compileErr != nil {
 		report.CompileFailed = true
 		report.errorf("", "%v", compileErr)

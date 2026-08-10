@@ -214,19 +214,19 @@
         font-size: 15px;
     }
     .item-id {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         font-family: monospace;
         margin-bottom: 6px;
     }
     .item-meta {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         display: flex;
         gap: 8px;
     }
     .badge {
-        font-size: 10px;
+        font-size: var(--font-2xs);
         padding: 1px 6px;
         border-radius: 4px;
         text-transform: uppercase;

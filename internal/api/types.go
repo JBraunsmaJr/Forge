@@ -541,6 +541,10 @@ type UpdateProjectRequest struct {
 	ScheduledPath *string  `json:"scheduled_pipeline_path,omitempty"`
 	SCMToken      *string  `json:"scm_token,omitempty"`
 	BranchFilter  []string `json:"branch_filter,omitempty"`
+	// OrgID reassigns the project's organization. Omit the field
+	// entirely to leave it unchanged; send an empty string to
+	// explicitly unassign it (NULL — a project can have no org).
+	OrgID *string `json:"org_id,omitempty"`
 }
 
 // BuildFormatInfo describes the build-number format and version state

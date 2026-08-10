@@ -104,7 +104,7 @@ func (p *yamlParser) parseMapping(mapIndent int) (map[string]any, error) {
 		if !ok0 {
 			continue
 		}
-		key := strings.TrimSpace(before)
+		key := unquoteKey(strings.TrimSpace(before))
 		rest := strings.TrimSpace(after)
 
 		var val any
@@ -180,7 +180,7 @@ func (p *yamlParser) parseSequence(seqIndent int) ([]any, error) {
 
 			inlineMap := map[string]any{}
 			colonIdx := strings.Index(rest, ":")
-			k := strings.TrimSpace(rest[:colonIdx])
+			k := unquoteKey(strings.TrimSpace(rest[:colonIdx]))
 			v := strings.TrimSpace(rest[colonIdx+1:])
 			inlineMap[k] = parseScalar(v)
 
@@ -199,7 +199,7 @@ func (p *yamlParser) parseSequence(seqIndent int) ([]any, error) {
 				if !ok0 {
 					continue
 				}
-				fk := strings.TrimSpace(before)
+				fk := unquoteKey(strings.TrimSpace(before))
 				fv := strings.TrimSpace(after)
 
 				if fv == "|" {
@@ -264,6 +264,25 @@ func (p *yamlParser) parseLiteralBlock(contentIndent int) string {
 		lines = lines[:len(lines)-1]
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// unquoteKey strips a single layer of matching quote characters from a
+// mapping key, the same way parseScalar does for values. Mapping keys
+// are used verbatim as map[string]any keys rather than passed through
+// parseScalar (a key must always stay a string, never become a bool,
+// number, or nil the way a quoted value legitimately can't either),
+// but without this a key written the natural way — "1.0.0": ... in a
+// version table, for instance — would keep its literal quote
+// characters and silently fail every lookup by its intended,
+// unquoted name.
+func unquoteKey(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') ||
+			(s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 // parseScalar converts a YAML scalar string to its Go representation.

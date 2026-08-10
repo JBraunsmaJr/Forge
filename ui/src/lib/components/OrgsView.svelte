@@ -1,14 +1,16 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { api, type Org } from '../api';
-    import { Plus, Building2, Key, ChevronDown, ChevronUp } from '@lucide/svelte';
-    import SecretsManager from './SecretsManager.svelte';
+    import { Plus, Building2, ArrowRight } from '@lucide/svelte';
+    import OrgDetailView from './OrgDetailView.svelte';
 
     let orgs: Org[] = [];
     let loading = true;
     let newOrgName = '';
     let showCreate = false;
-    let openSecretsId: string | null = null;
+    // The one org currently open in the detail view — mirrors
+    // ProjectsView's selectedProject pattern for consistency.
+    let selectedOrg: Org | null = null;
 
     async function loadOrgs() {
         loading = true;
@@ -34,6 +36,11 @@
     onMount(loadOrgs);
 </script>
 
+{#if selectedOrg}
+    <div class="view-container">
+        <OrgDetailView org={selectedOrg} on:back={() => selectedOrg = null} />
+    </div>
+{:else}
 <div class="view-container">
     <div class="view-header">
         <h1>Organizations</h1>
@@ -73,28 +80,19 @@
                     </div>
                     <div class="item-details">
                         <div class="item-name">{org.name}</div>
-                        <div class="item-id">ID: {org.id}</div>
                         <div class="item-meta">Created {new Date(org.created_at).toLocaleDateString()}</div>
-                        
-                        <button class="btn-text" on:click={() => openSecretsId = openSecretsId === org.id ? null : org.id}>
-                            <Key size={14} />
-                            Secrets
-                            {#if openSecretsId === org.id}
-                                <ChevronUp size={14} />
-                            {:else}
-                                <ChevronDown size={14} />
-                            {/if}
-                        </button>
 
-                        {#if openSecretsId === org.id}
-                            <SecretsManager scope="org" id={org.id} />
-                        {/if}
+                        <button class="btn-text" on:click={() => selectedOrg = org}>
+                            Manage
+                            <ArrowRight size={14} />
+                        </button>
                     </div>
                 </div>
             {/each}
         </div>
     {/if}
 </div>
+{/if}
 
 <style>
     .grid {
@@ -114,6 +112,7 @@
     .create-card h3 {
         margin-top: 0;
         margin-bottom: 16px;
+        font-size: var(--font-lg);
     }
     .form-group {
         margin-bottom: 16px;
@@ -121,7 +120,7 @@
     .form-group label {
         display: block;
         margin-bottom: 8px;
-        font-size: 13px;
+        font-size: var(--font-sm);
         color: var(--muted);
     }
     .form-group input {
@@ -131,6 +130,7 @@
         border: 1px solid var(--border);
         border-radius: 4px;
         color: var(--text);
+        font-size: var(--font-base);
     }
     .form-actions {
         display: flex;
@@ -147,7 +147,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        font-size: 14px;
+        font-size: var(--font-base);
         font-weight: 500;
     }
     .btn-primary:disabled {
@@ -161,6 +161,7 @@
         padding: 8px 16px;
         border-radius: 4px;
         cursor: pointer;
+        font-size: var(--font-base);
     }
     .btn-text {
         background: transparent;
@@ -171,7 +172,7 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        font-size: 13px;
+        font-size: var(--font-sm);
         margin-top: 8px;
     }
     .btn-text:hover {
@@ -191,20 +192,15 @@
         align-items: center;
         justify-content: center;
         color: var(--accent);
+        flex-shrink: 0;
     }
     .item-name {
         font-weight: 600;
-        font-size: 16px;
+        font-size: var(--font-md);
         margin-bottom: 4px;
     }
-    .item-id {
-        font-size: 12px;
-        color: var(--muted);
-        font-family: monospace;
-        margin-bottom: 8px;
-    }
     .item-meta {
-        font-size: 12px;
+        font-size: var(--font-xs);
         color: var(--muted);
     }
     .empty-state {

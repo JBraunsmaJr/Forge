@@ -57,7 +57,7 @@
 </script>
 
 <g class="edges">
-    {#each resolvedJobs as j}
+    {#each resolvedJobs as j (j.job_id)}
         {#if layout.positions[j.job_id]}
             {#each j.depends_on || [] as depStep}
                 {#if byStep[depStep] && layout.positions[byStep[depStep].job_id]}
@@ -84,7 +84,7 @@
 </g>
 
 <g class="nodes">
-    {#each resolvedJobs as j}
+    {#each resolvedJobs as j (j.job_id)}
         {#if layout.positions[j.job_id]}
             {@const pos = layout.positions[j.job_id]}
             {@const c = STATUS_COLORS[j.status] || STATUS_COLORS.pending}
@@ -250,7 +250,7 @@
     .node-rerun-btn:hover { background: rgba(255,255,255,0.1); color: var(--accent); }
     .node-rerun-btn.approve:hover { color: #fbbf24; }
     .node-debug-link {
-        font-size: 10px; font-weight: 700; cursor: pointer;
+        font-size: 11px; font-weight: 700; cursor: pointer;
         text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.2s;
     }
     .node-debug-link:hover { fill: #a78bfa; }
@@ -261,13 +261,13 @@
     }
     .node-expand-btn:hover { background: rgba(255,255,255,0.1); color: var(--accent); }
     .dag-label {
-        font-family: 'Inter', system-ui, sans-serif; font-size: 13px;
+        font-family: 'Inter', system-ui, sans-serif; font-size: 14px;
         font-weight: 700; pointer-events: none;
     }
     .dag-sub {
-        font-family: 'Inter', system-ui, sans-serif; font-size: 10px;
+        font-family: 'Inter', system-ui, sans-serif; font-size: 11px;
         font-weight: 500; pointer-events: none;
     }
-    .dag-sub.policy { font-size: 9px; }
-    .dag-sub.group-summary { font-size: 10px; font-weight: 700; }
+    .dag-sub.policy { font-size: 10px; }
+    .dag-sub.group-summary { font-size: 11px; font-weight: 700; }
 </style>

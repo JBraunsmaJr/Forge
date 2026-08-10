@@ -97,7 +97,7 @@
     }
     .window {
         margin-left: auto;
-        font-size: 11px;
+        font-size: var(--font-xs);
         font-weight: 500;
         color: var(--muted);
         text-transform: none;
@@ -122,7 +122,7 @@
         gap: 8px;
     }
     .bar-label {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         width: 90px;
         flex-shrink: 0;
@@ -139,14 +139,14 @@
         border-radius: 4px;
     }
     .bar-pct {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--text);
         width: 34px;
         text-align: right;
         flex-shrink: 0;
     }
     .summary {
-        font-size: 11px;
+        font-size: var(--font-xs);
         color: var(--muted);
         line-height: 1.5;
         margin: 0;
