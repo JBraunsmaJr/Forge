@@ -333,6 +333,25 @@ steps:
 
 Fields in the local step override fields in the template.
 
+#### Registry steps
+
+`uses:` also resolves **versioned steps from a registry**, rather than a file in
+your own repo:
+
+```yaml
+steps:
+  - id: scan-source
+    uses: forge-community/trivy@v1.0.0
+    with:
+      severity: "HIGH,CRITICAL"
+```
+
+These are pinned by SHA-256, validated against their declared inputs at compile
+time, and expanded into ordinary steps namespaced under the call site's id
+(`scan-source.scan`). See [Step Registry](Step-Registry.md) for the reference
+syntax, version selection, `requires:`/policy interaction, and how to run
+against an internal mirror.
+
 ### Manual Approvals
 
 A step with `type: approval` will pause the pipeline and wait for a user to click "Approve" in the Web UI before downstream dependencies are unlocked.

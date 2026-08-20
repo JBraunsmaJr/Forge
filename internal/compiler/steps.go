@@ -35,7 +35,7 @@ func NewHTTPStepResolver(registryURL string) *HTTPStepResolver {
 func NewHTTPStepResolverFromEnv() *HTTPStepResolver {
 	url := os.Getenv("FORGE_STEP_REGISTRY_URL")
 	if url == "" {
-		url = "https://raw.githubusercontent.com/forge-steps/community/main"
+		url = "https://raw.githubusercontent.com/JBraunsmaJr/forge-community/main"
 	}
 	return NewHTTPStepResolver(url)
 }

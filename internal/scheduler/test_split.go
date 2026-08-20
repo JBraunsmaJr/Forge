@@ -67,6 +67,11 @@ func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName stri
 		if step.Split.Fallback == "round-robin" {
 			coldStart = false
 		}
+		var allAssigned []string
+		for _, a := range assignments {
+			allAssigned = append(allAssigned, a.Files...)
+		}
+
 		originalDeps := step.DependsOn
 		var shardIDs []string
 		for i, assignment := range assignments {
@@ -77,6 +82,14 @@ func (s *Store) expandSplitSteps(tx *sql.Tx, runID, projectID, pipelineName stri
 			shardStep.Split = nil // don't recurse
 			shardStep.Env = copyEnv(step.Env)
 			shardStep.Env["FORGE_TEST_FILES"] = strings.Join(assignment.Files, ",")
+			// The union of every shard's assignment. A shard can diff this
+			// against the suite's actual test list to find entries nobody
+			// was assigned — tests added since the last run have no history
+			// row, so the planner cannot see them at all and would other-
+			// wise leave them permanently unrun. Deriving leftovers from
+			// the union lets each shard claim its share deterministically
+			// without needing to know the other shards' assignments.
+			shardStep.Env["FORGE_TEST_FILES_ALL"] = strings.Join(allAssigned, ",")
 			shardStep.Env["FORGE_SHARD_INDEX"] = strconv.Itoa(i)
 			shardStep.Env["FORGE_SHARD_TOTAL"] = strconv.Itoa(len(assignments))
 			shardStep.Env["FORGE_SHARD_ESTIMATED_MS"] = strconv.FormatInt(assignment.EstimatedMS, 10)
@@ -120,14 +133,37 @@ func (s *Store) computeShardAssignments(
 		minHistoryRuns = 3
 	}
 
-	// Query historical file durations.
+	// Query historical file durations, scoped to the key scheme the most
+	// recent report used (see api.TestKeyKind).
+	//
+	// Without this scope, changing how a report keys its entries silently
+	// poisons sharding: the old rows stay syntactically valid, get handed
+	// to the runner as selectors it cannot interpret, select no tests, exit
+	// 0, and report nothing back — so the bad rows are never superseded and
+	// the suite stops running while every build stays green. Scoping to the
+	// newest kind makes a scheme change degrade to "no usable history"
+	// (a cold start, which self-heals in two runs) instead.
+	//
+	// Rows with key_kind = '' predate the column and are excluded outright:
+	// their scheme is genuinely unknown and guessing is what this prevents.
 	rows, err := s.db.Query(`
+		WITH latest_kind AS (
+			SELECT key_kind
+			FROM   test_file_durations
+			WHERE  COALESCE(project_id, '') = $1
+			AND    pipeline_name = $2
+			AND    step_id       LIKE $3
+			AND    key_kind <> ''
+			ORDER  BY created_at DESC
+			LIMIT  1
+		)
 		SELECT file_path, AVG(duration_ms)::BIGINT as avg_ms, COUNT(DISTINCT run_id) as runs
 		FROM   test_file_durations
 		WHERE  COALESCE(project_id, '') = $1
 		AND    pipeline_name = $2
 		AND    step_id       LIKE $3   -- matches "test" AND "test-shard-1", "test-shard-2" etc
 		AND    created_at    > NOW() - ($4 || ' days')::INTERVAL
+		AND    key_kind      = (SELECT key_kind FROM latest_kind)
 		GROUP  BY file_path
 		ORDER  BY avg_ms DESC`, // longest files first (greedy assignment works better)
 		projectID, pipelineName,
@@ -176,12 +212,26 @@ func (s *Store) roundRobinAssignment(projectID, pipelineName, stepID string, con
 	// Query all known files for this step, even if they don't have much
 	// history. We still pull the average duration where one exists so the
 	// UI can show a rough estimate instead of 0 for fallback assignments.
+	// Scoped to the newest key scheme for the same reason as the duration
+	// query above — a fallback that hands back uninterpretable selectors is
+	// worse than no fallback, because it looks like it worked.
 	rows, err := s.db.Query(`
+		WITH latest_kind AS (
+			SELECT key_kind
+			FROM   test_file_durations
+			WHERE  COALESCE(project_id, '') = $1
+			AND    pipeline_name = $2
+			AND    step_id       LIKE $3
+			AND    key_kind <> ''
+			ORDER  BY created_at DESC
+			LIMIT  1
+		)
 		SELECT file_path, COALESCE(AVG(duration_ms), 0)::BIGINT AS avg_ms
 		FROM   test_file_durations
 		WHERE  COALESCE(project_id, '') = $1
 		AND    pipeline_name = $2
 		AND    step_id       LIKE $3
+		AND    key_kind      = (SELECT key_kind FROM latest_kind)
 		GROUP  BY file_path
 		ORDER  BY file_path ASC`,
 		projectID, pipelineName, stepID+"%",

@@ -48,8 +48,74 @@ go build -o /usr/local/bin/forge ./cmd/forge
 # the one authoritative signal for the latter; if we got this far it
 # wasn't set, so treat an empty/unset FORGE_TEST_FILES as "nothing to
 # filter to" and run everything.
+# The suite's actual top-level test names, straight from the compiled
+# package. This is ground truth the planner does not have: it only knows
+# names that already appear in duration history.
+# (POSIX sh + busybox only here -- no bash, no process substitution.)
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+go test -list '.*' ./tests/integration/... 2>/dev/null | grep '^Test' | sort -u > "$TMPD/all"
+
+# Zero tests in the whole suite means the package did not build or the
+# listing broke. Every downstream check would then read as "nothing to
+# do" and pass, which is how a suite stops running without anyone
+# noticing. This is the one condition that is always wrong.
+if [ ! -s "$TMPD/all" ]; then
+  echo "no tests found in ./tests/integration/... -- suite did not build or list" >&2
+  exit 1
+fi
+
 if [ -n "${FORGE_TEST_FILES:-}" ]; then
-  RUN_REGEX="^($(echo "$FORGE_TEST_FILES" | tr ',' '|'))\$"
+  echo "$FORGE_TEST_FILES" | tr ',' '\n' | grep -v '^$' | sort -u > "$TMPD/assigned"
+  echo "${FORGE_TEST_FILES_ALL:-}" | tr ',' '\n' | grep -v '^$' | sort -u > "$TMPD/union"
+
+  # Tests that exist but that no shard was assigned. A newly added test has
+  # no history row, so shard planning cannot see it and it would never run
+  # anywhere -- green builds that silently skip new tests. Each shard claims
+  # a stable slice of the leftovers by name hash, so shards agree on the
+  # split without having to know each other's assignments.
+  grep -Fxv -f "$TMPD/union" "$TMPD/all" > "$TMPD/leftover" || true
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    h=$(printf '%s' "$t" | cksum | cut -d' ' -f1)
+    if [ "$(( h % ${FORGE_SHARD_TOTAL:-1} ))" -eq "${FORGE_SHARD_INDEX:-0}" ]; then
+      echo "shard ${FORGE_SHARD_INDEX:-0}: picking up unassigned test $t"
+      echo "$t" >> "$TMPD/assigned"
+    fi
+  done < "$TMPD/leftover"
+
+  # Drop assigned names that no longer exist (renamed or deleted tests still
+  # sitting in history) so they cannot drag the regex toward zero matches.
+  sort -u "$TMPD/assigned" -o "$TMPD/assigned"
+  # Names that were assigned AND still exist -- used only to tell a stale
+  # assignment apart from a merely small one when reporting below.
+  echo "$FORGE_TEST_FILES" | tr ',' '\n' | grep -v '^$' | sort -u > "$TMPD/orig"
+  grep -Fx -f "$TMPD/all" "$TMPD/orig" > "$TMPD/matched" || true
+
+  grep -Fx -f "$TMPD/all" "$TMPD/assigned" > "$TMPD/final" || true
+
+  if [ ! -s "$TMPD/final" ]; then
+    # Nothing left for this shard once stale names were dropped. Because
+    # leftovers are distributed deterministically across ALL shards, the
+    # tests are provably covered elsewhere -- so this is a genuine no-op,
+    # not a failure. (The suite-wide "no tests at all" case, which is a
+    # failure, was already caught above.)
+    echo "shard ${FORGE_SHARD_INDEX:-0}: no tests assigned after reconciling against the suite; nothing to do"
+    echo "assigned was: ${FORGE_TEST_FILES}"
+    exit 0
+  fi
+
+  # Loud, but non-fatal: every assigned name being stale means duration
+  # history is keyed differently than this suite reports. The run stays
+  # green because leftover pickup already covered the tests, and the
+  # scheduler re-keys history within a couple of runs.
+  if [ ! -s "$TMPD/matched" ]; then
+    echo "WARNING: none of this shard's assigned names matched a real test;" >&2
+    echo "         duration history looks stale or differently keyed." >&2
+    echo "         assigned: ${FORGE_TEST_FILES}" >&2
+  fi
+
+  RUN_REGEX="^($(tr '\n' '|' < "$TMPD/final" | sed 's/|$//'))\$"
 else
   RUN_REGEX=".*"
 fi

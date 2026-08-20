@@ -1,0 +1,86 @@
+name: Community Steps
+
+# Demonstrates every step currently published in the community registry
+# (https://github.com/JBraunsmaJr/forge-community).
+#
+# A `uses: <registry>/<step>@<version>` reference is resolved by the compiler
+# before the run is ever submitted:
+#
+#   1. registry.yml is fetched from the registry base URL
+#   2. the version is looked up (an exact version, a major alias like @v1, or
+#      @latest) to get the pinned SHA-256 of that version's step.yml
+#   3. step.yml is fetched at the matching git tag
+#   4. its SHA-256 is verified against the pinned digest — a retagged or
+#      tampered step.yml is rejected here, not discovered at runtime
+#   5. declared inputs are validated (required, enum, defaults applied)
+#   6. the step expands into ordinary Forge steps
+#
+# Because that all happens at compile time, `forge validate` catches a bad
+# version, a missing required input or an out-of-range enum value locally,
+# before anything is queued.
+#
+# Values under `with:` are treated as strings — quote numbers and booleans.
+
+steps:
+  # ── Language builders ────────────────────────────────────────────────────
+  # Expands to a single step whose id is namespaced under this step's id:
+  # `compile.build`. Reference the whole fragment by its call-site id
+  # (`depends_on: [compile]`) and Forge remaps it to the expanded step(s).
+  - id: compile
+    name: Compile Go Binary
+    uses: forge-community/go-build@v1.0.0
+    with:
+      package: ./cmd/forge
+      output: forge
+      goos: linux
+      goarch: amd64
+
+  # ── Testing ──────────────────────────────────────────────────────────────
+  - id: ui-tests
+    name: UI Tests
+    uses: forge-community/node-test@v1.0.0
+    with:
+      command: npm test
+
+  # ── Security scanning ────────────────────────────────────────────────────
+  # Omitting `image:` scans the workspace filesystem instead of a container
+  # image, which needs neither a docker socket nor registry credentials.
+  - id: scan-source
+    name: Scan Workspace
+    uses: forge-community/trivy@v1.0.0
+    depends_on: [compile, ui-tests]
+    with:
+      severity: "HIGH,CRITICAL"
+      ignore_unfixed: "true"
+      exit_code: "1"
+
+  # ── Containers ───────────────────────────────────────────────────────────
+  # `tag` is a required input: leave it out and compilation fails with
+  # `step forge-community/docker-build requires input "tag"`.
+  #
+  # This step declares `requires: docker_socket: true`, so it is rejected at
+  # submission time by any org policy that forbids the docker socket.
+  #
+  # Note this builds but does not push. Pushing needs a registry login, so
+  # Forge's own pipeline keeps using .forge/templates/docker-build.yml for
+  # images it has to promote later.
+  - id: image
+    name: Build Image
+    uses: forge-community/docker-build@v1.0.0
+    depends_on: [scan-source]
+    with:
+      context: .
+      dockerfile: Dockerfile
+      tag: "forge-example:${{ env.FORGE_BUILD_NUMBER }}"
+
+  # Scanning the built image: pass `image:` to switch from a filesystem scan
+  # to an image scan. The tag has to be resolvable by the scanner — locally
+  # built here, so this runs on the same agent as the build above.
+  - id: scan-image
+    name: Scan Built Image
+    uses: forge-community/trivy@v1.0.0
+    depends_on: [image]
+    with:
+      image: "forge-example:${{ env.FORGE_BUILD_NUMBER }}"
+      severity: "CRITICAL"
+      exit_code: "1"
