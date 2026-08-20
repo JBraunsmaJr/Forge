@@ -24,7 +24,7 @@ steps:
 
 ## Reference syntax
 
-```
+```yaml
 uses: <registry>/<step>@<version>
 ```
 
@@ -137,8 +137,6 @@ Every step declares what it needs:
 ```yaml
 requires:
   docker_socket: true
-  internet_access: false
-  privileged: false
 ```
 
 This feeds the policy system. If your org forbids the docker socket, any step
