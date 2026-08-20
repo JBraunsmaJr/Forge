@@ -446,3 +446,59 @@ func TestCompile_DockerPublish_AllowsDeleteSourceFalse(t *testing.T) {
 		t.Fatalf("expected delete_source: false to compile fine, got: %v", err)
 	}
 }
+
+// TestMultiStepTemplateInheritsCallerDependsOn guards the ordering contract for
+// multi-step templates, which is what every registry step (`uses:
+// forge-community/...`) expands into. The fragment's steps must not start until
+// the caller's own dependencies are satisfied, while the fragment's internal
+// ordering is preserved exactly as its author wrote it. Dropping the call
+// site's depends_on here is silent: the pipeline still compiles and still runs,
+// it just races the dependency the author declared.
+func TestMultiStepTemplateInheritsCallerDependsOn(t *testing.T) {
+	dir := t.TempDir()
+	tmpl := filepath.Join(dir, "fragment.yml")
+	if err := os.WriteFile(tmpl, []byte(`
+steps:
+  - id: first
+    image: alpine:3.20
+    run: echo first
+  - id: second
+    image: alpine:3.20
+    depends_on: [first]
+    run: echo second
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pipelineYAML := []byte(`
+name: ordering
+steps:
+  - id: setup
+    image: alpine:3.20
+    run: echo setup
+
+  - id: frag
+    uses: ` + tmpl + `
+    depends_on: [setup]
+`)
+
+	p, err := CompileData(pipelineYAML, filepath.Join(dir, "pipeline.yml"))
+	if err != nil {
+		t.Fatalf("CompileData failed: %v", err)
+	}
+
+	deps := map[string][]string{}
+	for _, s := range p.Steps {
+		deps[s.ID] = s.DependsOn
+	}
+
+	// The fragment's entry step inherits the call site's dependencies.
+	if got := deps["frag.first"]; len(got) != 1 || got[0] != "setup" {
+		t.Errorf("frag.first should inherit the caller's depends_on [setup], got %v", got)
+	}
+	// A step with an internal dependency keeps it, and does not also pick up
+	// the caller's — it is already ordered behind the entry step.
+	if got := deps["frag.second"]; len(got) != 1 || got[0] != "frag.first" {
+		t.Errorf("frag.second should depend only on frag.first, got %v", got)
+	}
+}

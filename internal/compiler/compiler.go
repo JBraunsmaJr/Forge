@@ -362,6 +362,20 @@ func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep,
 			}
 		}
 
+		/*
+			The call site's own depends_on has to be carried onto the fragment,
+			otherwise a multi-step template silently loses its ordering and its steps
+			race the dependencies the author declared. It belongs on the fragment's entry
+			steps - the ones with no dependency inside the fragment - so the injected steps
+			start only once the caller's dependencies are satisfied, while the fragment's
+			internal order is left exactly as its author wrote it
+		*/
+		for i := range tp.Steps {
+			if len(tp.Steps[i].DependsOn) == 0 {
+				tp.Steps[i].DependsOn = append([]string(nil), js.DependsOn...)
+			}
+		}
+
 		return tp.Steps, nil
 	}
 

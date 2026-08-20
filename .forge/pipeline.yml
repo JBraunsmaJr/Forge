@@ -6,6 +6,17 @@ steps:
     type: pipeline
     pipeline: .forge/examples.yml
 
+  - id: scan-source
+    name: Scan Source (community step)
+    # exit_code: "0" makes this report-only for now, so a newly-published CVE
+    # in a dependency can't break the build before anyone has had a chance to
+    # look at it. Flip it to "1" to make the scan gate the pipeline.
+    uses: forge-community/trivy@v1.0.0
+    with:
+      severity: "HIGH,CRITICAL"
+      ignore_unfixed: "true"
+      exit_code: "0"
+
   - id: build-ui
     name: Build UI
     image: node:22-alpine
