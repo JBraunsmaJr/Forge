@@ -20,20 +20,60 @@ export const STATUS_COLORS: Record<string, { fill: string; stroke: string; text:
     running:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
     waiting:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#71717a' },
     queued:   { fill: '#161b22', stroke: '#6b7280', text: '#9ca3af', sub: '#374151' },
-    pending:  { fill: '#0d1117', stroke: '#30363d', text: '#484f58', sub: '#21262d' },
-    canceled: { fill: '#0d1117', stroke: '#30363d', text: '#484f58', sub: '#21262d' },
+    // The muted statuses previously used #484f58 for `text`. That was
+    // legible against the old per-status card fill, but the card surface
+    // is now a constant #171a25, where it measures 1.85:1 -- under half
+    // the 4.5:1 needed for body text, and effectively invisible. These
+    // are the app's own --muted, which measures 5.56:1 there.
+    pending:  { fill: '#0d1117', stroke: '#30363d', text: '#8b90b3', sub: '#21262d' },
+    canceled: { fill: '#0d1117', stroke: '#30363d', text: '#8b90b3', sub: '#21262d' },
+    // A skipped step did not run: a condition was false or a cache hit
+    // satisfied it. It is a normal outcome, not a failure, so it reads
+    // as neutral -- but it still has to be readable.
+    skipped:  { fill: '#0d1117', stroke: '#4b5280', text: '#8b90b3', sub: '#21262d' },
     release:  { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
+    docker_publish: { fill: '#0a192f', stroke: '#3b82f6', text: '#60a5fa', sub: '#1e3a8a' },
 };
 
-export const MIN_NODE_W = 172;
-export const NODE_H = 56;
+// Card chrome. Every node now shares one surface colour and one border,
+// and carries its status only in the accent rail, icon tile and subtitle.
+// Previously the whole card was tinted by status, which made a wall of
+// passed steps read as a wall of green and left no neutral ground for the
+// text to sit on. Keeping the surface constant means the accent is the
+// only thing competing for attention, so scanning for the failed node in
+// a large graph is a colour-pop rather than a shade-comparison.
+export const CARD_FILL = '#171a25';
+export const CARD_FILL_SELECTED = '#1e2233';
+export const CARD_STROKE = '#2a2f45';
+export const CARD_STROKE_SELECTED = '#6e6df0';
+export const HANDLE_FILL = '#3a4059';
+
+/** Status colour at low alpha, for icon-tile backgrounds. */
+export function tint(hex: string, alpha: number): string {
+    const h = hex.replace('#', '');
+    const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+export const MIN_NODE_W = 212;
+export const NODE_H = 68;
+/** Card corner radius, also used to clip the left accent rail. */
+export const CARD_R = 12;
+/** Left accent rail width. */
+export const RAIL_W = 5;
+/** Square icon tile, vertically centred in the card. */
+export const ICON_TILE = 36;
+/** Left inset of the icon tile, measured from the card edge. */
+export const ICON_X = 16;
+/** Text column starts to the right of the icon tile. */
+export const TEXT_X = ICON_X + ICON_TILE + 12;
 export const COL_GAP = 90;
 export const ROW_GAP = 24;
 export const PAD = 32;
 // A group is drawn as a labeled frame around its nested sub-DAG:
 // GROUP_HEADER_H is the label bar height, GROUP_PAD the inner margin
 // between the frame and the nested content on every side.
-export const GROUP_HEADER_H = 30;
+export const GROUP_HEADER_H = 40;
 export const GROUP_PAD = 14;
 
 export interface Position {
@@ -91,7 +131,10 @@ function estimateNodeWidth(j: Job, shardAssignments: Record<string, ShardAssignm
     const contentW = Math.max(labelW, subW);
     const actionsW = 65; // Artifact + Rerun + Debug link + margins
 
-    return Math.max(MIN_NODE_W, 14 + contentW + actionsW);
+    // TEXT_X, not a bare padding: the icon tile occupies the card's left
+    // edge, so the text column starts well inside it and the label would
+    // otherwise overrun the actions on the right.
+    return Math.max(MIN_NODE_W, TEXT_X + contentW + actionsW);
 }
 
 /**
@@ -242,4 +285,42 @@ export function computeLayout(
         console.error('Layout computation failed:', e);
         return { positions: {}, resolvedJobs: [], svgW: 0, svgH: 0 };
     }
+}
+
+/**
+ * Right-angle connector between two node ports, with rounded corners.
+ *
+ * The DAG reads left-to-right in columns, so an orthogonal route follows
+ * that grid: leave the source horizontally, turn once at the midpoint
+ * between the columns, and arrive at the target horizontally. Bezier
+ * curves drift diagonally across the column gap, which makes parallel
+ * edges bow into each other and become hard to trace by eye in wide fan-
+ * outs; an elbow keeps every edge on one of two axes, so crossings are
+ * always right angles and stay readable.
+ *
+ * Radius is clamped against both the horizontal and vertical room
+ * available, so short or nearly-flat links degrade gracefully instead of
+ * producing arcs that overshoot their own segment.
+ */
+export function elbowPath(x1: number, y1: number, x2: number, y2: number, radius = 14): string {
+    const dy = y2 - y1;
+
+    // Same row: a straight rule, no corners to round.
+    if (Math.abs(dy) < 1) return `M${x1},${y1} L${x2},${y2}`;
+
+    const midX = (x1 + x2) / 2;
+    const dir = dy > 0 ? 1 : -1;
+    // Never let a corner eat more than half its own segment.
+    const r = Math.max(0, Math.min(radius, Math.abs(midX - x1), Math.abs(x2 - midX), Math.abs(dy) / 2));
+
+    if (r < 1) return `M${x1},${y1} L${midX},${y1} L${midX},${y2} L${x2},${y2}`;
+
+    return [
+        `M${x1},${y1}`,
+        `L${midX - r},${y1}`,
+        `Q${midX},${y1} ${midX},${y1 + dir * r}`,
+        `L${midX},${y2 - dir * r}`,
+        `Q${midX},${y2} ${midX + r},${y2}`,
+        `L${x2},${y2}`,
+    ].join(' ');
 }

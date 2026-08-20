@@ -3,9 +3,43 @@
     import { api, type Job, type ShardAssignmentDetail } from '../api';
     import {
         GROUP_HEADER_H, GROUP_PAD, STATUS_COLORS,
+        CARD_FILL, CARD_FILL_SELECTED, CARD_STROKE, CARD_STROKE_SELECTED,
+        HANDLE_FILL, CARD_R, RAIL_W, ICON_TILE, ICON_X, TEXT_X,
+        elbowPath, tint,
         type LayoutResult, summarizeStatuses,
     } from '../dagLayout';
-    import { RotateCcw, CheckCircle, Package, ChevronRight, ChevronDown, ExternalLink } from '@lucide/svelte';
+    import {
+        RotateCcw, CheckCircle, Package, ChevronRight, ChevronDown, ExternalLink,
+        Workflow, Layers, Rocket, UserCheck, Terminal,
+    } from '@lucide/svelte';
+
+    // Icon tile contents. The tile encodes what KIND of step this is —
+    // something the step id alone often doesn't reveal at a glance in a
+    // wide graph — while colour is reserved entirely for status. Keeping
+    // the two channels separate means neither has to be read through the
+    // other.
+    const STEP_ICONS = {
+        pipeline: Workflow,
+        shards: Layers,
+        release: Rocket,
+        approval: UserCheck,
+        step: Terminal,
+    };
+
+    function stepIcon(j: Job, hasShards: boolean) {
+        if (j.child_run_id) return STEP_ICONS.pipeline;
+        if (hasShards) return STEP_ICONS.shards;
+        if (j.status === 'approval') return STEP_ICONS.approval;
+        if (j.status === 'release' || j.status === 'docker_publish') return STEP_ICONS.release;
+        return STEP_ICONS.step;
+    }
+
+    // An edge is drawn solid once its source has actually produced a
+    // result, and dashed while it hasn't. The dash is not decoration: it
+    // marks the part of the graph that has not been traversed yet, so a
+    // half-finished run reads as a solid front advancing into dashed
+    // territory rather than as a uniform web of identical lines.
+    const SETTLED = new Set(['passed', 'failed', 'timed_out', 'canceled']);
 
     export let resolvedJobs: Job[];
     export let layout: LayoutResult;
@@ -35,7 +69,7 @@
         const labels: Record<string, string> = {
             passed: 'passed', failed: 'failed', running: 'running…',
             waiting: 'waiting…', queued: 'queued', pending: 'pending',
-            canceled: 'canceled', timed_out: 'timed out',
+            canceled: 'canceled', timed_out: 'timed out', skipped: 'skipped',
             approval: 'waiting for approval', release: 'releasing', docker_publish: 'publishing',
         };
         return labels[status] || status;
@@ -63,19 +97,20 @@
                 {#if byStep[depStep] && layout.positions[byStep[depStep].job_id]}
                     {@const from = layout.positions[byStep[depStep].job_id]}
                     {@const to = layout.positions[j.job_id]}
-                    {@const x1 = from.x + from.w}
-                    {@const y1 = from.y + from.h / 2}
-                    {@const x2 = to.x}
-                    {@const y2 = to.y + to.h / 2}
-                    {@const cx = (x1 + x2) / 2}
-                    {@const c = STATUS_COLORS[byStep[depStep].status] || STATUS_COLORS.pending}
+                    {@const src = byStep[depStep]}
+                    {@const fromH = from.nested ? GROUP_HEADER_H : from.h}
+                    {@const toH = to.nested ? GROUP_HEADER_H : to.h}
+                    {@const c = STATUS_COLORS[src.status] || STATUS_COLORS.pending}
+                    {@const settled = SETTLED.has(src.status)}
                     <path
-                        d="M{x1},{y1} C{cx},{y1} {cx},{y2} {x2},{y2}"
+                        d={elbowPath(from.x + from.w, from.y + fromH / 2, to.x, to.y + toH / 2)}
                         fill="none"
                         stroke={c.stroke}
-                        stroke-width="2"
-                        stroke-opacity="0.3"
-                        marker-end="url(#arrow-{byStep[depStep].status})"
+                        stroke-width="1.75"
+                        stroke-linecap="round"
+                        stroke-opacity={settled ? 0.55 : 0.32}
+                        stroke-dasharray={settled ? undefined : '5 5'}
+                        marker-end="url(#arrow-{src.status})"
                     />
                 {/if}
             {/each}
@@ -90,6 +125,12 @@
             {@const c = STATUS_COLORS[j.status] || STATUS_COLORS.pending}
             {@const isSelected = j.job_id === $selectedJob?.job_id}
             {@const isGroup = !!pos.nested}
+            {@const cardH = isGroup ? GROUP_HEADER_H : pos.h}
+            {@const shards = shardAssignments?.[j.step_id]}
+            {@const tileSize = isGroup ? 24 : ICON_TILE}
+            {@const tileY = pos.y + (cardH - tileSize) / 2}
+            {@const textX = pos.x + (isGroup ? ICON_X + tileSize + 10 : TEXT_X)}
+            {@const Icon = stepIcon(j, !!shards)}
 
             <g
                 class="dag-node"
@@ -98,60 +139,87 @@
                 on:click|stopPropagation={() => selectedJob.set(j)}
                 filter={isSelected ? 'url(#selected-shadow)' : 'url(#shadow)'}
             >
+                <!-- The rail is a full-height bar clipped to the card, so it
+                     picks up the card's rounded corners exactly rather than
+                     sitting inside them as a floating pill. -->
+                <clipPath id="card-{j.job_id}">
+                    <rect x={pos.x} y={pos.y} width={pos.w} height={cardH} rx={CARD_R} />
+                </clipPath>
+
                 <rect
                     x={pos.x} y={pos.y}
-                    width={pos.w} height={isGroup ? GROUP_HEADER_H : pos.h}
-                    rx="10"
-                    fill={isSelected ? '#1e293b' : c.fill}
-                    stroke={isSelected ? '#818cf8' : c.stroke}
-                    stroke-width={isSelected ? '3' : '1.5'}
+                    width={pos.w} height={cardH}
+                    rx={CARD_R}
+                    fill={isSelected ? CARD_FILL_SELECTED : CARD_FILL}
+                    stroke={isSelected ? CARD_STROKE_SELECTED : CARD_STROKE}
+                    stroke-width={isSelected ? '2' : '1'}
                 />
+                <g clip-path="url(#card-{j.job_id})">
+                    <rect x={pos.x} y={pos.y} width={RAIL_W} height={cardH} fill={c.stroke} />
+                </g>
+
+                <rect
+                    x={pos.x + ICON_X} y={tileY}
+                    width={tileSize} height={tileSize}
+                    rx={isGroup ? 7 : 10}
+                    fill={tint(c.stroke, 0.14)}
+                    stroke={tint(c.stroke, 0.38)}
+                    stroke-width="1"
+                />
+                <foreignObject x={pos.x + ICON_X} y={tileY} width={tileSize} height={tileSize}>
+                    <div class="node-icon">
+                        <Icon size={isGroup ? 13 : 18} color={c.text} />
+                    </div>
+                </foreignObject>
+
                 {#if isGroup}
                     <!-- Frame for the nested sub-DAG below the header bar -->
                     <rect
                         x={pos.x} y={pos.y + GROUP_HEADER_H}
                         width={pos.w} height={pos.h - GROUP_HEADER_H}
-                        rx="10"
+                        rx={CARD_R}
                         fill="rgba(255,255,255,0.015)"
                         stroke={c.stroke}
                         stroke-width="1"
                         stroke-dasharray="4 3"
-                        stroke-opacity="0.5"
+                        stroke-opacity="0.4"
                     />
                 {/if}
+
                 <text
                     class="dag-label"
-                    x={pos.x + 14}
-                    y={j.policy_source && !isGroup ? pos.y + 16 : pos.y + 22}
-                    fill={isSelected ? '#e2e8f0' : c.text}
+                    x={textX}
+                    y={isGroup ? pos.y + cardH / 2 + 5 : (j.policy_source ? pos.y + 27 : pos.y + 30)}
+                    fill={isSelected ? '#f1f3ff' : '#e2e4f0'}
                 >
-                    {j.step_id}{shardAssignments?.[j.step_id] ? ` ×${shardAssignments[j.step_id].length}` : ''}
+                    {j.step_id}{shards ? ` ×${shards.length}` : ''}
                 </text>
+
                 {#if !isGroup && j.policy_source}
-                    <text class="dag-sub policy" x={pos.x + 14} y={pos.y + 28} fill="#a78bfa">
+                    <text class="dag-sub policy" x={textX} y={pos.y + 41} fill="#a78bfa">
                         🛡 {j.policy_source}
                     </text>
                 {/if}
 
                 {#if isGroup}
                     {@const summary = summarizeStatuses(pos.nested.runDetail.jobs)}
-                    <text class="dag-sub group-summary" x={pos.x + pos.w - 14} y={pos.y + 20}
-                          text-anchor="end" fill={isSelected ? '#94a3b8' : c.sub}>
+                    <text class="dag-sub group-summary" x={pos.x + pos.w - 34} y={pos.y + cardH / 2 + 4}
+                          text-anchor="end" fill={c.text}>
                         {summary.label}
                     </text>
                 {:else}
                     <text
                         class="dag-sub"
-                        x={pos.x + 14}
-                        y={j.policy_source ? pos.y + 40 : pos.y + 38}
-                        fill={isSelected ? '#94a3b8' : c.sub}
+                        x={textX}
+                        y={j.policy_source ? pos.y + 54 : pos.y + 48}
+                        fill={c.text}
                     >
                         {statusBadge(j.status)}{#if j.duration_ms} · {fmtDuration(j.duration_ms)}{/if}{#if j.status === 'timed_out' && j.timeout_ns} · after {fmtTimeout(j.timeout_ns)}{/if}
                     </text>
                 {/if}
 
                 {#if !isGroup}
-                    <foreignObject x={pos.x + pos.w - 58} y={pos.y + 4} width="52" height="24">
+                    <foreignObject x={pos.x + pos.w - 60} y={pos.y + 8} width="52" height="24">
                         <div class="node-actions-top">
                             {#if jobHasArtifacts(j.job_id)}
                                 <div class="artifact-icon" title="Produces Artifacts">
@@ -176,7 +244,7 @@
 
                 {#if j.status === 'failed'}
                     <text
-                        x={pos.x + pos.w - (j.step_id.includes('-shard-') ? 10 : 65)} y={pos.y + (isGroup ? GROUP_HEADER_H : pos.h) - 10}
+                        x={pos.x + pos.w - (j.step_id.includes('-shard-') ? 12 : 66)} y={pos.y + (isGroup ? GROUP_HEADER_H : pos.h) - 12}
                         text-anchor="end" fill="#818cf8"
                         class="node-debug-link"
                         on:click|stopPropagation={() => onOpenDebug(j)}
@@ -186,7 +254,7 @@
                 {/if}
 
                 {#if shardAssignments?.[j.step_id]}
-                    <foreignObject x={pos.x + pos.w - 24} y={pos.y + pos.h - 24} width="20" height="20">
+                    <foreignObject x={pos.x + pos.w - 28} y={pos.y + pos.h - 28} width="22" height="22">
                         <button class="node-expand-btn" on:click|stopPropagation={() => onToggleShard(j.step_id)}>
                             {#if isGroup}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
                         </button>
@@ -195,14 +263,14 @@
 
                 {#if j.child_run_id}
                     {#if depth < maxDepth}
-                        <foreignObject x={pos.x + pos.w - 24} y={pos.y + 4} width="20" height="20">
+                        <foreignObject x={pos.x + pos.w - 28} y={pos.y + 9} width="22" height="22">
                             <button class="node-expand-btn" title={isGroup ? 'Collapse child pipeline' : 'Expand child pipeline'}
                                     on:click|stopPropagation={() => onTogglePipeline(j)}>
                                 {#if isGroup}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
                             </button>
                         </foreignObject>
                     {:else}
-                        <foreignObject x={pos.x + pos.w - 24} y={pos.y + 4} width="20" height="20">
+                        <foreignObject x={pos.x + pos.w - 28} y={pos.y + 9} width="22" height="22">
                             <button class="node-expand-btn" title="Open child pipeline in main view"
                                     on:click|stopPropagation={() => navigateToRunID.set(j.child_run_id)}>
                                 <ExternalLink size={12} />
@@ -233,10 +301,17 @@
 
 <style>
     .dag-node { cursor: pointer; }
-    .dag-node rect { transition: all .2s; }
-    .dag-node:hover rect { filter: brightness(1.2); }
-    .group-node:hover rect { filter: none; } /* group frame shouldn't brighten on hover like a leaf node */
+    .dag-node rect { transition: stroke .18s, fill .18s; }
+    /* Lift on hover instead of brightening the whole card: the rail and
+       icon tile carry status colour, and brightness(1.2) washed both of
+       them out on exactly the nodes a user was pointing at. */
+    .dag-node:hover > rect:first-of-type { stroke: #4a5170; }
+    .group-node:hover > rect:first-of-type { stroke: #3a4059; }
 
+    .node-icon {
+        display: flex; align-items: center; justify-content: center;
+        width: 100%; height: 100%; pointer-events: none;
+    }
     .artifact-icon { display: flex; align-items: center; justify-content: center; opacity: 0.8; }
     .node-actions-top {
         display: flex; justify-content: flex-end; align-items: center;
@@ -245,29 +320,42 @@
     .node-rerun-btn {
         background: none; border: none; padding: 3px; cursor: pointer;
         color: var(--muted); display: flex; align-items: center;
-        justify-content: center; border-radius: 4px; transition: all 0.2s;
+        justify-content: center; border-radius: 6px; transition: all 0.2s;
     }
-    .node-rerun-btn:hover { background: rgba(255,255,255,0.1); color: var(--accent); }
+    .node-rerun-btn:hover { background: rgba(255,255,255,0.08); color: var(--accent); }
     .node-rerun-btn.approve:hover { color: #fbbf24; }
     .node-debug-link {
-        font-size: 11px; font-weight: 700; cursor: pointer;
-        text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.2s;
+        font-size: 10px; font-weight: 700; cursor: pointer;
+        text-transform: uppercase; letter-spacing: 0.6px; transition: all 0.2s;
     }
     .node-debug-link:hover { fill: #a78bfa; }
+    /* Circular, like the expand affordance on the reference cards, and
+       given a visible border so it reads as a control rather than a glyph
+       that happens to sit in the corner. */
     .node-expand-btn {
-        background: none; border: none; padding: 2px; cursor: pointer;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid var(--border);
+        padding: 0; cursor: pointer; width: 22px; height: 22px;
         color: var(--muted); display: flex; align-items: center;
-        justify-content: center; border-radius: 4px; transition: all 0.2s;
+        justify-content: center; border-radius: 50%; transition: all 0.2s;
     }
-    .node-expand-btn:hover { background: rgba(255,255,255,0.1); color: var(--accent); }
+    .node-expand-btn:hover {
+        background: rgba(110,109,240,0.16);
+        border-color: var(--accent); color: var(--accent);
+    }
     .dag-label {
         font-family: 'Inter', system-ui, sans-serif; font-size: 14px;
-        font-weight: 700; pointer-events: none;
+        font-weight: 650; letter-spacing: -0.01em; pointer-events: none;
     }
+    /* The subtitle is the card's data line -- status, duration, policy --
+       so it is set in the app's mono face. Tabular figures stop durations
+       from jittering as they tick up during a running step. */
     .dag-sub {
-        font-family: 'Inter', system-ui, sans-serif; font-size: 11px;
-        font-weight: 500; pointer-events: none;
+        font-family: var(--font-mono); font-size: 10.5px;
+        font-weight: 500; letter-spacing: 0.02em;
+        font-variant-numeric: tabular-nums; pointer-events: none;
+        opacity: 0.85;
     }
     .dag-sub.policy { font-size: 10px; }
-    .dag-sub.group-summary { font-size: 11px; font-weight: 700; }
+    .dag-sub.group-summary { font-size: 10.5px; font-weight: 600; }
 </style>

@@ -295,8 +295,13 @@
                 on:click|stopPropagation={() => selectedJob.set(null)}
             >
                 <defs>
-                    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.03)" stroke-width="1"/>
+                    <!-- Dots rather than ruled squares: the graph is read
+                         along its edges, and a line grid competes with them
+                         at exactly the angles the edges use. Dots give the
+                         same sense of a positioned canvas without drawing
+                         anything that could be mistaken for a connection. -->
+                    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                        <circle cx="1" cy="1" r="1" fill="rgba(255,255,255,0.055)"/>
                     </pattern>
                     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
                         <feGaussianBlur in="SourceAlpha" stdDeviation="2" />
@@ -324,18 +329,21 @@
                         <marker 
                             id="arrow-{status}" 
                             viewBox="0 0 10 10" 
-                            refX="8" 
+                            refX="9"
                             refY="5"
-                            markerWidth="6" 
-                            markerHeight="6" 
+                            markerWidth="5"
+                            markerHeight="5"
                             orient="auto-start-reverse"
                         >
-                            <path 
-                                d="M2 1L8 5L2 9" 
-                                fill="none" 
-                                stroke={c.stroke}
-                                stroke-width="1.5" 
-                                stroke-linecap="round"
+                            <!-- Solid head, matching the reference: a filled
+                                 triangle stays legible at the small marker
+                                 size an orthogonal route needs, where an
+                                 open chevron blurs into the line. -->
+                            <path
+                                d="M2 1.5L9 5L2 8.5Z"
+                                fill={c.stroke}
+                                fill-opacity="0.75"
+                                stroke="none"
                             />
                         </marker>
                     {/each}
