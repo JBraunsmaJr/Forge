@@ -293,6 +293,7 @@ func fromGoTest(inputPath, outputPath string) error {
 	report := api.TestReport{
 		Version:         1,
 		Framework:       "go-test",
+		KeyKind:         api.TestKeyGoTestName,
 		TotalDurationMS: totalDuration,
 		Files:           files,
 	}
@@ -348,6 +349,7 @@ func fromPytest(inputPath, outputPath string) error {
 	report := api.TestReport{
 		Version:         1,
 		Framework:       "pytest",
+		KeyKind:         api.TestKeyFilePath,
 		TotalDurationMS: int64(pytestReport.Duration * 1000),
 		Files:           files,
 	}
@@ -394,6 +396,7 @@ func fromJest(inputPath, outputPath string) error {
 	report := api.TestReport{
 		Version:         1,
 		Framework:       "jest",
+		KeyKind:         api.TestKeyFilePath,
 		TotalDurationMS: totalDuration,
 		Files:           files,
 	}
@@ -447,6 +450,7 @@ func fromRSpec(inputPath, outputPath string) error {
 	report := api.TestReport{
 		Version:         1,
 		Framework:       "rspec",
+		KeyKind:         api.TestKeyFilePath,
 		TotalDurationMS: int64(rspecReport.Summary.Duration * 1000),
 		Files:           files,
 	}

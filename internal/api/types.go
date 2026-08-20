@@ -693,9 +693,30 @@ type TestFileResult struct {
 	Skipped    int    `json:"skipped"`
 }
 
+// TestKeyKind names the scheme a report's TestFileResult.Path values use.
+// It exists because "path" is not self-describing: go-test reports key by
+// top-level test NAME (go test -json cannot report which file a test lives
+// in), while every other framework keys by FILE PATH. Shard planning feeds
+// these values back to the runner as a selector, so consuming a value keyed
+// one way as though it were the other selects nothing, runs nothing, exits
+// 0, and reports no durations — which freezes the history that produced the
+// bad selector in the first place. Recording the scheme lets the planner
+// ignore history it cannot interpret instead of silently poisoning itself.
+type TestKeyKind string
+
+const (
+	// TestKeyGoTestName: values are top-level Go test function names,
+	// e.g. "TestAuth_Login". Consumed via `go test -run`.
+	TestKeyGoTestName TestKeyKind = "go-test-name"
+	// TestKeyFilePath: values are repo-relative test file paths,
+	// e.g. "tests/e2e/login.spec.ts".
+	TestKeyFilePath TestKeyKind = "file-path"
+)
+
 type TestReport struct {
 	Version         int              `json:"version"` // always 1
 	Framework       string           `json:"framework"`
+	KeyKind         TestKeyKind      `json:"key_kind"`
 	TotalDurationMS int64            `json:"total_duration_ms"`
 	Files           []TestFileResult `json:"files"`
 }

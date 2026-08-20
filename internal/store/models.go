@@ -212,22 +212,26 @@ type Job struct {
 
 // TestFileDuration represents the test_file_durations table.
 type TestFileDuration struct {
-	ID           uint64    `gorm:"primaryKey;autoIncrement"`
-	RunID        string    `gorm:"not null;index:test_file_dur_run_idx"`
-	Run          Run       `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
-	JobID        string    `gorm:"not null;index:test_file_dur_job_id_idx"`
-	Job          Job       `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
-	ProjectID    *string   `gorm:"index:test_file_dur_step_idx,priority:1"`
-	Project      *Project  `gorm:"foreignKey:ProjectID;constraint:OnDelete:SET NULL"`
-	PipelineName string    `gorm:"not null;index:test_file_dur_step_idx,priority:2"`
-	StepID       string    `gorm:"not null;index:test_file_dur_step_idx,priority:3"`
-	FilePath     string    `gorm:"not null"`
-	DurationMS   int64     `gorm:"not null"`
-	TestCount    int       `gorm:"not null;default:0"`
-	Passed       int       `gorm:"not null;default:0"`
-	Failed       int       `gorm:"not null;default:0"`
-	Skipped      int       `gorm:"not null;default:0"`
-	CreatedAt    time.Time `gorm:"not null;default:now();index:test_file_dur_step_idx,priority:4,sort:desc"`
+	ID           uint64   `gorm:"primaryKey;autoIncrement"`
+	RunID        string   `gorm:"not null;index:test_file_dur_run_idx"`
+	Run          Run      `gorm:"foreignKey:RunID;constraint:OnDelete:CASCADE"`
+	JobID        string   `gorm:"not null;index:test_file_dur_job_id_idx"`
+	Job          Job      `gorm:"foreignKey:JobID;constraint:OnDelete:CASCADE"`
+	ProjectID    *string  `gorm:"index:test_file_dur_step_idx,priority:1"`
+	Project      *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:SET NULL"`
+	PipelineName string   `gorm:"not null;index:test_file_dur_step_idx,priority:2"`
+	StepID       string   `gorm:"not null;index:test_file_dur_step_idx,priority:3"`
+	FilePath     string   `gorm:"not null"`
+	// KeyKind records how FilePath is keyed (see api.TestKeyKind). Rows
+	// written before this column existed are backfilled to '' and are
+	// treated as an unknown, unusable scheme by shard planning.
+	KeyKind    string    `gorm:"not null;default:''"`
+	DurationMS int64     `gorm:"not null"`
+	TestCount  int       `gorm:"not null;default:0"`
+	Passed     int       `gorm:"not null;default:0"`
+	Failed     int       `gorm:"not null;default:0"`
+	Skipped    int       `gorm:"not null;default:0"`
+	CreatedAt  time.Time `gorm:"not null;default:now();index:test_file_dur_step_idx,priority:4,sort:desc"`
 }
 
 // TestShardAssignment represents the test_shard_assignments table.

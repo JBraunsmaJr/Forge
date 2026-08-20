@@ -1,6 +1,8 @@
 package scheduler
 
 import (
+	"fmt"
+
 	"github.com/JBraunsmaJr/forge/internal/api"
 )
 
@@ -19,14 +21,30 @@ func (s *Store) RecordTestReport(req api.RecordTestReportRequest) error {
 		projectID = req.ProjectID
 	}
 
+	// A report with no files is the signature of a shard that selected
+	// nothing and exited 0 — a silent no-op that records no durations and
+	// so leaves the (bad) history that caused it in place. It is never a
+	// normal outcome for a step configured to report tests, so say so
+	// loudly rather than committing an empty transaction.
+	if len(req.Report.Files) == 0 {
+		fmt.Printf("[scheduler] WARNING: empty test report from run=%.8s step=%s "+
+			"pipeline=%q — the step ran no tests; shard history will not advance\n",
+			req.RunID, req.StepID, req.PipelineName)
+	}
+
+	// Reports predating key_kind report "", which shard planning treats as
+	// an unusable scheme. Don't guess a kind for them: guessing wrong is
+	// exactly the failure this column exists to prevent.
+	keyKind := string(req.Report.KeyKind)
+
 	for _, f := range req.Report.Files {
 		_, err := tx.Exec(`
 			INSERT INTO test_file_durations (
 				run_id, job_id, project_id, pipeline_name, step_id,
-				file_path, duration_ms, test_count, passed, failed, skipped
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+				file_path, key_kind, duration_ms, test_count, passed, failed, skipped
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			req.RunID, req.JobID, projectID, req.PipelineName, req.StepID,
-			f.Path, f.DurationMS, f.Tests, f.Passed, f.Failed, f.Skipped,
+			f.Path, keyKind, f.DurationMS, f.Tests, f.Passed, f.Failed, f.Skipped,
 		)
 		if err != nil {
 			return err

@@ -57,6 +57,7 @@ nav:
   - Roles & Permissions: Roles.md
   - CLI Reference: Cli-Reference.md
   - Pipeline Reference: Pipeline-Reference.md
+  - Test Splitting: Test-Splitting.md
   - Step Registry: Step-Registry.md
   - Testing CI Logic: Testing-CI-Logic.md
   - Examples: Examples.md
