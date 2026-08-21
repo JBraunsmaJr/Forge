@@ -24,7 +24,9 @@ RUN apk add --no-cache jq
 # Patch vulnerable packages inherited from the base image
 RUN pip install --no-cache-dir --upgrade pip \
     "wheel>=0.46.2" \
-    "jaraco.context>=6.1.0"
+   "jaraco.context>=6.1.0" \
+   "setuptools>=78.1.1" \
+   "msgpack>=1.2.1"
 
 # Copy transformer scripts into the image.
 # In a real org you'd copy your own scripts here.
