@@ -11,6 +11,19 @@ import json
 import sys
 import re
 
+
+SAFE_TAG = re.compile(r"^(?:[A-Za-z0-9._:/@=+-]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$")
+
+
+def shell_scan(tag, extra=""):
+    """A `sh -c` invocation of trivy with the tag safely interpolated.
+
+    The aquasec/trivy image sets ENTRYPOINT ["trivy"], so running a shell
+    requires overriding the entrypoint -- otherwise `sh` and `-c` would be
+    passed to trivy as arguments.
+    """
+    return "exec trivy image --severity HIGH,CRITICAL --no-progress %s\"%s\"" % (extra, tag)
+
 def is_docker_build(step):
     run = step.get("run", "") or ""
     command = " ".join(step.get("command", []) or [])
@@ -35,9 +48,23 @@ def main():
         if is_docker_build(s)
     }
 
-    # Filter out steps where we couldn't find an image tag.
-    # Trivy cannot scan an image if we don't know its name.
+    # A build step whose image name we cannot determine goes UNSCANNED.
+    # This is a security policy, so that is never a silent outcome: warn
+    # on stderr so it shows up in the run log rather than looking like the
+    # step was simply clean.
+    for sid, tag in build_steps.items():
+        if not tag:
+            print(f"container-security: WARNING no image tag found for build step "
+                  f"{sid!r}; it will NOT be scanned", file=sys.stderr)
     build_steps = {k: v for k, v in build_steps.items() if v}
+
+    # A tag we cannot safely quote is a hard failure, not a skip: emitting
+    # it would splice attacker-influenced text into a shell command.
+    for sid, tag in build_steps.items():
+        if not SAFE_TAG.match(tag):
+            print(f"container-security: refusing to scan build step {sid!r}: image tag "
+                  f"{tag!r} contains characters that cannot be safely quoted", file=sys.stderr)
+            sys.exit(1)
 
     if not build_steps:
         print(json.dumps(steps, indent=2))
@@ -54,13 +81,13 @@ def main():
             report_id = f"trivy-report-{step['id']}"
             scan_id = f"trivy-scan-{step['id']}"
             scan_map[step["id"]] = scan_id
+            report_extra = f'--format template --template "@/contrib/html.tpl" -o "{scan_id}.html" '
             result.append({
                 "id":      report_id,
                 "image":   "aquasec/trivy:latest",
                 "docker_socket": True,
-                "command": ["image", "--severity", "HIGH,CRITICAL", "--no-progress",
-                            "--format", "template", "--template", "@/contrib/html.tpl",
-                            "-o", f"{scan_id}.html", image_tag],
+                "entrypoint": ["/bin/sh"],
+                "command": ["-c", shell_scan(image_tag, report_extra)],
                 "depends_on": [step["id"]],
                 "workdir": "/workspace",
                 "artifact_uploads": [
@@ -71,7 +98,8 @@ def main():
                 "id":      scan_id,
                 "image":   "aquasec/trivy:latest",
                 "docker_socket": True,
-                "command": ["image", "--severity", "HIGH,CRITICAL", "--no-progress", image_tag],
+                "entrypoint": ["/bin/sh"],
+                "command": ["-c", shell_scan(image_tag)],
                 "env":     {"TRIVY_EXIT_CODE": "1"},
                 "depends_on": [report_id],
                 "workdir": "/workspace",

@@ -152,3 +152,41 @@ if os.path.exists("/workspace/Dockerfile"):
 
 print(json.dumps(steps))
 ```
+## Image tags containing variables
+
+`container-security.py` reads the image reference straight out of your
+`docker build -t …` line, so whatever you wrote there is what Trivy is
+asked to scan — including any shell variables.
+
+That matters because `FORGE_BUILD_NUMBER` is assigned when the run is
+inserted, which happens *after* policies run. Its value cannot be known at
+policy time, so the injected scan steps run through `/bin/sh -c` and let
+the shell expand the variable at execution time, from the env the
+scheduler stamps onto every step:
+
+```yaml
+- id: build-image
+  run: docker build -t ghcr.io/acme/app:test-${FORGE_BUILD_NUMBER} .
+```
+
+```
+trivy image "ghcr.io/acme/app:test-${FORGE_BUILD_NUMBER}"   # -> test-417
+```
+
+The scan steps override the image entrypoint to do this. `aquasec/trivy`
+sets `ENTRYPOINT ["trivy"]`, so without `entrypoint: ["/bin/sh"]` the
+shell invocation would be passed to Trivy as arguments.
+
+Two consequences worth knowing:
+
+- **Use shell syntax (`${VAR}`), not `${{ env.VAR }}`, in a build tag.**
+  The `${{ … }}` form is resolved by the compiler, which runs before the
+  build number exists; it will not produce a value here.
+- **Tags are validated before interpolation.** A tag is allowed to contain
+  image-reference characters and `$VAR` / `${VAR}` and nothing else. A tag
+  carrying quotes, backticks, `$(…)`, `;`, `&` or `|` fails the policy
+  rather than being spliced into a shell command.
+
+A `docker build` step whose tag cannot be found is **not scanned**. The
+policy warns on stderr rather than failing, so check the run log if you
+expect a scan and don't see one.
