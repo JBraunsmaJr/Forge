@@ -66,7 +66,7 @@ steps:
     artifacts:
       download:
         - name: ui-dist.tar.gz
-    timeout: 10m
+    timeout: 30m
     split:
       strategy: duration
       shards: 3
