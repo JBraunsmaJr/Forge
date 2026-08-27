@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Forge">
+  <!-- A step fanning out into two: the smallest complete Forge DAG. -->
+  <g stroke="#6e6df0" stroke-width="2" stroke-linecap="round" fill="none">
+    <path d="M9.2 15 20 8.6" />
+    <path d="M9.2 17 20 23.4" />
+    <circle cx="23.4" cy="24.6" r="3" />
+  </g>
+  <g fill="#6e6df0">
+    <circle cx="6.4" cy="16" r="3.4" />
+    <circle cx="23.4" cy="7.4" r="3.4" />
+  </g>
+</svg>

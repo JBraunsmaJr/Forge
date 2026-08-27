@@ -1,67 +1,128 @@
-site_name: Forge Documentation
-site_description: "The programmable CI/CD engine for modern teams"
-site_url: https://JBraunsmaJr.github.io/forge/
-repo_url: https://github.com/JBraunsmaJr/forge
+site_name: Forge
+site_description: "Code-first CI/CD. Pipeline logic lives in your repo, not in YAML strings."
+site_url: https://jbraunsmajr.github.io/Forge/
+repo_url: https://github.com/JBraunsmaJr/Forge
+repo_name: JBraunsmaJr/Forge
 edit_uri: edit/main/docs/
+copyright: "Forge is free software under the AGPL-3.0."
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
   features:
+    # Navigation
     - navigation.tabs
     - navigation.tabs.sticky
-    - navigation.sections
-    - navigation.expand
     - navigation.top
     - navigation.indexes
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - toc.follow
+    # Content
     - content.code.copy
     - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.action.view
+    # Search
     - search.suggest
     - search.highlight
     - search.share
   palette:
-    - scheme: default
-      primary: indigo
-      accent: indigo
-      media: "(prefers-color-scheme: light)"
-    - scheme: slate
-      primary: indigo
-      accent: indigo
-      media: "(prefers-color-scheme: dark)"
+    # First load follows the OS setting; the toggle overrides and persists.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/JBraunsmaJr/Forge
+      name: Forge on GitHub
+    - icon: material/bug
+      link: https://github.com/JBraunsmaJr/Forge/issues
+      name: Report an issue
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      type: date
+      enable_creation_date: false
+      fallback_to_build_date: true
 
 markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
+  - pymdownx.keys
   - pymdownx.snippets
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
           class: mermaid
-  - admonition
-  - pymdownx.details
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
-  - attr_list
-  - md_in_html
-  - tables
-  - toc:
-      permalink: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
 
 nav:
   - Home: index.md
-  - Getting Started: Getting-Started.md
-  - Architecture: Architecture.md
-  - Configuration: Configuration.md
-  - Roles & Permissions: Roles.md
-  - CLI Reference: Cli-Reference.md
-  - Pipeline Reference: Pipeline-Reference.md
-  - Test Splitting: Test-Splitting.md
-  - Step Registry: Step-Registry.md
-  - Testing CI Logic: Testing-CI-Logic.md
-  - Examples: Examples.md
-  - Cloud Autoscaling: Cloud-Autoscaling.md
-  - Secrets: Secrets.md
-  - Policies: Policies.md
-  - Debugging: Debugging.md
+
+  - Get started:
+      - Install and run: Getting-Started.md
+      - Example pipelines: Examples.md
+      - How Forge works: Architecture.md
+
+  - Guides:
+      - Testing CI logic: Testing-CI-Logic.md
+      - Test splitting: Test-Splitting.md
+      - Debug sessions: Debugging.md
+      - Secrets: Secrets.md
+      - Policy engine: Policies.md
+      - Cloud autoscaling: Cloud-Autoscaling.md
+      - HTTPS and reverse proxies: HTTPS.md
+
+  - Reference:
+      - Pipeline: Pipeline-Reference.md
+      - Step registry: Step-Registry.md
+      - CLI: Cli-Reference.md
+      - Configuration: Configuration.md
+      - Roles and permissions: Roles.md

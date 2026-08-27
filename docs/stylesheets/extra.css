@@ -1,0 +1,342 @@
+/* ==========================================================================
+   Forge documentation theme
+
+   Colors are lifted directly from the Forge web UI's own token set
+   (ui/src/app.css) so the docs and the product read as one thing.
+   Keep the two files in sync when the app palette changes.
+   ========================================================================== */
+
+:root {
+  --forge-bg: #0f1117;
+  --forge-surface: #1a1d27;
+  --forge-surface-2: #22263a;
+  --forge-border: #2e3248;
+  --forge-text: #e2e4f0;
+  --forge-muted: #8b90b3;
+  --forge-accent: #6e6df0;
+  --forge-green: #3ecf8e;
+  --forge-amber: #f59e0b;
+  --forge-red: #f87171;
+  --forge-blue: #60a5fa;
+
+  --forge-radius: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   Light scheme
+   -------------------------------------------------------------------------- */
+
+[data-md-color-scheme="default"] {
+  /* The header keeps the app's chrome color in both schemes, so the docs
+     and the dashboard share a silhouette. */
+  --md-primary-fg-color: #0f1117;
+  --md-primary-fg-color--light: #1a1d27;
+  --md-primary-fg-color--dark: #0b0d12;
+  --md-primary-bg-color: #e2e4f0;
+  --md-primary-bg-color--light: #8b90b3;
+
+  /* #6e6df0 is too light for body links on white; darken for AA contrast. */
+  --md-accent-fg-color: #4b49cf;
+  --md-typeset-a-color: #4b49cf;
+
+  --md-default-bg-color: #fbfbfd;
+  --md-default-fg-color: #191b23;
+  --md-default-fg-color--light: #5b6079;
+  --md-default-fg-color--lighter: #9aa0b8;
+
+  --md-code-bg-color: #f2f3f8;
+  --md-code-fg-color: #262a38;
+
+  --forge-rule: #e2e4ee;
+  --forge-panel: #ffffff;
+  --forge-panel-muted: #f6f7fb;
+}
+
+/* --------------------------------------------------------------------------
+   Dark scheme — a 1:1 match with the running app
+   -------------------------------------------------------------------------- */
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 232;
+
+  --md-primary-fg-color: #0f1117;
+  --md-primary-fg-color--light: #1a1d27;
+  --md-primary-fg-color--dark: #0b0d12;
+  --md-primary-bg-color: #e2e4f0;
+  --md-primary-bg-color--light: #8b90b3;
+
+  --md-accent-fg-color: #9291f5;
+  --md-typeset-a-color: #9291f5;
+
+  --md-default-bg-color: var(--forge-bg);
+  --md-default-fg-color: var(--forge-text);
+  --md-default-fg-color--light: var(--forge-muted);
+  --md-default-fg-color--lighter: #6b7093;
+
+  --md-code-bg-color: #161923;
+  --md-code-fg-color: #dfe2f0;
+
+  --md-footer-bg-color: #0b0d12;
+  --md-footer-bg-color--dark: #090a0f;
+
+  --forge-rule: var(--forge-border);
+  --forge-panel: var(--forge-surface);
+  --forge-panel-muted: #161923;
+}
+
+/* --------------------------------------------------------------------------
+   Chrome
+   -------------------------------------------------------------------------- */
+
+.md-header {
+  border-bottom: 1px solid rgba(110, 109, 240, 0.28);
+  box-shadow: none;
+}
+
+.md-tabs {
+  border-bottom: 1px solid var(--forge-rule);
+}
+
+.md-tabs__link {
+  font-size: 0.72rem;
+  letter-spacing: 0.01em;
+  opacity: 0.72;
+}
+
+.md-tabs__link--active,
+.md-tabs__link:hover {
+  opacity: 1;
+}
+
+/* Section labels in the sidebar read as headers, not as more links. */
+.md-nav--secondary .md-nav__title,
+.md-nav__title[for="__toc"] {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Typography
+   -------------------------------------------------------------------------- */
+
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset h2 {
+  font-weight: 650;
+  letter-spacing: -0.014em;
+  margin-top: 2.2em;
+  padding-top: 0.4em;
+  border-top: 1px solid var(--forge-rule);
+}
+
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+
+.md-typeset code {
+  border-radius: 4px;
+  font-size: 0.82em;
+}
+
+.md-typeset pre > code {
+  border: 1px solid var(--forge-rule);
+  border-radius: var(--forge-radius);
+}
+
+/* --------------------------------------------------------------------------
+   Tables — dense and scannable, the way the app renders job data
+   -------------------------------------------------------------------------- */
+
+.md-typeset table:not([class]) {
+  border: 1px solid var(--forge-rule);
+  border-radius: var(--forge-radius);
+  font-size: 0.72rem;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--forge-panel-muted);
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+  white-space: nowrap;
+}
+
+.md-typeset table:not([class]) td {
+  border-top: 1px solid var(--forge-rule);
+  vertical-align: top;
+}
+
+/* --------------------------------------------------------------------------
+   Admonitions — squared off, accent rail instead of a tinted title bar
+   -------------------------------------------------------------------------- */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border: 1px solid var(--forge-rule);
+  border-left-width: 3px;
+  border-radius: var(--forge-radius);
+  box-shadow: none;
+  font-size: 0.74rem;
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background: var(--forge-panel-muted);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Card grids
+   -------------------------------------------------------------------------- */
+
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--forge-rule);
+  border-radius: var(--forge-radius);
+  background: var(--forge-panel);
+  box-shadow: none;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--forge-accent);
+  transform: translateY(-2px);
+}
+
+.md-typeset .grid.cards > ul > li > hr {
+  margin: 0.6em 0;
+  border-color: var(--forge-rule);
+}
+
+/* --------------------------------------------------------------------------
+   Landing page
+   -------------------------------------------------------------------------- */
+
+.forge-eyebrow {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  /* Scheme-aware: #6e6df0 itself is under 4.5:1 on a light background. */
+  color: var(--md-accent-fg-color);
+  margin-bottom: 0.6rem;
+}
+
+.md-typeset .forge-hero h1 {
+  font-size: 2.1rem;
+  line-height: 1.12;
+  max-width: 18ch;
+  margin: 0 0 0.5rem;
+}
+
+.md-typeset .forge-hero p.forge-lede {
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+  max-width: 58ch;
+}
+
+/* Signature: the pitch shown the way the app shows two jobs side by side.
+   The left panel is what you write elsewhere; the right is what you write here. */
+.forge-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.6rem 0 2rem;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .forge-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.forge-split > div {
+  border: 1px solid var(--forge-rule);
+  border-radius: var(--forge-radius);
+  background: var(--forge-panel);
+  overflow: hidden;
+}
+
+.forge-split > div > .forge-node {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--forge-rule);
+  background: var(--forge-panel-muted);
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.64rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+}
+
+.forge-split > div > .forge-node::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--forge-muted);
+  flex: none;
+}
+
+.forge-split > div.is-legacy > .forge-node::before {
+  background: var(--forge-red);
+}
+
+.forge-split > div.is-forge > .forge-node::before {
+  background: var(--forge-green);
+  box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.6);
+  animation: forge-heartbeat 2.4s ease-out infinite;
+}
+
+@keyframes forge-heartbeat {
+  0% { box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(62, 207, 142, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(62, 207, 142, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .forge-split > div.is-forge > .forge-node::before {
+    animation: none;
+  }
+}
+
+/* The panels hold code blocks; strip the doubled-up chrome. */
+.md-typeset .forge-split .highlight {
+  margin: 0;
+}
+
+.md-typeset .forge-split pre > code {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------------------
+   Screenshots
+   -------------------------------------------------------------------------- */
+
+.md-typeset img.forge-shot {
+  border: 1px solid var(--forge-rule);
+  border-radius: var(--forge-radius);
+  display: block;
+  width: 100%;
+}

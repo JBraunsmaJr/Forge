@@ -71,7 +71,7 @@ Durations use Go's duration syntax (`30s`, `5m`, `1h`).
 | `FORGE_AZURE_HOT_VMSS`             | Name of the VM Scale Set scaled for the `hot` pool. Required if `FORGE_AUTOSCALER_HOT_POOL_SIZE > 0`. |
 | `FORGE_AZURE_BURST_VMSS`           | Name of the VM Scale Set scaled for the `burst` pool. Required for burst scaling.                    |
 
-Authentication uses the Azure SDK's [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/go/azure-sdk-authentication) chain, so the autoscaler will pick up credentials from environment variables, a managed identity, or the Azure CLI — whichever is available first. For an unattended deployment (e.g. [`deployments/autoscaler/compose.yml`](../deployments/autoscaler/compose.yml)), use a service principal:
+Authentication uses the Azure SDK's [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/go/azure-sdk-authentication) chain, so the autoscaler will pick up credentials from environment variables, a managed identity, or the Azure CLI — whichever is available first. For an unattended deployment (e.g. [`deployments/autoscaler/compose.yml`](https://github.com/JBraunsmaJr/Forge/blob/main/deployments/autoscaler/compose.yml)), use a service principal:
 
 | Variable              | Description                                       |
 |-------------------------|------------------------------------------------------|
@@ -97,13 +97,13 @@ The autoscaler exposes Prometheus metrics on `FORGE_AUTOSCALER_METRICS_PORT` (de
 | `forge_autoscaler_observed_queue_depth`         | Gauge   | —                       | Last observed scheduler queue depth.                                                                                         |
 | `forge_autoscaler_provisioner_errors_total`     | Counter | `operation`             | Provisioner call failures by operation (`list`, `scale_up_hot`, `scale_up_burst`, `scale_down`, `scale_down_orphan`).        |
 
-A Grafana panel set is provisioned automatically from [`grafana/provisioning/dashboards/forge-dashboard.json`](../grafana/provisioning/dashboards/forge-dashboard.json) when running with [`compose.metrics.yml`](../compose.metrics.yml). A default Prometheus alert, `BurstPoolPinnedAtMax`, fires when the burst pool has been pinned at its configured maximum for 15 minutes while jobs are still queued — see [`prometheus/alerts.yml`](../prometheus/alerts.yml).
+A Grafana panel set is provisioned automatically from [`grafana/provisioning/dashboards/forge-dashboard.json`](https://github.com/JBraunsmaJr/Forge/blob/main/grafana/provisioning/dashboards/forge-dashboard.json) when running with [`compose.metrics.yml`](https://github.com/JBraunsmaJr/Forge/blob/main/compose.metrics.yml). A default Prometheus alert, `BurstPoolPinnedAtMax`, fires when the burst pool has been pinned at its configured maximum for 15 minutes while jobs are still queued — see [`prometheus/alerts.yml`](https://github.com/JBraunsmaJr/Forge/blob/main/prometheus/alerts.yml).
 
 ---
 
 ## Running locally (`docker-fake`)
 
-The root [`compose.yml`](../compose.yml) already includes an `autoscaler` service wired to `docker-fake`, so it works out of the box:
+The root [`compose.yml`](https://github.com/JBraunsmaJr/Forge/blob/main/compose.yml) already includes an `autoscaler` service wired to `docker-fake`, so it works out of the box:
 
 ```bash
 docker compose up --build -d
@@ -121,8 +121,8 @@ cp .env.example .env   # fill in the scheduler URL, token, and Azure details
 docker compose up -d
 ```
 
-See [`deployments/autoscaler/compose.yml`](../deployments/autoscaler/compose.yml) and the [Deployments guide](../deployments/Readme.md) for the full environment variable list.
+See [`deployments/autoscaler/compose.yml`](https://github.com/JBraunsmaJr/Forge/blob/main/deployments/autoscaler/compose.yml) and the [Deployments guide](https://github.com/JBraunsmaJr/Forge/blob/main/deployments/Readme.md) for the full environment variable list.
 
 Unlike `docker-fake`, the `azure` provider only makes outbound calls to Azure Resource Manager — it does not need a Docker socket, so this deployment doesn't mount one.
 
-> The compose file pulls `FORGE_AUTOSCALER_IMAGE` (default `ghcr.io/jbraunsmajr/forge/forge-autoscaler:latest`). If that image isn't published to a registry reachable from your host yet, build it from [`deployments/autoscaler/Dockerfile`](../deployments/autoscaler/Dockerfile) and push it somewhere reachable, or point `FORGE_AUTOSCALER_IMAGE` at a locally built tag.
+> The compose file pulls `FORGE_AUTOSCALER_IMAGE` (default `ghcr.io/jbraunsmajr/forge/forge-autoscaler:latest`). If that image isn't published to a registry reachable from your host yet, build it from [`deployments/autoscaler/Dockerfile`](https://github.com/JBraunsmaJr/Forge/blob/main/deployments/autoscaler/Dockerfile) and push it somewhere reachable, or point `FORGE_AUTOSCALER_IMAGE` at a locally built tag.

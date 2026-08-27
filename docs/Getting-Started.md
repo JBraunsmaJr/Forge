@@ -367,7 +367,7 @@ For testing without HTTPS, use the **Manual Trigger** button in the Web UI on th
 
 ## Next Steps
 
-- [Pipeline Reference](pipeline-reference.md) — learn every pipeline field
-- [Examples Guide](examples.md) — dynamic matrices, monorepos, pipeline chaining
-- [Policy Engine](policies.md) — enforce org-wide security rules
-- [Debug Sessions](debugging.md) — live terminal for failing jobs
+- [Pipeline Reference](Pipeline-Reference.md) — learn every pipeline field
+- [Examples Guide](Examples.md) — dynamic matrices, monorepos, pipeline chaining
+- [Policy Engine](Policies.md) — enforce org-wide security rules
+- [Debug Sessions](Debugging.md) — live terminal for failing jobs

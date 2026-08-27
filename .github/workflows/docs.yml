@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -38,7 +40,9 @@ jobs:
           pip install -r requirements.txt
           
       - name: Build
-        run: mkdocs build
+        # --strict turns broken internal links and orphaned pages into
+        # build failures instead of silent 404s on the published site.
+        run: mkdocs build --strict
         
       - name: Setup Pages
         uses: actions/configure-pages@v5

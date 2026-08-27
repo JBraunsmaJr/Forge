@@ -5,6 +5,9 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Go 1.22+](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://go.dev)
 [![Docker](https://img.shields.io/badge/Docker-required-2496ED.svg)](https://docs.docker.com/get-docker/)
+[![Docs](https://img.shields.io/badge/docs-jbraunsmajr.github.io%2FForge-6e6df0.svg)](https://jbraunsmajr.github.io/Forge/)
+
+**📖 Full documentation: [jbraunsmajr.github.io/Forge](https://jbraunsmajr.github.io/Forge/)**
 
 ---
 
@@ -237,7 +240,7 @@ docker compose -f compose.yml -f compose.metrics.yml up -d
 
 ### Option D: Cloud Autoscaling
 
-Forge can provision and tear down agents automatically instead of running a fixed pool. The dev stack above already includes an `autoscaler` service backed by a local Docker-based provisioner; for a production deployment backed by Azure VM Scale Sets, see the [Cloud Autoscaling guide](docs/Cloud-Autoscaling.md) and [`deployments/autoscaler/`](deployments/autoscaler).
+Forge can provision and tear down agents automatically instead of running a fixed pool. The dev stack above already includes an `autoscaler` service backed by a local Docker-based provisioner; for a production deployment backed by Azure VM Scale Sets, see the [Cloud Autoscaling guide](https://jbraunsmajr.github.io/Forge/Cloud-Autoscaling/) and [`deployments/autoscaler/`](deployments/autoscaler).
 
 After init completes, the terminal shows:
 
@@ -298,7 +301,7 @@ steps:
       docker build -t myapp:latest .
 ```
 
-See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field list, or the [Examples Guide](docs/examples.md) for real-world patterns.
+See the [Pipeline Reference](https://jbraunsmajr.github.io/Forge/Pipeline-Reference/) for the complete field list, or the [Examples Guide](https://jbraunsmajr.github.io/Forge/Examples/) for real-world patterns.
 
 ---
 
@@ -306,18 +309,18 @@ See the [Pipeline Reference](docs/pipeline-reference.md) for the complete field 
 
 | Guide                                                      | Description                                                         |
 |------------------------------------------------------------|---------------------------------------------------------------------|
-| [Getting Started](docs/getting-started.md)                 | Full setup for local, single-machine, and team deployments          |
-| [Pipeline Reference](docs/pipeline-reference.md)           | Every pipeline field documented with examples                       |
-| [Examples Guide](docs/examples.md)                         | Dynamic matrices, monorepos, pipeline chaining, progressive deploys |
-| [Secrets Management](docs/secrets.md)                      | Vault integration with project/org/global scoping                   |
-| [Artifact Storage](docs/configuration.md#artifact-storage) | Local filesystem and S3-compatible backends                         |
-| [Policy Engine](docs/policies.md)                          | Org-wide security injection                                         |
-| [Debug Sessions](docs/debugging.md)                        | Live terminal in failing job containers                             |
-| [CLI Reference](docs/cli-reference.md)                     | All commands and flags                                              |
-| [Configuration](docs/configuration.md)                     | Environment variables reference                                     |
-| [HTTPS / Proxy](docs/HTTPS.md)                             | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
-| [Cloud Autoscaling](docs/Cloud-Autoscaling.md)              | Hot/burst agent pools provisioned automatically via Docker or Azure |
-| [Architecture](docs/architecture.md)                       | How Forge works under the hood                                      |
+| [Getting Started](https://jbraunsmajr.github.io/Forge/Getting-Started/)                 | Full setup for local, single-machine, and team deployments          |
+| [Pipeline Reference](https://jbraunsmajr.github.io/Forge/Pipeline-Reference/)           | Every pipeline field documented with examples                       |
+| [Examples Guide](https://jbraunsmajr.github.io/Forge/Examples/)                         | Dynamic matrices, monorepos, pipeline chaining, progressive deploys |
+| [Secrets Management](https://jbraunsmajr.github.io/Forge/Secrets/)                      | Vault integration with project/org/global scoping                   |
+| [Artifact Storage](https://jbraunsmajr.github.io/Forge/Configuration/#artifact-storage) | Local filesystem and S3-compatible backends                         |
+| [Policy Engine](https://jbraunsmajr.github.io/Forge/Policies/)                          | Org-wide security injection                                         |
+| [Debug Sessions](https://jbraunsmajr.github.io/Forge/Debugging/)                        | Live terminal in failing job containers                             |
+| [CLI Reference](https://jbraunsmajr.github.io/Forge/Cli-Reference/)                     | All commands and flags                                              |
+| [Configuration](https://jbraunsmajr.github.io/Forge/Configuration/)                     | Environment variables reference                                     |
+| [HTTPS / Proxy](https://jbraunsmajr.github.io/Forge/HTTPS/)                             | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
+| [Cloud Autoscaling](https://jbraunsmajr.github.io/Forge/Cloud-Autoscaling/)              | Hot/burst agent pools provisioned automatically via Docker or Azure |
+| [Architecture](https://jbraunsmajr.github.io/Forge/Architecture/)                       | How Forge works under the hood                                      |
 
 ---
 
