@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Forge Self-Hosted Deployment Script
-# Usage: curl -sSL https://forge.dev/deploy.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/deploy-self-hosted.sh | bash
 
 set -euo pipefail
 

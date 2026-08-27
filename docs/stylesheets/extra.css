@@ -27,13 +27,17 @@
    -------------------------------------------------------------------------- */
 
 [data-md-color-scheme="default"] {
-  /* The header keeps the app's chrome color in both schemes, so the docs
-     and the dashboard share a silhouette. */
-  --md-primary-fg-color: #0f1117;
-  --md-primary-fg-color--light: #1a1d27;
-  --md-primary-fg-color--dark: #0b0d12;
-  --md-primary-bg-color: #e2e4f0;
-  --md-primary-bg-color--light: #8b90b3;
+  /* Primary is the brand color, not the chrome color: Material uses it for
+     buttons and links as well as the header. The dark header bar is set
+     separately, further down, so the two don't have to agree. */
+  --md-primary-fg-color: #4b49cf;
+  --md-primary-fg-color--light: #6e6df0;
+  --md-primary-fg-color--dark: #3d3bb8;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #e2e4f0;
+
+  --forge-button-bg: #4b49cf;
+  --forge-button-bg-hover: #3d3bb8;
 
   /* #6e6df0 is too light for body links on white; darken for AA contrast. */
   --md-accent-fg-color: #4b49cf;
@@ -59,11 +63,15 @@
 [data-md-color-scheme="slate"] {
   --md-hue: 232;
 
-  --md-primary-fg-color: #0f1117;
-  --md-primary-fg-color--light: #1a1d27;
-  --md-primary-fg-color--dark: #0b0d12;
-  --md-primary-bg-color: #e2e4f0;
-  --md-primary-bg-color--light: #8b90b3;
+  --md-primary-fg-color: #6e6df0;
+  --md-primary-fg-color--light: #9291f5;
+  --md-primary-fg-color--dark: #5250d8;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #e2e4f0;
+
+  /* #6e6df0 under white text is only 4.11:1; nudge it darker for buttons. */
+  --forge-button-bg: #605fe8;
+  --forge-button-bg-hover: #5250d8;
 
   --md-accent-fg-color: #9291f5;
   --md-typeset-a-color: #9291f5;
@@ -88,13 +96,22 @@
    Chrome
    -------------------------------------------------------------------------- */
 
+/* The header and tabs keep the app's chrome color in both schemes, so the
+   docs and the dashboard share a silhouette. */
+.md-header,
+.md-tabs,
+.md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color: var(--forge-bg);
+  color: var(--forge-text);
+}
+
 .md-header {
   border-bottom: 1px solid rgba(110, 109, 240, 0.28);
   box-shadow: none;
 }
 
 .md-tabs {
-  border-bottom: 1px solid var(--forge-rule);
+  border-bottom: 1px solid rgba(226, 228, 240, 0.08);
 }
 
 .md-tabs__link {
@@ -198,6 +215,53 @@
 .md-typeset summary {
   background: var(--forge-panel-muted);
   font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Buttons
+
+   Material's defaults paint .md-button from --md-primary-fg-color, so any
+   theme that points primary at a chrome color ends up with an invisible
+   outline button and a filled button the same shade as the page. Both
+   variants are defined outright here instead.
+   -------------------------------------------------------------------------- */
+
+.md-typeset .md-button {
+  display: inline-block;
+  padding: 0.6em 1.5em;
+  border: 1px solid var(--forge-rule);
+  border-radius: var(--forge-radius);
+  background-color: transparent;
+  color: var(--md-typeset-a-color);
+  font-size: 0.72rem;
+  font-weight: 600;
+  transition: color 120ms, background-color 120ms, border-color 120ms;
+}
+
+.md-typeset .md-button:focus,
+.md-typeset .md-button:focus-visible,
+.md-typeset .md-button:hover {
+  background-color: transparent;
+  border-color: var(--forge-accent);
+  color: var(--md-accent-fg-color);
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--forge-button-bg);
+  border-color: var(--forge-button-bg);
+  color: #ffffff;
+}
+
+.md-typeset .md-button--primary:focus,
+.md-typeset .md-button--primary:focus-visible,
+.md-typeset .md-button--primary:hover {
+  background-color: var(--forge-button-bg-hover);
+  border-color: var(--forge-button-bg-hover);
+  color: #ffffff;
+}
+
+.md-typeset .md-button + .md-button {
+  margin-left: 0.4rem;
 }
 
 /* --------------------------------------------------------------------------

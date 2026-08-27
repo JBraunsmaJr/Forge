@@ -18,34 +18,102 @@ This guide walks through every deployment mode from "run one pipeline on my lapt
 
 ## Installation
 
-### CLI Binary
+Forge is distributed from its GitHub repository. There is no hosted download
+site — every command below pulls from `github.com` or builds from source.
 
-Install the Forge CLI on Linux, macOS, or Windows using the one-liner scripts:
+### CLI binary
 
-**Linux / macOS:**
+=== "Download a release"
+
+    Each release attaches a static binary per platform, named
+    `forge-<os>-<arch>`. Pick a tag from the
+    [releases page](https://github.com/JBraunsmaJr/Forge/releases) and download
+    the matching asset.
+
+    ```bash
+    VERSION=2026.07.12-test.4   # replace with the tag you want
+
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+
+    curl -sSL -o forge \
+      "https://github.com/JBraunsmaJr/Forge/releases/download/${VERSION}/forge-${OS}-${ARCH}"
+    chmod +x forge
+    sudo mv forge /usr/local/bin/forge
+    ```
+
+    ```powershell
+    $version = '2026.07.12-test.4'
+    $arch = if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+
+    iwr "https://github.com/JBraunsmaJr/Forge/releases/download/$version/forge-windows-$arch.exe" -OutFile forge.exe
+    ```
+
+    Available assets: `forge-linux-amd64`, `forge-linux-arm64`,
+    `forge-darwin-amd64`, `forge-darwin-arm64`, `forge-windows-amd64.exe`,
+    `forge-windows-arm64.exe`.
+
+=== "Install script"
+
+    The installer scripts live in the repo and resolve the newest release for
+    your platform:
+
+    ```bash
+    curl -sSL https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/install.sh | bash
+    ```
+
+    ```powershell
+    iwr -useb https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/install.ps1 | iex
+    ```
+
+    The Linux/macOS script installs to `/usr/local/bin` (using `sudo` if
+    needed); the PowerShell script installs to `$HOME\bin` and adds it to your
+    user `PATH`.
+
+    !!! warning "Requires a non-prerelease build"
+
+        Both scripts resolve the version through GitHub's
+        `/releases/latest` endpoint, which ignores prereleases and drafts.
+        While the newest tag is still marked as a prerelease, the scripts
+        cannot find a version to download — use the release download or a
+        source build until a stable release is published.
+
+=== "Build from source"
+
+    Always works, and is what you want if you plan to contribute.
+
+    ```bash
+    git clone https://github.com/JBraunsmaJr/Forge.git
+    cd Forge
+
+    make build                      # builds the Web UI, then forge.exe
+    # or, to control the output name:
+    cd ui && npm install && npm run build && cd ..
+    go build -o forge ./cmd/forge   # Linux/macOS
+    go build -o forge.exe ./cmd/forge
+    ```
+
+    The `make build` target writes `forge.exe` on every platform. On
+    Linux/macOS, use the explicit `go build -o forge` line above if you'd
+    rather not have the extension.
+
+### Self-hosted core (Docker)
+
+Deploy the scheduler and its dependencies (Postgres, Vault, MinIO) to a server:
+
 ```bash
-curl -sSL https://forge.dev/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/deploy-self-hosted.sh | bash
 ```
 
-**Windows (PowerShell):**
-```powershell
-iwr -useb https://forge.dev/install.ps1 | iex
-```
+The script requires `docker`, `curl`, `openssl`, and `jq`, and will:
 
-### Self-Hosted Core (Docker)
+1.  Create a `forge-server` directory.
+2.  Download `deployments/scheduler/compose.yml` and `scripts/init.sh` from the repo.
+3.  Generate a `.env` with random values for `FORGE_ROOT_TOKEN`, `FORGE_AGENT_TOKEN`, the database password, and the S3 secret key.
+4.  Start Postgres, MinIO, and Vault, then bring up the scheduler.
 
-Deploy the Forge scheduler and core services (Postgres, Vault, MinIO) to your own server:
-
-```bash
-curl -sSL https://forge.dev/deploy.sh | bash
-```
-
-This will:
-1.  Check for Docker and Curl.
-2.  Create a `forge-server` directory.
-3.  Download the production Docker Compose stack.
-4.  Generate secure tokens for `FORGE_ROOT_TOKEN` and `FORGE_AGENT_TOKEN`.
-5.  Launch the services in the background.
+Prefer to see what you're running first? Clone the repo and use the compose
+stack directly — that's [Mode 3](#mode-3-docker-compose-stack-recommended-for-teams).
 
 ---
 

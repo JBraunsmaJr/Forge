@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Forge Binary Installer
-# Usage: curl -sSL https://forge.dev/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/install.sh | bash
 
 set -euo pipefail
 

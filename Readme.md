@@ -158,29 +158,50 @@ The **scheduler** accepts pipeline submissions, applies org policies, stores job
 
 ## Installation
 
-### CLI Binary
+Forge is distributed from this repository — there is no hosted download site.
 
-Install the Forge CLI on Linux, macOS, or Windows using the one-liner scripts:
+### CLI binary
 
-**Linux / macOS:**
+Grab the asset for your platform from the
+[releases page](https://github.com/JBraunsmaJr/Forge/releases) (`forge-linux-amd64`,
+`forge-darwin-arm64`, `forge-windows-amd64.exe`, and so on):
+
 ```bash
-curl -sSL https://forge.dev/install.sh | bash
+VERSION=2026.07.12-test.4   # replace with the tag you want
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+
+curl -sSL -o forge \
+  "https://github.com/JBraunsmaJr/Forge/releases/download/${VERSION}/forge-${OS}-${ARCH}"
+chmod +x forge && sudo mv forge /usr/local/bin/forge
 ```
 
-**Windows (PowerShell):**
+Or build it yourself — `git clone`, then `make build` (see
+[Install and run](https://jbraunsmajr.github.io/Forge/Getting-Started/)).
+
+Installer scripts live in [`scripts/`](scripts/) and can be piped straight from
+the repo, but note they resolve the version through GitHub's `/releases/latest`,
+which skips prereleases:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/install.sh | bash
+```
+
 ```powershell
-iwr -useb https://forge.dev/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/install.ps1 | iex
 ```
 
-### Self-Hosted Core (Docker)
+### Self-hosted core (Docker)
 
-Deploy the Forge scheduler and core services (Postgres, Vault, MinIO) to your own server:
+Deploy the scheduler and core services (Postgres, Vault, MinIO) to your own
+server. Requires `docker`, `curl`, `openssl`, and `jq`:
 
 ```bash
-curl -sSL https://forge.dev/deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/deploy-self-hosted.sh | bash
 ```
 
-This will create a `forge-server` directory, generate secure tokens, and launch the stack using Docker Compose.
+This creates a `forge-server` directory, generates random tokens into `.env`,
+and launches the stack with Docker Compose.
 
 ---
 

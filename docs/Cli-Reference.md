@@ -10,7 +10,7 @@ All commands use the `forge` binary. Build it with `go build -o forge ./cmd/forg
 |---------------------|------------------------------------------------------|
 | `FORGE_API_TOKEN`   | Authentication token for scheduler requests.         |
 | `FORGE_ORG`         | Default org ID for commands that accept `--org`.     |
-| `FORGE_SCHEDULER_URL`| Default scheduler URL (e.g. `https://forge.dev`).    |
+| `FORGE_SCHEDULER_URL`| Default scheduler URL (e.g. `https://forge.example.com`).    |
 | `FORGE_VAULT_ADDR`  | Vault server address (e.g. `http://localhost:8200`). |
 | `FORGE_VAULT_TOKEN` | Vault authentication token.                          |
 

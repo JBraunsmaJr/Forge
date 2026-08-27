@@ -1,5 +1,5 @@
 # Forge Binary Installer for Windows
-# Usage: iwr -useb https://forge.dev/install.ps1 | iex
+# Usage: iwr -useb https://raw.githubusercontent.com/JBraunsmaJr/Forge/main/scripts/install.ps1 | iex
 
 $ErrorActionPreference = 'Stop'
 

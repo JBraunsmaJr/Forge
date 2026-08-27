@@ -60,9 +60,9 @@ The agent connects to the scheduler via gRPC. The connection details are determi
 
 1.  If `FORGE_GRPC_ADDR` is set, the agent uses that address. It must be in `host:port` format. If it starts with `http://` or `https://`, the scheme is stripped.
 2.  If `FORGE_GRPC_ADDR` is NOT set, the agent derives the address from `FORGE_SCHEDULER_URL`:
-    - `https://forge.dev` -> `forge.dev:443` (Secure gRPC enabled)
+    - `https://forge.example.com` -> `forge.example.com:443` (Secure gRPC enabled)
     - `http://scheduler:8080` -> `scheduler:50051` (Insecure gRPC)
-    - `https://forge.dev:8443` -> `forge.dev:8443` (Secure gRPC)
+    - `https://forge.example.com:8443` -> `forge.example.com:8443` (Secure gRPC)
 
 Forge uses gRPC keepalives (10s pings) to maintain connections through proxies and load balancers.
 
