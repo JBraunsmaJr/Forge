@@ -11,7 +11,9 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/pb"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 type grpcServer struct {
@@ -58,13 +60,16 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 	var concurrency atomic.Int32
 	if reg := msg.GetRegister(); reg != nil {
 		agentID = msg.AgentId
+		if !validAgentID(agentID) {
+			return status.Error(codes.InvalidArgument, "agent_id must be 1 to 128 characters: letters, digits, '.', '_', ':' or '-', starting with a letter or digit")
+		}
 		c := reg.Concurrency
 		if c <= 0 {
 			c = 1
 		}
 		concurrency.Store(c)
 		s.scheduler.agents.Register(agentID, int(c), reg.Labels)
-		log.Printf("[grpc] agent %s registered from %s (concurrency: %d)", agentID[:8], addr, c)
+		log.Printf("[grpc] agent %s registered from %s (concurrency: %d)", shortID(agentID), addr, c)
 	} else {
 		return fmt.Errorf("first message must be register")
 	}
@@ -90,7 +95,9 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 		}
 	}()
 
-	// Goroutine to receive messages from the agent (heartbeats, completion, logs)
+	// Goroutine to receive messages from the agent (heartbeats, completion, logs).
+	// The session is bound to the agent ID it registered with: the agent_id
+	// field of later messages is ignored, so one agent cannot act as another.
 	go func() {
 		for {
 			msg, err := stream.Recv()
@@ -105,11 +112,11 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 
 			switch m := msg.Payload.(type) {
 			case *pb.AgentMessage_Heartbeat:
-				s.scheduler.agents.Heartbeat(msg.AgentId, m.Heartbeat.Status)
+				s.scheduler.agents.Heartbeat(agentID, m.Heartbeat.Status)
 				if m.Heartbeat.JobId == "" {
 					continue // Agent-wide status heartbeat
 				}
-				err := s.scheduler.store.Heartbeat(m.Heartbeat.JobId, m.Heartbeat.LeaseId, msg.AgentId)
+				err := s.scheduler.store.Heartbeat(m.Heartbeat.JobId, m.Heartbeat.LeaseId, agentID)
 				stop := err != nil
 				out <- &pb.SchedulerMessage{
 					Payload: &pb.SchedulerMessage_HeartbeatAck{
@@ -161,8 +168,8 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				s.scheduler.publishJobLogs(m.Complete.JobId, logs)
 			case *pb.AgentMessage_Register:
 				if m.Register.Concurrency <= 0 {
-					s.scheduler.agents.Drain(msg.AgentId)
-					log.Printf("[grpc] agent %s draining", msg.AgentId[:8])
+					s.scheduler.agents.Drain(agentID)
+					log.Printf("[grpc] agent %s draining", shortID(agentID))
 					// Send ACK using a special HeartbeatAck as DrainAck
 					out <- &pb.SchedulerMessage{
 						Payload: &pb.SchedulerMessage_HeartbeatAck{
@@ -174,8 +181,8 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					continue
 				}
 				concurrency.Store(m.Register.Concurrency)
-				s.scheduler.agents.Register(msg.AgentId, int(m.Register.Concurrency), m.Register.Labels)
-				log.Printf("[grpc] agent %s updated registration (concurrency: %d)", msg.AgentId[:8], m.Register.Concurrency)
+				s.scheduler.agents.Register(agentID, int(m.Register.Concurrency), m.Register.Labels)
+				log.Printf("[grpc] agent %s updated registration (concurrency: %d)", shortID(agentID), m.Register.Concurrency)
 			case *pb.AgentMessage_LogBatch:
 				logs := make([]api.LogEvent, len(m.LogBatch.Events))
 				for i, l := range m.LogBatch.Events {
@@ -186,7 +193,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					}
 				}
 				if err := s.scheduler.store.AppendJobLogs(m.LogBatch.JobId, m.LogBatch.LeaseId, logs); err != nil {
-					fmt.Printf("[grpc] failed to persist logs for job %s: %v\n", m.LogBatch.JobId[:8], err)
+					fmt.Printf("[grpc] failed to persist logs for job %s: %v\n", shortID(m.LogBatch.JobId), err)
 				}
 				s.scheduler.publishJobLogs(m.LogBatch.JobId, logs)
 			}
@@ -207,7 +214,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				// Check if agent has capacity
 				active, err := s.scheduler.store.ActiveJobsCount(agentID)
 				if err != nil {
-					log.Printf("[grpc] error checking active jobs for agent %s: %v", agentID[:8], err)
+					log.Printf("[grpc] error checking active jobs for agent %s: %v", shortID(agentID), err)
 					return nil, false
 				}
 
@@ -283,7 +290,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				return nil
 			}, func(jobID string) {
 				if err := s.scheduler.store.Unlease(jobID); err != nil {
-					log.Printf("[grpc] failed to unlease job %s: %v", jobID[:8], err)
+					log.Printf("[grpc] failed to unlease job %s: %v", shortID(jobID), err)
 				}
 			})
 		}

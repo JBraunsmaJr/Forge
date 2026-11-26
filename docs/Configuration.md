@@ -12,6 +12,8 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_ROOT_TOKEN`             | —                        | Pre-set admin token for reproducible environments (compose, CI). If unset, a random token is generated and printed on first start.                                                                       |
 | `FORGE_BASE_URL`               | `http://localhost{addr}` | Public URL of this scheduler. Used to construct artifact download URLs for the local backend.                                                                                                            |
 | `FORGE_GRPC_ADDR`              | `:50051`                 | Listen address for gRPC agent communication.                                                                                                                                                             |
+| `FORGE_GRPC_TLS_CERT`          | —                        | Path to a PEM certificate for the gRPC listener. Set together with `FORGE_GRPC_TLS_KEY` to serve agents over TLS. If neither is set, gRPC is plaintext and agent tokens cross the network in clear text. |
+| `FORGE_GRPC_TLS_KEY`           | —                        | Path to the PEM private key for `FORGE_GRPC_TLS_CERT`. Setting only one of the two is a startup error. |
 | `FORGE_ARTIFACT_STORE`         | `local`                  | Artifact backend: `local` or `s3`.                                                                                                                                                                       |
 | `FORGE_ARTIFACT_DIR`           | `/data/artifacts`        | Directory for local artifact storage.                                                                                                                                                                    |
 | `FORGE_S3_ENDPOINT`            | —                        | S3-compatible endpoint URL. Leave empty for AWS S3. Example: `http://minio:9000`.                                                                                                                        |
@@ -65,6 +67,22 @@ The agent connects to the scheduler via gRPC. The connection details are determi
     - `https://forge.example.com:8443` -> `forge.example.com:8443` (Secure gRPC)
 
 Forge uses gRPC keepalives (10s pings) to maintain connections through proxies and load balancers.
+
+### Agent authentication
+
+The scheduler refuses any gRPC session that does not present a valid token
+with the `agent` role. The agent sends the value of `FORGE_API_TOKEN`
+automatically, so the only requirement is that the token is an agent token:
+
+- An agent started without `FORGE_API_TOKEN`, or with an unknown or revoked
+  token, is rejected with `Unauthenticated`.
+- An agent started with an admin, operator, or viewer token is rejected with
+  `PermissionDenied`. Create a dedicated token with the `agent` role instead.
+
+Unless the listener is served over TLS (`FORGE_GRPC_TLS_CERT` and
+`FORGE_GRPC_TLS_KEY`, or a TLS-terminating proxy in front of it), the token is
+sent in clear text. When the agent connects over TLS it refuses to send the
+token over anything else.
 
 ---
 

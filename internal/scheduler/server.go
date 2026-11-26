@@ -362,7 +362,14 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		fmt.Printf("[scheduler] failed to listen for gRPC: %v\n", err)
 	} else {
-		gsrv := s.newGRPCServer()
+		gsrv, err := s.newGRPCServer()
+		if err != nil {
+			lis.Close()
+			return fmt.Errorf("configuring gRPC server: %w", err)
+		}
+		if os.Getenv(envGRPCTLSCert) == "" {
+			fmt.Printf("[scheduler] WARNING: gRPC is serving without TLS; agent tokens cross the network in clear text. Set %s and %s, or terminate TLS in a proxy.\n", envGRPCTLSCert, envGRPCTLSKey)
+		}
 		go func() {
 			fmt.Printf("[scheduler] gRPC server listening at %v\n", lis.Addr())
 			if err := gsrv.Serve(lis); err != nil {

@@ -25,7 +25,10 @@ func TestSecurity_S1_AgentSessionRequiresAuthentication(t *testing.T) {
 
 	s := &Server{agents: newAgentRegistry()}
 	lis := bufconn.Listen(1 << 20)
-	gsrv := s.newGRPCServer()
+	gsrv, err := s.newGRPCServer()
+	if err != nil {
+		t.Fatalf("building the gRPC server: %v", err)
+	}
 	go func() { _ = gsrv.Serve(lis) }()
 	t.Cleanup(gsrv.Stop)
 

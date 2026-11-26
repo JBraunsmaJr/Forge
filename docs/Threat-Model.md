@@ -137,7 +137,7 @@ this table is updated as each one is closed.
 
 | ID | Gap | Objective | Regression test | Status |
 | --- | --- | --- | --- | --- |
-| S1 | The agent gRPC session has no authentication and the server has no TLS | 1, 7 | `TestSecurity_S1_AgentSessionRequiresAuthentication` | Open |
+| S1 | The agent gRPC session had no authentication and the server had no TLS. Sessions now require an agent token, and TLS is available through `FORGE_GRPC_TLS_CERT` and `FORGE_GRPC_TLS_KEY` | 1, 7 | `TestSecurity_S1_AgentSessionRequiresAuthentication` | Closed. TLS is opt-in; enable it whenever the network between agents and scheduler is not trusted |
 | S2 | Jobs receive the agent's own API token, and several agent-facing endpoints do not check the caller's role | 3, 5 | `TestSecurity_S2_AgentEndpointsRequireAgentRole` covers the endpoints; the job token is tested with its fix | Open |
 | S3 | Token org and project scope is stored but not enforced | 3, 6 | `TestSecurity_S3_TokenScopeIsEnforced` | Open |
 | S4 | Runs triggered from fork changes can declare and receive secrets | 2 | Added with the fix | Open |

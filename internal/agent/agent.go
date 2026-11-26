@@ -232,6 +232,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
+	// The scheduler authenticates the session with the agent's API token.
+	if a.apiToken != "" {
+		opts = append(opts, grpc.WithPerRPCCredentials(bearerCredentials{
+			token:      a.apiToken,
+			requireTLS: isSecure,
+		}))
+	} else {
+		fmt.Printf("[agent %s] WARNING: FORGE_API_TOKEN is not set; the scheduler will refuse this agent's session\n", a.id[:8])
+	}
+
 	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
 		Time:                10 * time.Second,
 		Timeout:             5 * time.Second,
