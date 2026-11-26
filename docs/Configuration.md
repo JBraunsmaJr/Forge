@@ -184,7 +184,9 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 - `FORGE_S3_*` — MinIO credentials
 
 **agent-1 / agent-2:**
-- `FORGE_API_TOKEN` — same as `FORGE_ROOT_TOKEN` (dev convenience; use a separate agent token in production)
+
+- `FORGE_API_TOKEN` — the agent token (`FORGE_AGENT_TOKEN`). It must be a token with the `agent` role; the scheduler
+  refuses agent sessions that present any other role
 - `FORGE_VAULT_ADDR` — points to the `vault` service
 - `FORGE_VAULT_TOKEN` — `forge-dev-token`
 - `FORGE_PROXY_URL` — `http://proxy:9090` (enables alpha-hardening)
@@ -192,6 +194,38 @@ The compose stack reads from a `.env` file (copy from `.env.example`):
 **proxy:**
 - Management server on `:9090`
 - Proxies Docker API from `/var/run/docker.sock` to per-agent Unix sockets in `/run/forge-sockets`
+- `FORGE_PROXY_ALLOWED_BINDS` — optional, comma-separated absolute host paths that jobs may bind-mount. Empty by default
+
+### Docker proxy rules
+
+Each agent talks to Docker through its own proxy socket, and jobs that set
+`docker_socket: true` share that socket. The proxy forwards a request only
+when all of the following hold:
+
+- A request aimed at one container, volume, or network targets a resource
+  that carries the agent's own `forge.agent_id` label. If the proxy cannot
+  read the labels, it refuses the request.
+- A container-create request does not ask for any of: privileged mode; the
+  host's network, PID, IPC, UTS, user, or cgroup namespace; added Linux
+  capabilities; host devices; `seccomp`, AppArmor, or SELinux confinement
+  turned off; or a bind mount of a host path.
+- The request is not a prune, and is not for the plugin, swarm, service,
+  node, secret, config, or task APIs.
+
+Bind mounts are refused because the path refers to the agent host, not to
+the job's own file system. Named volumes are allowed. Two exceptions exist:
+the agent's own proxy socket, and any path listed in
+`FORGE_PROXY_ALLOWED_BINDS`, for example a shared dependency cache:
+
+```bash
+FORGE_PROXY_ALLOWED_BINDS=/srv/forge/cache,/srv/forge/models
+```
+
+!!! warning
+    A job that starts its own containers through the proxy cannot mount the
+    real `/var/run/docker.sock` into them, and Compose files that do so will
+    fail with `403 Forbidden`. Mount the proxied socket the job was given
+    (the path in its `DOCKER_HOST`) instead.
 
 ---
 
