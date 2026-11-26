@@ -167,7 +167,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		src := filepath.Clean(e.WorkspaceDir)
 		if err := dockerutil.DockerCp(ctx, src+"/.", containerID+":/workspace"); err != nil {
 			logger.Error(fmt.Sprintf("failed to copy workspace into container: %v", err), map[string]any{"error": err.Error(), "src": e.WorkspaceDir})
-			exec.Command("docker", "rm", "-f", containerID).Run()
+			dockerutil.Command("rm", "-f", containerID).Run()
 			forgelog.StepFooter(step.ID, false, time.Since(start))
 			return &pipeline.StepResult{
 				Step:     step,
@@ -179,10 +179,10 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		}
 
 		// 3. Prepare start command
-		cmd = exec.CommandContext(ctx, "docker", "start", "-a", containerID)
+		cmd = dockerutil.CommandContext(ctx, "start", "-a", containerID)
 	} else {
 		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
-		cmd = exec.CommandContext(ctx, "docker", append([]string{"run", "--rm"}, args...)...)
+		cmd = dockerutil.CommandContext(ctx, append([]string{"run", "--rm"}, args...)...)
 	}
 
 	/*
@@ -268,7 +268,7 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		copyCancel()
 
 		// 5. Cleanup container
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		dockerutil.Command("rm", "-f", containerID).Run()
 	}
 
 	exitCode := 0
@@ -398,7 +398,7 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 	}
 
 	if step.DockerSocket {
-		hostSocket := "/var/run/docker.sock"
+		hostSocket := dockerutil.DefaultSocketPath()
 		if h := os.Getenv("DOCKER_HOST"); strings.HasPrefix(h, "unix://") {
 			hostSocket = strings.TrimPrefix(h, "unix://")
 		} else if runtime.GOOS == "windows" {
@@ -511,14 +511,14 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 		src := filepath.Clean(e.WorkspaceDir)
 		if err := dockerutil.DockerCp(context.Background(), src+"/.", containerID+":/workspace"); err != nil {
-			exec.Command("docker", "rm", "-f", containerID).Run()
+			dockerutil.Command("rm", "-f", containerID).Run()
 			return nil, fmt.Errorf("copying workspace into generator: %w", err)
 		}
 
-		cmdGen = exec.Command("docker", "start", "-a", "-i", containerID)
+		cmdGen = dockerutil.Command("start", "-a", "-i", containerID)
 	} else {
 		args := e.buildDockerArgs(step, e.WorkspaceDir, false)
-		cmdGen = exec.Command("docker", append([]string{"run", "--rm", "-i", "-a", "stdin", "-a", "stdout", "-a", "stderr"}, args...)...)
+		cmdGen = dockerutil.Command(append([]string{"run", "--rm", "-i", "-a", "stdin", "-a", "stdout", "-a", "stderr"}, args...)...)
 	}
 
 	cmdGen.Stdin = bytes.NewReader(inputJSON)
@@ -552,7 +552,7 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 	duration := time.Since(start)
 
 	if e.UseCopy && containerID != "" {
-		exec.Command("docker", "rm", "-f", containerID).Run()
+		dockerutil.Command("rm", "-f", containerID).Run()
 	}
 
 	exitCode := 0
@@ -599,7 +599,7 @@ func Cleanup(agentID string) error {
 	}
 	args = append(args, "--format", "{{.ID}}|{{.Labels}}")
 
-	cmd := exec.Command("docker", args...)
+	cmd := dockerutil.Command(args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("listing forge containers: %v: %s", err, string(out))
@@ -613,7 +613,7 @@ func Cleanup(agentID string) error {
 	// Exclude ourselves and only target temporary containers (jobs/policies).
 	var toRemove []string
 	self := ""
-	if _, err := os.Stat("/.dockerenv"); err == nil {
+	if dockerutil.IsRunningInContainer() {
 		self, _ = os.Hostname()
 	}
 

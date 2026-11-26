@@ -86,6 +86,31 @@ token over anything else.
 
 ---
 
+## Container Runtime
+
+Forge runs jobs by calling a container CLI. It uses `docker` when it is on
+`PATH`, and otherwise `podman`. Set `FORGE_CONTAINER_RUNTIME` to choose
+explicitly; the value is a command name or a path.
+
+| Variable                  | Default                              | Description                                                                                                 |
+|---------------------------|--------------------------------------|-------------------------------------------------------------------------------------------------------------|
+| `FORGE_CONTAINER_RUNTIME` | `docker` if installed, else `podman` | Container CLI used by agents, local runs, policy transformers, and the Docker-based autoscaler provisioner. |
+
+Notes for Podman:
+
+- Steps that set `docker_socket: true` need Podman's Docker-compatible API
+  socket. Enable it with `systemctl --user enable --now podman.socket`
+  (rootless) or `systemctl enable --now podman.socket` (system). Forge looks
+  for `$XDG_RUNTIME_DIR/podman/podman.sock` first, then
+  `/run/podman/podman.sock`. `DOCKER_HOST=unix://...` overrides both.
+- The compose files in this repository are written for Docker Compose. With
+  Podman, run them through `podman compose`, which needs a compose provider
+  installed.
+- Podman support is new. Disk-usage cleanup on agents and the Docker socket
+  proxy have only been exercised against Docker.
+
+---
+
 ## Autoscaler
 
 | Variable                          | Default                | Description                                                                                 |

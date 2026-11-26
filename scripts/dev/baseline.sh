@@ -142,6 +142,19 @@ version_of() {
   fi
 }
 
+# Reports the container CLI Forge would use: FORGE_CONTAINER_RUNTIME if set,
+# otherwise docker, otherwise podman.
+container_runtime_version() {
+  local candidate
+  for candidate in "${FORGE_CONTAINER_RUNTIME:-}" docker podman; do
+    if [ -n "$candidate" ] && have "$candidate"; then
+      version_of "$candidate" --version
+      return
+    fi
+  done
+  echo "not installed"
+}
+
 # --- Go ----------------------------------------------------------------------
 
 if have go; then
@@ -196,7 +209,7 @@ fi
   echo "| Go | $(version_of go version) |"
   echo "| Node | $(version_of node --version) |"
   echo "| npm | $(version_of npm --version) |"
-  echo "| Docker | $(version_of docker --version) |"
+  echo "| Container runtime | $(container_runtime_version) |"
   echo
   echo "| Step | Result | Seconds | Notes |"
   echo "| --- | --- | ---: | --- |"

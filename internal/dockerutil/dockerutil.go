@@ -6,16 +6,19 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 )
 
-// IsRunningInContainer checks if we are currently running inside a Docker container.
+// IsRunningInContainer reports whether this process is running inside a
+// container started by Docker or Podman.
 func IsRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
+	for _, marker := range containerMarkerFiles {
+		if fileExists(marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseContainerID extracts the container ID from Docker output,
@@ -33,7 +36,7 @@ func ParseContainerID(out []byte) string {
 func DockerCp(ctx context.Context, src, dst string) error {
 	var lastErr error
 	for i := 0; i < 3; i++ {
-		cmd := exec.CommandContext(ctx, "docker", "cp", src, dst)
+		cmd := CommandContext(ctx, "cp", src, dst)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 			if i < 2 {
@@ -50,7 +53,7 @@ func DockerCp(ctx context.Context, src, dst string) error {
 // RunDockerCreate runs 'docker create' with the given arguments and streams output to logFn.
 // It returns the created container ID.
 func RunDockerCreate(ctx context.Context, logFn func(string), args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", append([]string{"create"}, args...)...)
+	cmd := CommandContext(ctx, append([]string{"create"}, args...)...)
 	var outBuf bytes.Buffer
 
 	pr, pw := io.Pipe()
@@ -87,6 +90,6 @@ func RunDockerCreate(ctx context.Context, logFn func(string), args []string) (st
 
 // DockerStopAndRm stops and removes a container.
 func DockerStopAndRm(ctx context.Context, id string) {
-	exec.CommandContext(ctx, "docker", "stop", "-t", "2", id).Run()
-	exec.CommandContext(ctx, "docker", "rm", "-f", id).Run()
+	CommandContext(ctx, "stop", "-t", "2", id).Run()
+	CommandContext(ctx, "rm", "-f", id).Run()
 }

@@ -648,8 +648,8 @@ func (a *Agent) pruneLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			fmt.Printf("[agent %s] running scheduled docker container prune...\n", a.id[:8])
-			os_exec.Command("docker", "container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
-			os_exec.Command("docker", "network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			dockerutil.Command("container", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
+			dockerutil.Command("network", "prune", "-f", "--filter", "label=forge.agent_id="+a.proxyID).Run()
 			// Also clean up any old workspace directories
 			a.cleanupWorkspaces()
 		}
@@ -726,7 +726,7 @@ func getDiskUsagePercent(path string) float64 {
 }
 
 func (a *Agent) getDockerUsageGB() (float64, error) {
-	cmd := os_exec.Command("docker", "system", "df", "--format", "{{.Type}} {{.Size}}")
+	cmd := dockerutil.Command("system", "df", "--format", "{{.Type}} {{.Size}}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, string(out))
@@ -772,7 +772,7 @@ func parseDockerSize(s string) float64 {
 
 func (a *Agent) evictLRUImages(targetGB float64) {
 	// List all images with ID, CreatedAt, and Size
-	out, err := os_exec.Command("docker", "images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
+	out, err := dockerutil.Command("images", "--format", "{{.ID}}|{{.CreatedAt}}|{{.Size}}").Output()
 	if err != nil {
 		return
 	}
@@ -813,7 +813,7 @@ func (a *Agent) evictLRUImages(targetGB float64) {
 			break
 		}
 		// Try to remove. It will fail if in use.
-		err := os_exec.Command("docker", "rmi", img.id).Run()
+		err := dockerutil.Command("rmi", img.id).Run()
 		if err == nil {
 			evictedGB += img.gb
 			fmt.Printf("[agent %s] evicted image %s (%.2f GB)\n", a.id[:8], img.id[:12], img.gb)
@@ -1277,7 +1277,7 @@ func (a *Agent) collectStatus() *pb.AgentStatus {
 	}
 
 	// Docker images count
-	cmd := os_exec.Command("docker", "images", "-q")
+	cmd := dockerutil.Command("images", "-q")
 	if out, err := cmd.Output(); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		count := 0
@@ -1631,7 +1631,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 		args = append(args, "--network", net)
 	}
 	if spec.DockerSocket {
-		hostSocket := "/var/run/docker.sock"
+		hostSocket := dockerutil.DefaultSocketPath()
 		if h := os.Getenv("DOCKER_HOST"); strings.HasPrefix(h, "unix://") {
 			hostSocket = strings.TrimPrefix(h, "unix://")
 		} else if runtime.GOOS == "windows" {
@@ -1675,9 +1675,9 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	}
 
 	// Start debug container
-	if err := os_exec.CommandContext(ctx, "docker", "start", containerID).Run(); err != nil {
+	if err := dockerutil.CommandContext(ctx, "start", containerID).Run(); err != nil {
 		fmt.Printf("[agent %s] debug container failed to start: %v\n", a.id[:8], err)
-		os_exec.Command("docker", "rm", "-f", containerID).Run()
+		dockerutil.Command("rm", "-f", containerID).Run()
 		return
 	}
 
@@ -1699,7 +1699,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	if spec.DockerSocket {
 		apkCmd += " docker-cli"
 	}
-	os_exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c",
+	dockerutil.CommandContext(ctx, "exec", containerID, "sh", "-c",
 		apkCmd+" >/dev/null 2>&1 || true",
 	).Run()
 
@@ -1801,7 +1801,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 // Output is streamed line-by-line so the user sees it in real-time.
 // The ctx can be cancelled to kill the command (used by the cancel button).
 func (a *Agent) execDebugCommand(ctx context.Context, sessionID, containerID string, cmd api.DebugCommand) {
-	execCmd := os_exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", cmd.Input)
+	execCmd := dockerutil.CommandContext(ctx, "exec", containerID, "sh", "-c", cmd.Input)
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -2172,7 +2172,7 @@ func (a *Agent) pipeTerminalToConn(ctx context.Context, sessionID, containerID s
 		cols, rows,
 	)
 
-	cmd := os_exec.CommandContext(shellCtx, "docker", "exec",
+	cmd := dockerutil.CommandContext(shellCtx, "exec",
 		"-i",
 		"-e", fmt.Sprintf("COLUMNS=%d", cols),
 		"-e", fmt.Sprintf("LINES=%d", rows),
@@ -2765,7 +2765,7 @@ func pipelineLog(level, msg string) []api.LogEvent {
 
 func (a *Agent) cleanupJobContainers(runID, jobID string) {
 	// Stop and remove all containers created by this job
-	out, _ := os_exec.Command("docker", "ps", "-aq",
+	out, _ := dockerutil.Command("ps", "-aq",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.job_id="+jobID,
 		"--filter", "label=forge.agent_id="+a.proxyID,
@@ -2783,21 +2783,21 @@ func (a *Agent) cleanupJobContainers(runID, jobID string) {
 	}
 
 	// Remove networks created by this run
-	out, _ = os_exec.Command("docker", "network", "ls", "-q",
+	out, _ = dockerutil.Command("network", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		os_exec.Command("docker", "network", "rm", id).Run()
+		dockerutil.Command("network", "rm", id).Run()
 	}
 
 	// Remove volumes created by this run
-	out, _ = os_exec.Command("docker", "volume", "ls", "-q",
+	out, _ = dockerutil.Command("volume", "ls", "-q",
 		"--filter", "label=forge.run_id="+runID,
 		"--filter", "label=forge.agent_id="+a.proxyID).Output()
 	ids = strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		os_exec.Command("docker", "volume", "rm", id).Run()
+		dockerutil.Command("volume", "rm", id).Run()
 	}
 }
 

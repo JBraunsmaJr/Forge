@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 )
 
 type DockerFakeProvisioner struct {
@@ -63,7 +65,7 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 		args = append(args, p.Image)
 		args = append(args, "agent")
 
-		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd := dockerutil.CommandContext(ctx, args...)
 		out, err := cmd.Output()
 		if err != nil {
 			var exitError *exec.ExitError
@@ -84,7 +86,7 @@ func (p *DockerFakeProvisioner) ScaleUp(ctx context.Context, pool string, n int,
 func (p *DockerFakeProvisioner) ScaleDown(ctx context.Context, ids []InstanceID) error {
 	var errs []error
 	for _, id := range ids {
-		cmd := exec.CommandContext(ctx, "docker", "rm", "-f", string(id))
+		cmd := dockerutil.CommandContext(ctx, "rm", "-f", string(id))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			errs = append(errs, fmt.Errorf("docker rm failed for %s: %w: %s", id, err, string(out)))
 		}
@@ -97,7 +99,7 @@ func (p *DockerFakeProvisioner) ListInstances(ctx context.Context) ([]Instance, 
 	if p.AgentID != "" {
 		args = append(args, "--filter", "label=forge.agent_id="+p.AgentID)
 	}
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerutil.CommandContext(ctx, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("docker ps failed: %w: %s", err, string(out))
@@ -110,7 +112,7 @@ func (p *DockerFakeProvisioner) ListInstances(ctx context.Context) ([]Instance, 
 
 	var instances []Instance
 	for _, id := range idLines {
-		cmd := exec.CommandContext(ctx, "docker", "inspect", id, "--format", "{{index .Config.Labels \"forge-pool\"}}|{{.Created}}|{{json .Config.Labels}}")
+		cmd := dockerutil.CommandContext(ctx, "inspect", id, "--format", "{{index .Config.Labels \"forge-pool\"}}|{{.Created}}|{{json .Config.Labels}}")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			continue

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 )
 
 var runTransformerFunc = runTransformer
@@ -169,7 +170,7 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 			createArgs = append(createArgs, t.Image)
 		}
 
-		createCmd := exec.CommandContext(ctx, "docker", createArgs...)
+		createCmd := dockerutil.CommandContext(ctx, createArgs...)
 		var stdout, stderr bytes.Buffer
 		createCmd.Stdout = &stdout
 		createCmd.Stderr = &stderr
@@ -183,7 +184,7 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 		defer func() {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = exec.CommandContext(cleanupCtx, "docker", "rm", "-f", containerID).Run()
+			_ = dockerutil.CommandContext(cleanupCtx, "rm", "-f", containerID).Run()
 		}()
 
 		// 2. Copy workspace if provided
@@ -192,14 +193,14 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 			// Ensure trailing slash and dot for content-only copy
 			srcPath := src + string(filepath.Separator) + "."
 
-			cpCmd := exec.CommandContext(ctx, "docker", "cp", srcPath, containerID+":/workspace")
+			cpCmd := dockerutil.CommandContext(ctx, "cp", srcPath, containerID+":/workspace")
 			if cpOut, err := cpCmd.CombinedOutput(); err != nil {
 				return nil, fmt.Errorf("docker cp failed: %w\n%s", err, string(cpOut))
 			}
 		}
 
 		// 3. Prepare the start command (will be streamed below)
-		cmd = exec.CommandContext(ctx, "docker", "start", "--attach", "--interactive", containerID)
+		cmd = dockerutil.CommandContext(ctx, "start", "--attach", "--interactive", containerID)
 
 	case t.Script != "":
 		cmd = exec.CommandContext(ctx, "sh", "-c", t.Script)
@@ -248,6 +249,5 @@ func buildIDSet(steps []api.StepDef) map[string]bool {
 }
 
 func isRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
+	return dockerutil.IsRunningInContainer()
 }
