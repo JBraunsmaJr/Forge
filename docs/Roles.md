@@ -48,6 +48,7 @@ A specialized role used by Forge Agents.
 | Manual trigger (branch/commit)         |   ❌    |    ✅     |   ✅   |
 | Approve pending manual jobs            |   ❌    |    ✅     |   ✅   |
 | Cancel active runs                     |   ❌    |    ✅     |   ✅   |
+| Open and use debug sessions            |   ❌    |    ✅     |   ✅   |
 | Manage secrets (Set/Delete)            |   ❌    |    ✅     |   ✅   |
 | Manage policies (Create/Update/Delete) |   ❌    |    ✅     |   ✅   |
 | Create/Update projects                 |   ❌    |    ✅     |   ✅   |

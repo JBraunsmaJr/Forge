@@ -138,11 +138,11 @@ this table is updated as each one is closed.
 | ID | Gap | Objective | Regression test | Status |
 | --- | --- | --- | --- | --- |
 | S1 | The agent gRPC session had no authentication and the server had no TLS. Sessions now require an agent token, and TLS is available through `FORGE_GRPC_TLS_CERT` and `FORGE_GRPC_TLS_KEY` | 1, 7 | `TestSecurity_S1_AgentSessionRequiresAuthentication` | Closed. TLS is opt-in; enable it whenever the network between agents and scheduler is not trusted |
-| S2 | Jobs receive the agent's own API token, and several agent-facing endpoints do not check the caller's role | 3, 5 | `TestSecurity_S2_AgentEndpointsRequireAgentRole` covers the endpoints; the job token is tested with its fix | Open |
+| S2 | Jobs receive the agent's own API token. Agent-facing endpoints did not check the caller's role; they now require an agent token | 3, 5 | `TestSecurity_S2_AgentEndpointsRequireAgentRole` covers the endpoints; the job token is tested with its fix | Partly closed. Endpoints are guarded; jobs still receive the agent token |
 | S3 | Token org and project scope is stored but not enforced | 3, 6 | `TestSecurity_S3_TokenScopeIsEnforced` | Open |
 | S4 | Runs triggered from fork changes can declare and receive secrets | 2 | Added with the fix | Open |
-| S5 | The generic webhook endpoint accepts unauthenticated requests | 1 | `TestSecurity_S5_GenericWebhookRequiresACredential` | Open |
-| S6 | Single sign-on provisions any account from the identity provider, and debug sessions do not check the caller's role | 1, 5 | `TestSecurity_S6_DebugSessionsRequireOperator` covers debug sessions; sign-in is tested with its fix | Open |
+| S5 | The generic webhook endpoint accepted unauthenticated requests. It now requires the project's webhook secret, as a signature or a token, and validates the branch and commit it is given | 1 | `TestSecurity_S5_GenericWebhookRequiresACredential` | Closed |
+| S6 | Single sign-on provisions any account from the identity provider. Debug sessions did not check the caller's role; they now require the operator role | 1, 5 | `TestSecurity_S6_DebugSessionsRequireOperator` covers debug sessions; sign-in is tested with its fix | Partly closed. Debug sessions are guarded; sign-in is still open to any account |
 | S7 | Org policies are applied only when the submitter names the org, and before remote templates are expanded | 4 | Added with the fix | Open |
 | S8 | The Docker socket proxy fails open and does not inspect container-create requests | 3 | `TestSecurity_S8_ProxyFailsClosed`, `TestSecurity_S8_ProxyRejectsHostEscapes` | Open |
 | S9 | Agents hold a secrets-store credential that can read every secret | 7 | Added with the fix | Open |

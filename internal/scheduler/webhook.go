@@ -142,6 +142,10 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func verifyGitHubSig(body []byte, secret, signature string) bool {
+	// An HMAC keyed with an empty secret can be computed by anyone.
+	if secret == "" {
+		return false
+	}
 	if !strings.HasPrefix(signature, "sha256=") {
 		return false
 	}
@@ -202,7 +206,7 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Header.Get("X-Gitlab-Token") != secret {
+	if !secretsEqual(r.Header.Get("X-Gitlab-Token"), secret) {
 		writeError(w, http.StatusForbidden, "invalid token")
 		return
 	}
@@ -273,22 +277,55 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"run_id": runID})
 }
 
+// handleGenericWebhook triggers a run for a project from any system that can
+// send an HTTP request. The caller authenticates with the project's webhook
+// secret, either as an HMAC signature of the body (X-Forge-Signature-256) or
+// as the secret itself (X-Forge-Token).
 func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
+	// This endpoint is exempt from token authentication, so a request with
+	// nothing to verify is refused before any lookup.
+	if !genericWebhookCredentialPresent(r) {
+		writeError(w, http.StatusUnauthorized,
+			"webhook credential required: send "+headerForgeSignature+" or "+headerForgeToken)
+		return
+	}
+
 	projectID := r.PathValue("id")
 
-	proj, _, scmToken, ok := s.projects.GetProject(projectID)
+	proj, secret, scmToken, ok := s.projects.GetProject(projectID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
 
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "reading body")
+		return
+	}
+
+	if !verifyGenericWebhook(r, body, secret) {
+		writeError(w, http.StatusForbidden, "invalid webhook credential")
+		return
+	}
+
+	// The query string is untrusted even after authentication: these values
+	// reach git and a job's shell command.
 	branch := r.URL.Query().Get("branch")
 	if branch == "" {
 		branch = "main"
 	}
+	if !validBranchName(branch) {
+		writeError(w, http.StatusBadRequest, "invalid branch name")
+		return
+	}
 	commitSHA := r.URL.Query().Get("commit")
 	if commitSHA == "" {
 		commitSHA = "HEAD"
+	}
+	if !validCommitRef(commitSHA) {
+		writeError(w, http.StatusBadRequest, "commit must be HEAD or a hexadecimal commit ID")
+		return
 	}
 
 	rawURL := fmt.Sprintf("%s/raw/%s/%s", strings.TrimSuffix(proj.RepoURL, ".git"), commitSHA, proj.PipelinePath)

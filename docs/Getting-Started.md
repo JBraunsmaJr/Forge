@@ -435,6 +435,27 @@ In GitHub: **Settings → Webhooks → Add webhook**
 
 For testing without HTTPS, use the **Manual Trigger** button in the Web UI on the project page.
 
+### Triggering from other systems
+
+Any system that can send an HTTP request can start a run through the generic
+webhook. Authenticate with the project's webhook secret in one of two ways:
+
+```bash
+SECRET='forge_wh_...'
+URL='https://your-server/api/v1/webhook/generic/<project-id>?branch=main&commit=HEAD'
+
+# Option 1: sign the request body (the secret never crosses the network)
+BODY='{}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+curl -fsS -X POST "$URL" -H "X-Forge-Signature-256: $SIG" -d "$BODY"
+
+# Option 2: send the secret as a token (use only over HTTPS)
+curl -fsS -X POST "$URL" -H "X-Forge-Token: $SECRET"
+```
+
+`branch` defaults to `main` and `commit` to `HEAD`. `commit` must be `HEAD` or
+a hexadecimal commit ID. Requests without a valid credential are refused.
+
 ---
 
 ## Next Steps
