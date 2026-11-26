@@ -148,9 +148,9 @@ this table is updated as each one is closed.
 | S9 | Agents hold a secrets-store credential that can read every secret                                                                                                                                                                                                                                                | 7         | Added with the fix                                                                                          | Open                                                                                                                                                                 |
 
 The regression tests live beside the code they exercise, in files named
-`security_*_test.go`, behind the `security` build tag. Run them with
-`make test-security`. A test fails while its gap is open; when every gap is
-closed the tag is removed and the suite joins the default test run.
+`security_*_test.go`. They are part of the default test run, so a change that
+reopens a closed gap fails `make test`. Run them on their own with
+`make test-security`. Gaps marked "Added with the fix" have no test yet.
 
 ---
 

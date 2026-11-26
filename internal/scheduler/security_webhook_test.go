@@ -1,5 +1,3 @@
-//go:build security
-
 package scheduler
 
 import (

@@ -1,10 +1,8 @@
-//go:build security
-
 package proxy
 
 // Security regression tests for the Docker socket proxy. They track gap S8 in
-// docs/Threat-Model.md and fail while it is open. They are behind the
-// "security" build tag; run them with `make test-security`.
+// docs/Threat-Model.md and guard against it reopening. `make test-security`
+// runs them on their own.
 
 import (
 	"net"

@@ -41,10 +41,10 @@ test-race: export INTEGRATION_SKIP = 1
 test-race: ## Run the unit tests with the race detector
 	go test -count=1 -race ./...
 
-# The security suite tracks the known gaps in docs/Threat-Model.md. It is
-# behind a build tag because it fails until those gaps are closed.
-test-security: ## Run the security regression suite (fails while known gaps are open)
-	go test -count=1 -tags security -run '^TestSecurity' ./internal/...
+# The security suite guards the gaps listed in docs/Threat-Model.md. It is
+# part of `make test`; this target runs it on its own, with test names shown.
+test-security: ## Run only the security regression suite
+	go test -count=1 -v -run '^TestSecurity' ./internal/scheduler/... ./internal/proxy/...
 
 check: vet test ## Run the checks expected to pass before a commit
 

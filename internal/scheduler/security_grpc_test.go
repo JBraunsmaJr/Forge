@@ -1,5 +1,3 @@
-//go:build security
-
 package scheduler
 
 import (
@@ -61,20 +59,41 @@ func TestSecurity_S1_AgentSessionRequiresAuthentication(t *testing.T) {
 		},
 	})
 
-	// Give the server up to one second to act on the registration. If the
-	// agent shows up, end the session at once: with no store behind this
-	// Server, a registered session must not live long enough to lease.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if agentRegistered(s, agentID) {
-			cancel()
-			t.Fatalf("a peer with no credential was registered as agent %q", agentID)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// Wait for the session to end. A server that refuses the peer ends the
+	// stream at once, so this normally returns within milliseconds.
+	recvErr := make(chan error, 1)
+	go func() {
+		_, err := stream.Recv()
+		recvErr <- err
+	}()
 
-	_, err = stream.Recv()
-	requireUnauthenticated(t, err)
+	// If the server accepts the peer instead, the stream stays open. Watch the
+	// registry meanwhile and end the session at once if the agent shows up:
+	// with no store behind this Server, a registered session must not live
+	// long enough to lease a job.
+	poll := time.NewTicker(20 * time.Millisecond)
+	defer poll.Stop()
+	timeout := time.NewTimer(time.Second)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case err := <-recvErr:
+			requireUnauthenticated(t, err)
+			if agentRegistered(s, agentID) {
+				t.Fatalf("the session was refused, but agent %q is in the registry", agentID)
+			}
+			return
+		case <-poll.C:
+			if agentRegistered(s, agentID) {
+				cancel()
+				t.Fatalf("a peer with no credential was registered as agent %q", agentID)
+			}
+		case <-timeout.C:
+			cancel()
+			t.Fatal("the session was neither refused nor registered within one second")
+		}
+	}
 }
 
 func agentRegistered(s *Server, id string) bool {

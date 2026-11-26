@@ -1,13 +1,11 @@
-//go:build security
-
 package scheduler
 
 // Shared fixtures for the security regression suite.
 //
-// The suite tracks the known gaps listed in docs/Threat-Model.md. Each test
-// states a security objective and fails while the matching gap is open. The
-// tests are behind the "security" build tag so that they do not break the
-// default test run in the meantime; run them with `make test-security`.
+// The suite tracks the gaps listed in docs/Threat-Model.md. Each test states a
+// security objective, named TestSecurity_<gap ID>_..., and guards against that
+// gap reopening. The tests are part of the default test run; `make
+// test-security` runs them on their own.
 //
 // The suite runs without a database. Requests go through the real routing
 // table and authMiddleware, with a fake token verifier in place of the token
