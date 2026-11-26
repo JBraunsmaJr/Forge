@@ -61,6 +61,27 @@ A specialized role used by Forge Agents.
 
 ---
 
+## Token Scope
+
+A role says what a token may do. A scope says where. A token can be:
+
+- **Installation-wide** (no scope): it may act on every org and project.
+- **Org-scoped**: it may act on that org and on the projects the org owns.
+- **Project-scoped**: it may act on that one project only. It cannot read or
+  change org-level resources such as org secrets and policies, even in its
+  own org.
+
+Scope is enforced on every API route that names its org or project in the
+URL, for example `/api/v1/orgs/{id}/secrets` and
+`/api/v1/projects/{id}/trigger`. A request outside the token's scope is
+refused with `403 Forbidden`.
+
+!!! note
+    Routes addressed by a run, job, or artifact ID, and list endpoints, do
+    not apply scope yet. See the [threat model](Threat-Model.md#known-gaps).
+
+---
+
 ## Assigning Roles
 
 Roles are assigned when creating an API token.

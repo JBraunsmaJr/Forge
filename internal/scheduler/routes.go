@@ -13,6 +13,8 @@ import (
 // Authentication is not applied here: callers wrap the mux in authMiddleware.
 // Routes wrapped in agentRoute or operatorRoute check the caller's role before
 // the handler runs; the remaining routes still check it inside the handler.
+// Routes wrapped in orgScoped or projectScoped also check that the caller's
+// token is allowed to act on the org or project named in the URL.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Web UI - public (must load before the user can authenticate).
 	mux.HandleFunc("GET /", s.handleIndex)
@@ -32,17 +34,17 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Project management
 	mux.HandleFunc("POST /api/v1/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/v1/projects", s.handleListProjects)
-	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.handleUpdateProject)
-	mux.HandleFunc("PUT /api/v1/projects/{id}", s.handleUpdateProject)
-	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.handleDeleteProject)
-	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.handleListBranches)
-	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.handleGetProjectWebhook)
-	mux.HandleFunc("GET /api/v1/projects/{id}/failure-stats", s.handleFailureStats)
-	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.handleManualTrigger)
-	mux.HandleFunc("GET /api/v1/projects/{id}/build-format", s.handleGetBuildFormat)
-	mux.HandleFunc("PUT /api/v1/projects/{id}/build-format", s.handleSetBuildFormat)
-	mux.HandleFunc("PUT /api/v1/projects/{id}/version", s.handleSetVersion)
-	mux.HandleFunc("PUT /api/v1/projects/{id}/version-tag-filter", s.handleSetVersionTagFilter)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}", s.projectScoped(s.handleUpdateProject))
+	mux.HandleFunc("PUT /api/v1/projects/{id}", s.projectScoped(s.handleUpdateProject))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.projectScoped(s.handleDeleteProject))
+	mux.HandleFunc("GET /api/v1/projects/{id}/branches", s.projectScoped(s.handleListBranches))
+	mux.HandleFunc("GET /api/v1/projects/{id}/webhook", s.projectScoped(s.handleGetProjectWebhook))
+	mux.HandleFunc("GET /api/v1/projects/{id}/failure-stats", s.projectScoped(s.handleFailureStats))
+	mux.HandleFunc("POST /api/v1/projects/{id}/trigger", s.projectScoped(s.handleManualTrigger))
+	mux.HandleFunc("GET /api/v1/projects/{id}/build-format", s.projectScoped(s.handleGetBuildFormat))
+	mux.HandleFunc("PUT /api/v1/projects/{id}/build-format", s.projectScoped(s.handleSetBuildFormat))
+	mux.HandleFunc("PUT /api/v1/projects/{id}/version", s.projectScoped(s.handleSetVersion))
+	mux.HandleFunc("PUT /api/v1/projects/{id}/version-tag-filter", s.projectScoped(s.handleSetVersionTagFilter))
 
 	// SCM webhooks - HMAC secured, excempt from token auth
 	mux.HandleFunc("POST /api/v1/webhook/github/{id}", s.handleGitHubWebhook)
@@ -59,19 +61,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Org and policy management.
 	mux.HandleFunc("POST /api/v1/orgs", s.handleCreateOrg)
 	mux.HandleFunc("GET /api/v1/orgs", s.handleListOrgs)
-	mux.HandleFunc("GET /api/v1/orgs/{id}", s.handleGetOrg)
-	mux.HandleFunc("POST /api/v1/orgs/{id}/policies", s.handleCreatePolicy)
-	mux.HandleFunc("PUT /api/v1/orgs/{id}/policies/{polID}", s.handleUpdatePolicy)
-	mux.HandleFunc("GET /api/v1/orgs/{id}/policies", s.handleListPolicies)
-	mux.HandleFunc("DELETE /api/v1/orgs/{id}/policies/{polID}", s.handleDeletePolicy)
+	mux.HandleFunc("GET /api/v1/orgs/{id}", s.orgScoped(s.handleGetOrg))
+	mux.HandleFunc("POST /api/v1/orgs/{id}/policies", s.orgScoped(s.handleCreatePolicy))
+	mux.HandleFunc("PUT /api/v1/orgs/{id}/policies/{polID}", s.orgScoped(s.handleUpdatePolicy))
+	mux.HandleFunc("GET /api/v1/orgs/{id}/policies", s.orgScoped(s.handleListPolicies))
+	mux.HandleFunc("DELETE /api/v1/orgs/{id}/policies/{polID}", s.orgScoped(s.handleDeletePolicy))
 
 	// Secret management
-	mux.HandleFunc("GET /api/v1/orgs/{id}/secrets", s.handleListOrgSecrets)
-	mux.HandleFunc("POST /api/v1/orgs/{id}/secrets", s.handleSetOrgSecret)
-	mux.HandleFunc("DELETE /api/v1/orgs/{id}/secrets/{name}", s.handleDeleteOrgSecret)
-	mux.HandleFunc("GET /api/v1/projects/{id}/secrets", s.handleListProjectSecrets)
-	mux.HandleFunc("POST /api/v1/projects/{id}/secrets", s.handleSetProjectSecret)
-	mux.HandleFunc("DELETE /api/v1/projects/{id}/secrets/{name}", s.handleDeleteProjectSecret)
+	mux.HandleFunc("GET /api/v1/orgs/{id}/secrets", s.orgScoped(s.handleListOrgSecrets))
+	mux.HandleFunc("POST /api/v1/orgs/{id}/secrets", s.orgScoped(s.handleSetOrgSecret))
+	mux.HandleFunc("DELETE /api/v1/orgs/{id}/secrets/{name}", s.orgScoped(s.handleDeleteOrgSecret))
+	mux.HandleFunc("GET /api/v1/projects/{id}/secrets", s.projectScoped(s.handleListProjectSecrets))
+	mux.HandleFunc("POST /api/v1/projects/{id}/secrets", s.projectScoped(s.handleSetProjectSecret))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/secrets/{name}", s.projectScoped(s.handleDeleteProjectSecret))
 
 	// Pipeline submission + status (used by CLI).
 	mux.HandleFunc("POST /api/v1/runs", s.handleSubmitRun)
@@ -85,9 +87,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/waiting", s.handleJobWaiting)
 	mux.HandleFunc("POST /api/v1/test-reports", agentRoute(s.handleRecordTestReport))
-	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.handleGetFlakyTests)
-	mux.HandleFunc("GET /api/v1/projects/{id}/health", s.handleGetProjectHealth)
-	mux.HandleFunc("POST /api/v1/projects/{id}/health/check", s.handleTriggerProjectHealth)
+	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.projectScoped(s.handleGetFlakyTests))
+	mux.HandleFunc("GET /api/v1/projects/{id}/health", s.projectScoped(s.handleGetProjectHealth))
+	mux.HandleFunc("POST /api/v1/projects/{id}/health/check", s.projectScoped(s.handleTriggerProjectHealth))
 
 	// Web UI endpoints
 	mux.HandleFunc("GET /api/v1/runs", s.handleListRuns)
