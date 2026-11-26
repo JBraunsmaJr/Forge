@@ -11,7 +11,7 @@ UI_DIST := internal/scheduler/web/dist
 
 .DEFAULT_GOAL := help
 
-.PHONY: help ui build-go build dev-ui vet test test-race check clean
+.PHONY: help ui build-go build dev-ui vet test test-race check baseline clean
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -42,6 +42,9 @@ test-race: ## Run the unit tests with the race detector
 	go test -count=1 -race ./...
 
 check: vet test ## Run the checks expected to pass before a commit
+
+baseline: ## Record build, vet, test, race, and UI results in .baseline/report.md
+	./scripts/dev/baseline.sh
 
 clean: ## Remove build output
 	rm -f forge forge.exe

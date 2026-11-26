@@ -1,5 +1,6 @@
 .forge/cache
 .forge/logs
+/.baseline/
 /dist
 /forge
 /forge.exe
