@@ -135,17 +135,22 @@ These are the places where the current implementation does not yet meet the
 objectives above. They are tracked as the first phase of hardening work and
 this table is updated as each one is closed.
 
-| ID | Gap | Objective | Status |
-| --- | --- | --- | --- |
-| S1 | The agent gRPC session has no authentication and the server has no TLS | 1, 7 | Open |
-| S2 | Jobs receive the agent's own API token, and several agent-facing endpoints do not check the caller's role | 3, 5 | Open |
-| S3 | Token org and project scope is stored but not enforced | 3, 6 | Open |
-| S4 | Runs triggered from fork changes can declare and receive secrets | 2 | Open |
-| S5 | The generic webhook endpoint accepts unauthenticated requests | 1 | Open |
-| S6 | Single sign-on provisions any account from the identity provider, and debug sessions do not check the caller's role | 1, 5 | Open |
-| S7 | Org policies are applied only when the submitter names the org, and before remote templates are expanded | 4 | Open |
-| S8 | The Docker socket proxy fails open and does not inspect container-create requests | 3 | Open |
-| S9 | Agents hold a secrets-store credential that can read every secret | 7 | Open |
+| ID | Gap | Objective | Regression test | Status |
+| --- | --- | --- | --- | --- |
+| S1 | The agent gRPC session has no authentication and the server has no TLS | 1, 7 | `TestSecurity_S1_AgentSessionRequiresAuthentication` | Open |
+| S2 | Jobs receive the agent's own API token, and several agent-facing endpoints do not check the caller's role | 3, 5 | `TestSecurity_S2_AgentEndpointsRequireAgentRole` covers the endpoints; the job token is tested with its fix | Open |
+| S3 | Token org and project scope is stored but not enforced | 3, 6 | `TestSecurity_S3_TokenScopeIsEnforced` | Open |
+| S4 | Runs triggered from fork changes can declare and receive secrets | 2 | Added with the fix | Open |
+| S5 | The generic webhook endpoint accepts unauthenticated requests | 1 | `TestSecurity_S5_GenericWebhookRequiresACredential` | Open |
+| S6 | Single sign-on provisions any account from the identity provider, and debug sessions do not check the caller's role | 1, 5 | `TestSecurity_S6_DebugSessionsRequireOperator` covers debug sessions; sign-in is tested with its fix | Open |
+| S7 | Org policies are applied only when the submitter names the org, and before remote templates are expanded | 4 | Added with the fix | Open |
+| S8 | The Docker socket proxy fails open and does not inspect container-create requests | 3 | `TestSecurity_S8_ProxyFailsClosed`, `TestSecurity_S8_ProxyRejectsHostEscapes` | Open |
+| S9 | Agents hold a secrets-store credential that can read every secret | 7 | Added with the fix | Open |
+
+The regression tests live beside the code they exercise, in files named
+`security_*_test.go`, behind the `security` build tag. Run them with
+`make test-security`. A test fails while its gap is open; when every gap is
+closed the tag is removed and the suite joins the default test run.
 
 ---
 

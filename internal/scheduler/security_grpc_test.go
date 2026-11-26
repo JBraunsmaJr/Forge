@@ -1,0 +1,91 @@
+//go:build security
+
+package scheduler
+
+import (
+	"context"
+	"net"
+	"testing"
+	"time"
+
+	"github.com/JBraunsmaJr/forge/internal/pb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+)
+
+// TestSecurity_S1_AgentSessionRequiresAuthentication covers threat model gap
+// S1: a peer that presents no credential must not be able to register as an
+// agent. The session must end with codes.Unauthenticated and the peer must
+// never appear in the agent registry.
+func TestSecurity_S1_AgentSessionRequiresAuthentication(t *testing.T) {
+	const agentID = "unauthenticated-agent"
+
+	s := &Server{agents: newAgentRegistry()}
+	lis := bufconn.Listen(1 << 20)
+	gsrv := s.newGRPCServer()
+	go func() { _ = gsrv.Serve(lis) }()
+	t.Cleanup(gsrv.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dialing the in-memory gRPC server: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := pb.NewAgentServiceClient(conn).Session(ctx)
+	if err != nil {
+		requireUnauthenticated(t, err)
+		return
+	}
+
+	// A send can succeed even when the server has already refused the
+	// stream, so the result is judged by the registry and by Recv below.
+	_ = stream.Send(&pb.AgentMessage{
+		AgentId: agentID,
+		Payload: &pb.AgentMessage_Register{
+			Register: &pb.RegisterRequest{Concurrency: 1},
+		},
+	})
+
+	// Give the server up to one second to act on the registration. If the
+	// agent shows up, end the session at once: with no store behind this
+	// Server, a registered session must not live long enough to lease.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if agentRegistered(s, agentID) {
+			cancel()
+			t.Fatalf("a peer with no credential was registered as agent %q", agentID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	_, err = stream.Recv()
+	requireUnauthenticated(t, err)
+}
+
+func agentRegistered(s *Server, id string) bool {
+	for _, a := range s.agents.List() {
+		if a.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func requireUnauthenticated(t *testing.T, err error) {
+	t.Helper()
+	if got := status.Code(err); got != codes.Unauthenticated {
+		t.Fatalf("session ended with code %s (%v); want %s", got, err, codes.Unauthenticated)
+	}
+}

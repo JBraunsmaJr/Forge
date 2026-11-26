@@ -11,7 +11,7 @@ UI_DIST := internal/scheduler/web/dist
 
 .DEFAULT_GOAL := help
 
-.PHONY: help ui build-go build dev-ui vet test test-race check baseline clean
+.PHONY: help ui build-go build dev-ui vet test test-race test-security check baseline clean
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -40,6 +40,11 @@ test: ## Run the unit tests
 test-race: export INTEGRATION_SKIP = 1
 test-race: ## Run the unit tests with the race detector
 	go test -count=1 -race ./...
+
+# The security suite tracks the known gaps in docs/Threat-Model.md. It is
+# behind a build tag because it fails until those gaps are closed.
+test-security: ## Run the security regression suite (fails while known gaps are open)
+	go test -count=1 -tags security -run '^TestSecurity' ./internal/...
 
 check: vet test ## Run the checks expected to pass before a commit
 
