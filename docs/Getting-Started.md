@@ -86,16 +86,20 @@ site — every command below pulls from `github.com` or builds from source.
     git clone https://github.com/JBraunsmaJr/Forge.git
     cd Forge
 
-    make build                      # builds the Web UI, then forge.exe
-    # or, to control the output name:
+    make build                      # builds the Web UI, then the forge binary
+    # or, without make:
     cd ui && npm install && npm run build && cd ..
     go build -o forge ./cmd/forge   # Linux/macOS
     go build -o forge.exe ./cmd/forge
     ```
 
-    The `make build` target writes `forge.exe` on every platform. On
-    Linux/macOS, use the explicit `go build -o forge` line above if you'd
-    rather not have the extension.
+    `make build` writes `forge` on Linux and macOS and `forge.exe` on
+    Windows. Run `make help` to list the other targets, such as `make check`
+    for `go vet` plus the unit tests.
+
+    The Go code compiles without the Web UI, so `go build ./...` and
+    `go test ./...` work on a fresh clone. A binary built that way serves a
+    short notice in place of the UI until you run `make build`.
 
 ### Self-hosted core (Docker)
 

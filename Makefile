@@ -1,16 +1,48 @@
-.PHONY: ui build-go build clean dev-ui
+# Forge developer tasks. Run `make help` for the list.
 
-ui:
-	cd ui && npm install && npm run build
+# The CLI binary is forge.exe on Windows and forge everywhere else.
+BINARY := forge
+ifeq ($(OS),Windows_NT)
+BINARY := forge.exe
+endif
 
-build-go:
-	go build -o forge.exe ./cmd/forge
+UI_DIR  := ui
+UI_DIST := internal/scheduler/web/dist
 
-build: ui build-go
+.DEFAULT_GOAL := help
 
-dev-ui:
-	cd ui && npm run dev
+.PHONY: help ui build-go build dev-ui vet test test-race check clean
 
-clean:
-	rm -f forge.exe
-	rm -rf internal/scheduler/web/dist
+help: ## List the available targets
+	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*## "} {printf "  %-12s %s\n", $$1, $$2}'
+
+ui: ## Install UI dependencies and build the Web UI
+	cd $(UI_DIR) && npm install && npm run build
+
+build-go: ## Build the forge binary (embeds the Web UI if it has been built)
+	go build -o $(BINARY) ./cmd/forge
+
+build: ui build-go ## Build the Web UI, then the forge binary
+
+dev-ui: ## Run the Web UI dev server with hot reload
+	cd $(UI_DIR) && npm run dev
+
+vet: ## Run go vet on every package
+	go vet ./...
+
+# The integration suite needs Docker and a built image, so the default test
+# targets skip it. See .forge/scripts/integration-tests.sh for the full run.
+test: export INTEGRATION_SKIP = 1
+test: ## Run the unit tests
+	go test -count=1 ./...
+
+test-race: export INTEGRATION_SKIP = 1
+test-race: ## Run the unit tests with the race detector
+	go test -count=1 -race ./...
+
+check: vet test ## Run the checks expected to pass before a commit
+
+clean: ## Remove build output
+	rm -f forge forge.exe
+	rm -rf $(UI_DIST)

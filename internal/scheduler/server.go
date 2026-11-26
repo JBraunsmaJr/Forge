@@ -43,7 +43,12 @@ import (
 	"gorm.io/gorm"
 )
 
-//go:embed all:web/dist
+// webAssets holds the compiled Web UI. The pattern embeds the whole web
+// directory rather than web/dist so that a fresh clone compiles before the UI
+// has been built: web/.gitkeep is tracked, web/dist is build output. When
+// web/dist is absent, handleIndex answers with a hint instead of the UI.
+//
+//go:embed all:web
 var webAssets embed.FS
 
 // Server is the HTTP server for the Forge scheduler.
@@ -682,6 +687,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	f, err := distFS.Open(path)
 	if err != nil {
+		if path == "index.html" {
+			http.Error(w, "The Forge Web UI has not been built into this binary. Run `make build` and restart.", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
