@@ -126,3 +126,4 @@ nav:
       - CLI: Cli-Reference.md
       - Configuration: Configuration.md
       - Roles and permissions: Roles.md
+      - Threat model: Threat-Model.md

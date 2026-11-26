@@ -15,6 +15,19 @@
 
 ![main](./docs/assets/screenshots/main.png)
 
+## Who Forge Is For
+
+Forge is for organizations that want to run CI/CD on infrastructure they
+control. One installation serves several teams inside the same organization;
+each team gets its own projects, secrets, and policies. It is built to work in
+private and restricted networks, including ones that reach the outside world
+only through internal mirrors.
+
+Forge is not a hosted service and is not designed to isolate mutually hostile
+tenants. It is alpha software: read the
+[threat model](https://jbraunsmajr.github.io/Forge/Threat-Model/) before you
+put real secrets in it.
+
 ## The Problem with Existing CI/CD Systems
 
 Every team eventually hits the same wall with GitHub Actions, GitLab CI, and CircleCI:
@@ -344,6 +357,7 @@ See the [Pipeline Reference](https://jbraunsmajr.github.io/Forge/Pipeline-Refere
 | [HTTPS / Proxy](https://jbraunsmajr.github.io/Forge/HTTPS/)                             | Enabling TLS with Caddy, Cloudflare, or custom proxies              |
 | [Cloud Autoscaling](https://jbraunsmajr.github.io/Forge/Cloud-Autoscaling/)              | Hot/burst agent pools provisioned automatically via Docker or Azure |
 | [Architecture](https://jbraunsmajr.github.io/Forge/Architecture/)                       | How Forge works under the hood                                      |
+| [Threat Model](https://jbraunsmajr.github.io/Forge/Threat-Model/)                       | What Forge protects, from whom, and the known gaps                  |
 
 ---
 
