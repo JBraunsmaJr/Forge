@@ -171,6 +171,22 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// tokenVerifier resolves a raw API token to the record it identifies.
+// tokenStore is the production implementation; tests substitute a fake so
+// that authorization can be exercised without a database.
+type tokenVerifier interface {
+	Verify(rawToken string) (*tokenRecord, bool)
+}
+
+// verifier returns the tokenVerifier used to authenticate requests: the
+// injected one when set, otherwise the database-backed token store.
+func (s *Server) verifier() tokenVerifier {
+	if s.authn != nil {
+		return s.authn
+	}
+	return s.tokens
+}
+
 type contextKeyType string
 
 const contextKeyToken = contextKeyType("forge_token")
@@ -202,7 +218,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		rec, ok := s.tokens.Verify(raw)
+		rec, ok := s.verifier().Verify(raw)
 		if !ok {
 			ip := r.RemoteAddr
 			if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
