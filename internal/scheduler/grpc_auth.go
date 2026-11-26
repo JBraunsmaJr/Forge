@@ -13,9 +13,6 @@ import (
 )
 
 const (
-	// roleAgent is the only role allowed to open an agent session.
-	roleAgent = "agent"
-
 	// authorizationMetadataKey is the gRPC metadata key that carries the
 	// agent's API token, in the same "Bearer <token>" form as the HTTP API.
 	authorizationMetadataKey = "authorization"

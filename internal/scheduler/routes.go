@@ -10,7 +10,9 @@ import (
 //
 // It is separate from Start so that tests can exercise the real routing table,
 // wrapped in authMiddleware, without starting listeners or background workers.
-// Authentication and authorization are not applied here: callers wrap the mux.
+// Authentication is not applied here: callers wrap the mux in authMiddleware.
+// Routes wrapped in agentRoute or operatorRoute check the caller's role before
+// the handler runs; the remaining routes still check it inside the handler.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Web UI - public (must load before the user can authenticate).
 	mux.HandleFunc("GET /", s.handleIndex)
@@ -52,7 +54,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Distributed Cache
 	mux.HandleFunc("GET /api/v1/cache/{hash}", s.handleCacheLookup)
-	mux.HandleFunc("POST /api/v1/cache", s.handleCacheStore)
+	mux.HandleFunc("POST /api/v1/cache", agentRoute(s.handleCacheStore))
 
 	// Org and policy management.
 	mux.HandleFunc("POST /api/v1/orgs", s.handleCreateOrg)
@@ -82,7 +84,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/waiting", s.handleJobWaiting)
-	mux.HandleFunc("POST /api/v1/test-reports", s.handleRecordTestReport)
+	mux.HandleFunc("POST /api/v1/test-reports", agentRoute(s.handleRecordTestReport))
 	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.handleGetFlakyTests)
 	mux.HandleFunc("GET /api/v1/projects/{id}/health", s.handleGetProjectHealth)
 	mux.HandleFunc("POST /api/v1/projects/{id}/health/check", s.handleTriggerProjectHealth)
@@ -94,7 +96,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/runs/{id}/events", s.handleRunEventsWS)
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", s.handleJobLogs)
 	mux.HandleFunc("GET /api/v1/logs/search", s.handleSearchLogs)
-	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", s.handleAppendJobLogs)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/logs", agentRoute(s.handleAppendJobLogs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}/logs/stream", s.handleJobLogStreamWS)
 	// Agent and queue management
 	mux.HandleFunc("GET /api/v1/agents", s.handleListAgents)
@@ -104,27 +106,27 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/audit/export", s.handleListAuditLogs)
 
 	// Agent protocol (legacy HTTP - kept for compatibility)
-	mux.HandleFunc("POST /api/v1/jobs/lease", s.handleLease)
-	mux.HandleFunc("POST /api/v1/jobs/{id}/heartbeat", s.handleHeartbeat)
-	mux.HandleFunc("POST /api/v1/jobs/{id}/complete", s.handleComplete)
+	mux.HandleFunc("POST /api/v1/jobs/lease", agentRoute(s.handleLease))
+	mux.HandleFunc("POST /api/v1/jobs/{id}/heartbeat", agentRoute(s.handleHeartbeat))
+	mux.HandleFunc("POST /api/v1/jobs/{id}/complete", agentRoute(s.handleComplete))
 
 	// Debug sesion - browser side.
-	mux.HandleFunc("POST /api/v1/debug", s.handleCreateDebugSession)
-	mux.HandleFunc("GET /api/v1/debug/{id}", s.handleGetDebugSession)
-	mux.HandleFunc("GET /api/v1/debug/{id}/stream", s.handleDebugStream)
-	mux.HandleFunc("POST /api/v1/debug/{id}/exec", s.handleDebugExec)
-	mux.HandleFunc("DELETE /api/v1/debug/{id}", s.handleCloseDebugSession)
-	mux.HandleFunc("POST /api/v1/debug/{id}/cancel", s.handleCancelDebugCommand)
-	mux.HandleFunc("GET /api/v1/debug/{id}/cancel-check", s.handleDebugCancelCheck)
+	mux.HandleFunc("POST /api/v1/debug", operatorRoute(s.handleCreateDebugSession))
+	mux.HandleFunc("GET /api/v1/debug/{id}", operatorRoute(s.handleGetDebugSession))
+	mux.HandleFunc("GET /api/v1/debug/{id}/stream", operatorRoute(s.handleDebugStream))
+	mux.HandleFunc("POST /api/v1/debug/{id}/exec", operatorRoute(s.handleDebugExec))
+	mux.HandleFunc("DELETE /api/v1/debug/{id}", operatorRoute(s.handleCloseDebugSession))
+	mux.HandleFunc("POST /api/v1/debug/{id}/cancel", operatorRoute(s.handleCancelDebugCommand))
+	mux.HandleFunc("GET /api/v1/debug/{id}/cancel-check", agentRoute(s.handleDebugCancelCheck))
 
-	mux.HandleFunc("GET /api/v1/debug/{id}/ws", s.handleDebugTerminalProxy)
-	mux.HandleFunc("GET /api/v1/debug/{id}/agent-ws", s.handleAgentDebugTerminal)
+	mux.HandleFunc("GET /api/v1/debug/{id}/ws", operatorRoute(s.handleDebugTerminalProxy))
+	mux.HandleFunc("GET /api/v1/debug/{id}/agent-ws", agentRoute(s.handleAgentDebugTerminal))
 
 	// Debug session agent side.
-	mux.HandleFunc("POST /api/v1/debug/lease", s.handleDebugLease)
-	mux.HandleFunc("POST /api/v1/debug/{id}/container", s.handleDebugRegisterContainer)
-	mux.HandleFunc("GET /api/v1/debug/{id}/commands", s.handleDebugPollCommands)
-	mux.HandleFunc("POST /api/v1/debug/{id}/output", s.handleDebugSubmitOutput)
+	mux.HandleFunc("POST /api/v1/debug/lease", agentRoute(s.handleDebugLease))
+	mux.HandleFunc("POST /api/v1/debug/{id}/container", agentRoute(s.handleDebugRegisterContainer))
+	mux.HandleFunc("GET /api/v1/debug/{id}/commands", agentRoute(s.handleDebugPollCommands))
+	mux.HandleFunc("POST /api/v1/debug/{id}/output", agentRoute(s.handleDebugSubmitOutput))
 
 	// Flaky test detection.
 	mux.HandleFunc("GET /api/v1/flaky", s.handleFlakySteps)
@@ -136,9 +138,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/callback/{provider}", s.handleSSOCallback)
 
 	// Artifact management.
-	mux.HandleFunc("POST /api/v1/artifacts/presign", s.handlePresignUpload)
+	mux.HandleFunc("POST /api/v1/artifacts/presign", agentRoute(s.handlePresignUpload))
 	mux.HandleFunc("GET /api/v1/artifacts", s.handleGetArtifact)
-	mux.HandleFunc("POST /api/v1/artifacts/{id}/confirm", s.handleConfirmUpload)
+	mux.HandleFunc("POST /api/v1/artifacts/{id}/confirm", agentRoute(s.handleConfirmUpload))
 	mux.HandleFunc("PUT /api/v1/artifacts/{id}/upload", s.handleArtifactUpload)
 	mux.HandleFunc("GET /api/v1/artifacts/{id}/download", s.handleArtifactDownload)
 	mux.HandleFunc("DELETE /api/v1/artifacts/{id}", s.handleDeleteArtifact)
