@@ -76,8 +76,8 @@ steps:
 
 func TestParseScalar_Comments(t *testing.T) {
 	tests := []struct {
-		input    string `json:"input,omitempty"`
-		expected any    `json:"expected,omitempty"`
+		input    string
+		expected any
 	}{
 		{"true", true},
 		{"true # comment", true},
