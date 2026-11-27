@@ -110,7 +110,7 @@ Every run is assigned a build number: a stable, configurable identifier availabl
 | `FORGE_BUILD_NUMBER`   | The rendered build number, e.g. `2026-08.14` or `2.4.87`.                |
 | `FORGE_BUILD_COUNTER`  | The raw monotonic counter the build number was rendered from, e.g. `14`. |
 
-Both are resolvable anywhere `${{ env.* }}` already works (`release:`, `matrix:`, `docker_publish:` blocks, and `env:`/`secrets:` steps), and are set on every step in the run — including steps expanded from a `matrix:` block, which all share their parent run's one build number.
+Both are resolvable anywhere `${{ env.* }}` already works (`release:`, `matrix:`, `docker_build:` and `docker_publish:` blocks, and `env:`/`secrets:` steps), and are set on every step in the run — including steps expanded from a `matrix:` block, which all share their parent run's one build number.
 
 **Local execution.** Running `forge run` with no scheduler/project context sets `FORGE_BUILD_NUMBER=local` and `FORGE_BUILD_COUNTER=0` so pipelines referencing these variables don't fail outside CI. `local` is not a value any configured format can ever render, so it's always distinguishable from a real, scheduler-assigned build number.
 
@@ -496,6 +496,62 @@ The `release` block supports interpolation for:
 - `${{ env.FORGE_COMMIT_SHA }}`: The full commit SHA.
 
 Ensure your SCM token has sufficient permissions to create releases and upload assets.
+
+---
+
+### `type: docker_build`
+
+A `docker_build` step builds a container image from the job's workspace and pushes it to a registry. The agent runs the build itself, so the step needs no `image`, no `run`, and no `docker_socket`.
+
+```yaml
+- id: build-image
+  type: docker_build
+  secrets: [REGISTRY_USERNAME, REGISTRY_PASSWORD]
+  docker_build:
+    registry: registry.example.com
+    repository: team/api
+    context: services/api
+    tags:
+      - "test-${{ env.FORGE_BUILD_NUMBER }}"
+    build_args:
+      VERSION: "${{ env.FORGE_BUILD_NUMBER }}"
+```
+
+**docker_build step fields:**
+
+| Field        | Type     | Required | Description |
+|--------------|----------|----------|-------------|
+| `registry`   | string   | yes      | Registry host, with a port if needed, e.g. `registry.example.com` or `localhost:5000`. |
+| `repository` | string   | yes      | Repository within the registry, e.g. `team/api`. Lowercase. |
+| `tags`       | string[] | yes      | One or more tags to push the image under. |
+| `context`    | string   | no       | Build context directory, relative to the workspace. Defaults to the workspace root. |
+| `dockerfile` | string   | no       | Path of the Dockerfile, relative to the workspace. Defaults to `Dockerfile` inside the context. |
+| `target`     | string   | no       | Build stage to stop at. Defaults to the last stage. |
+| `build_args` | map      | no       | Values passed to the build as `--build-arg NAME=value`. |
+
+Every field supports `${{ env.VAR }}` and, in a matrix step, `${{ matrix.KEY }}`.
+
+**A build always pushes.** Later steps can land on a different agent, which has to pull the image, so there is no build-only mode. The usual pattern is to push a per-run tag such as `test-${{ env.FORGE_BUILD_NUMBER }}` here and promote it to its release tag with a [`docker_publish`](#type-docker_publish) step once the tests pass.
+
+**Validation.** Missing required fields, and a `context` or `dockerfile` that points outside the workspace, are rejected by `forge validate` and the pipeline editor. Names and tags are checked again when the step runs, after placeholders are resolved. A placeholder that names a variable the step does not have fails the step instead of producing an empty tag.
+
+**Authentication.** List `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` under `secrets:`, the same two names `docker_publish` uses. The agent writes them to a private file outside the workspace for the duration of the step and removes it afterwards; they are never passed on a command line. Omit both for a registry that accepts anonymous pushes. Giving only one of the two fails the step.
+
+**Caching.** A `docker_build` step is never skipped on a Forge cache hit, even if it declares `inputs`, because the tags it pushes differ per run and later steps depend on them. Unchanged layers are still reused through the container engine's own layer cache on the agent.
+
+**Base images.** The build runs with the agent's container engine. Under Podman, short names such as `FROM alpine` resolve only if the host defines a default registry, so write fully qualified names (`FROM docker.io/library/alpine:3.20`) or mirror names in the Dockerfile. In an environment with an internal CA, the engine on the agent host must already trust the registry and any mirrors; see [Internal certificate authorities](Configuration.md#internal-certificate-authorities).
+
+**Plain-HTTP registries.** A local test registry without TLS works with Docker on `localhost` out of the box. Podman needs it marked as insecure in `registries.conf`:
+
+```toml
+[[registry]]
+location = "localhost:5000"
+insecure = true
+```
+
+**Current limits.** One CPU architecture per build (the agent's). No build-time secrets or SSH forwarding yet. The digest of each pushed tag is written to the step log.
+
+A runnable example is in `examples/image-build/`.
 
 ---
 

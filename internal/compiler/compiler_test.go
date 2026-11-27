@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
@@ -500,5 +501,144 @@ steps:
 	// the caller's — it is already ordered behind the entry step.
 	if got := deps["frag.second"]; len(got) != 1 || got[0] != "frag.first" {
 		t.Errorf("frag.second should depend only on frag.first, got %v", got)
+	}
+}
+
+// dockerBuildConfig decodes the configuration a compiled docker_build step
+// carries to the agent.
+func dockerBuildConfig(t *testing.T, s *pipeline.Step) imagebuild.Config {
+	t.Helper()
+	cfg, err := imagebuild.Decode(s.With[imagebuild.WithKey])
+	if err != nil {
+		t.Fatalf("step %s: %v", s.ID, err)
+	}
+	return cfg
+}
+
+func TestCompile_DockerBuild(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "docker-build",
+		Steps: []JSONStep{
+			{
+				ID:   "build-image",
+				Type: "docker_build",
+				With: map[string]string{"unrelated": "kept"},
+				DockerBuild: imagebuild.Config{
+					Registry:   "registry.example.com",
+					Repository: "team/api",
+					Context:    "services/api",
+					Tags:       []string{"test-${{ env.FORGE_BUILD_NUMBER }}"},
+					BuildArgs:  map[string]string{"VERSION": "1.2.3"},
+				},
+			},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if len(p.Steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(p.Steps))
+	}
+	step := p.Steps[0]
+	if step.Type != imagebuild.StepType {
+		t.Errorf("Type = %q; want %q", step.Type, imagebuild.StepType)
+	}
+	if len(step.Command) != 0 {
+		t.Errorf("Command = %v; want none, the agent runs the build", step.Command)
+	}
+	if step.With["unrelated"] != "kept" {
+		t.Errorf("With = %v; the step's own parameters were dropped", step.With)
+	}
+
+	cfg := dockerBuildConfig(t, step)
+	if cfg.Registry != "registry.example.com" || cfg.Repository != "team/api" || cfg.Context != "services/api" {
+		t.Errorf("configuration = %+v; fields were not carried through", cfg)
+	}
+	// Placeholders are resolved on the agent, where the run's values exist.
+	if len(cfg.Tags) != 1 || cfg.Tags[0] != "test-${{ env.FORGE_BUILD_NUMBER }}" {
+		t.Errorf("Tags = %v; want the placeholder preserved for the agent", cfg.Tags)
+	}
+	if cfg.BuildArgs["VERSION"] != "1.2.3" {
+		t.Errorf("BuildArgs = %v", cfg.BuildArgs)
+	}
+}
+
+func TestCompile_DockerBuild_Rejects(t *testing.T) {
+	valid := imagebuild.Config{Registry: "registry.example.com", Repository: "team/api", Tags: []string{"v1"}}
+
+	cases := []struct {
+		name    string
+		mutate  func(*imagebuild.Config)
+		wantErr string
+	}{
+		{"missing block", func(c *imagebuild.Config) { *c = imagebuild.Config{} }, "registry, repository, tags"},
+		{"missing registry", func(c *imagebuild.Config) { c.Registry = "" }, "registry"},
+		{"missing repository", func(c *imagebuild.Config) { c.Repository = "" }, "repository"},
+		{"missing tags", func(c *imagebuild.Config) { c.Tags = nil }, "tags"},
+		{"context outside the workspace", func(c *imagebuild.Config) { c.Context = "../other" }, "context"},
+		{"absolute dockerfile", func(c *imagebuild.Config) { c.Dockerfile = "/etc/Dockerfile" }, "dockerfile"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := valid
+			tc.mutate(&cfg)
+			path := writeTempPipeline(t, jsonPipeline{
+				Name:  "docker-build-invalid",
+				Steps: []JSONStep{{ID: "build-image", Type: "docker_build", DockerBuild: cfg}},
+			})
+			_, err := Compile(path)
+			if err == nil {
+				t.Fatal("Compile accepted an invalid docker_build step")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v; want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Each matrix combination must get its own tags and build arguments, not a
+// slice or map shared with the other combinations.
+func TestCompile_MatrixExpansion_DockerBuild(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "matrix-docker-build",
+		Steps: []JSONStep{
+			{
+				ID:     "build-image",
+				Type:   "docker_build",
+				Matrix: map[string][]string{"service": {"api", "worker"}},
+				DockerBuild: imagebuild.Config{
+					Registry:   "registry.example.com",
+					Repository: "team/${{ matrix.service }}",
+					Context:    "services/${{ matrix.service }}",
+					Tags:       []string{"${{ matrix.service }}-test"},
+					BuildArgs:  map[string]string{"SERVICE": "${{ matrix.service }}"},
+				},
+			},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if len(p.Steps) != 2 {
+		t.Fatalf("expected 2 steps (one per matrix combination), got %d", len(p.Steps))
+	}
+
+	seen := make(map[string]bool)
+	for _, s := range p.Steps {
+		cfg := dockerBuildConfig(t, s)
+		service := cfg.BuildArgs["SERVICE"]
+		seen[service] = true
+		if cfg.Repository != "team/"+service || cfg.Context != "services/"+service ||
+			len(cfg.Tags) != 1 || cfg.Tags[0] != service+"-test" {
+			t.Errorf("step %s: configuration %+v does not consistently name service %q", s.ID, cfg, service)
+		}
+	}
+	if len(seen) != 2 || !seen["api"] || !seen["worker"] {
+		t.Errorf("services built = %v; want api and worker", seen)
 	}
 }

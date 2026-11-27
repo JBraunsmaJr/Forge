@@ -35,6 +35,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/glob"
+	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
@@ -1086,8 +1087,9 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			a.id[:8], len(spec.SecretNames), spec.StepID, scopeDesc)
 	}
 
-	// Check CAS before running
-	if len(step.Inputs) > 0 {
+	// Check CAS before running. An image build always runs: later steps pull
+	// the tags it pushes, and those tags differ per run.
+	if len(step.Inputs) > 0 && step.Type != imagebuild.StepType {
 		hash, err := cache.ComputeTaskHash(step, jobWorkspace)
 		if err == nil {
 			step.CacheKey = hash

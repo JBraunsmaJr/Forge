@@ -20,22 +20,52 @@ import (
 type Config struct {
 	// Registry is the registry host, with a port if needed, for example
 	// "registry.example.com" or "localhost:5000".
-	Registry string
+	Registry string `json:"registry"`
 	// Repository is the image path within the registry, for example
 	// "team/api".
-	Repository string
+	Repository string `json:"repository"`
 	// Context is the build context directory, relative to the workspace.
 	// Empty means the workspace root.
-	Context string
+	Context string `json:"context,omitempty"`
 	// Dockerfile is the path of the Dockerfile, relative to the workspace.
 	// Empty means "Dockerfile" inside the context.
-	Dockerfile string
+	Dockerfile string `json:"dockerfile,omitempty"`
 	// Target names a build stage to stop at. Empty builds the last stage.
-	Target string
+	Target string `json:"target,omitempty"`
 	// Tags are the tags the built image is pushed under. At least one.
-	Tags []string
+	Tags []string `json:"tags"`
 	// BuildArgs are passed to the build as --build-arg NAME=value.
-	BuildArgs map[string]string
+	BuildArgs map[string]string `json:"build_args,omitempty"`
+}
+
+// IsZero reports whether no docker_build block was given at all.
+func (c Config) IsZero() bool {
+	return c.Registry == "" && c.Repository == "" && c.Context == "" && c.Dockerfile == "" &&
+		c.Target == "" && len(c.Tags) == 0 && len(c.BuildArgs) == 0
+}
+
+// ValidateRequired checks what can be checked while a pipeline is being
+// written: that the required fields are present and that the paths stay in
+// the workspace. Values may still contain ${{ env.NAME }} placeholders at
+// that point, so their final form is checked by Validate when the step runs.
+func (c Config) ValidateRequired() error {
+	var missing []string
+	if c.Registry == "" {
+		missing = append(missing, "registry")
+	}
+	if c.Repository == "" {
+		missing = append(missing, "repository")
+	}
+	if len(c.Tags) == 0 {
+		missing = append(missing, "tags")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("docker_build step missing required field(s): %s", strings.Join(missing, ", "))
+	}
+	if err := checkWorkspacePath("context", c.Context); err != nil {
+		return err
+	}
+	return checkWorkspacePath("dockerfile", c.Dockerfile)
 }
 
 var (

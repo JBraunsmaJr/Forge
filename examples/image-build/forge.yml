@@ -1,0 +1,25 @@
+# Builds an image and pushes it under a per-run tag.
+#
+# Try it against a throwaway local registry. See "type: docker_build" in
+# docs/Pipeline-Reference.md for the note on plain-HTTP registries under
+# Podman.
+#
+#   docker run -d --name registry -p 5000:5000 docker.io/library/registry:2
+#   forge run examples/image-build/forge.yml
+#   docker run --rm localhost:5000/forge-examples/hello:test-local
+#
+# Run from the repository root: `context` is relative to the workspace.
+name: image-build
+
+steps:
+  - id: build-image
+    type: docker_build
+    timeout: 10m
+    docker_build:
+      registry: localhost:5000
+      repository: forge-examples/hello
+      context: examples/image-build
+      tags:
+        - "test-${{ env.FORGE_BUILD_NUMBER }}"
+      build_args:
+        VERSION: "${{ env.FORGE_BUILD_NUMBER }}"

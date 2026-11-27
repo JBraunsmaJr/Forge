@@ -234,3 +234,91 @@ func TestParsePushDigest(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRequired(t *testing.T) {
+	// Placeholders are fine at this stage; only presence and paths are checked.
+	cfg := Config{
+		Registry:   "registry.example.com",
+		Repository: "team/api",
+		Tags:       []string{"test-${{ env.FORGE_BUILD_NUMBER }}"},
+	}
+	if err := cfg.ValidateRequired(); err != nil {
+		t.Errorf("ValidateRequired() = %v; want valid", err)
+	}
+
+	if err := (Config{}).ValidateRequired(); err == nil || !strings.Contains(err.Error(), "registry, repository, tags") {
+		t.Errorf("ValidateRequired() on an empty block = %v; want all three required fields named", err)
+	}
+
+	cfg.Context = "../outside"
+	if err := cfg.ValidateRequired(); err == nil {
+		t.Error("ValidateRequired() accepted a context outside the workspace")
+	}
+}
+
+func TestIsZero(t *testing.T) {
+	if !(Config{}).IsZero() {
+		t.Error("an empty Config is not IsZero")
+	}
+	if (Config{Target: "x"}).IsZero() {
+		t.Error("a Config with a field set is IsZero")
+	}
+}
+
+func TestEncodeDecode(t *testing.T) {
+	cfg := validConfig()
+	cfg.Context = "services/api"
+	cfg.BuildArgs = map[string]string{"VERSION": "1.2.3"}
+
+	encoded, err := cfg.Encode()
+	if err != nil {
+		t.Fatalf("Encode(): %v", err)
+	}
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode(): %v", err)
+	}
+	if !reflect.DeepEqual(decoded, cfg) {
+		t.Errorf("round trip = %+v; want %+v", decoded, cfg)
+	}
+
+	if _, err := Decode(""); err == nil {
+		t.Error("Decode(\"\") succeeded; want an error for a missing configuration")
+	}
+	if _, err := Decode("{not json"); err == nil {
+		t.Error("Decode of invalid JSON succeeded")
+	}
+}
+
+func TestExpandEnv(t *testing.T) {
+	cfg := Config{
+		Registry:   "${{ env.REGISTRY }}",
+		Repository: "team/${{env.APP}}",
+		Context:    "services/${{ env.APP }}",
+		Tags:       []string{"test-${{ env.FORGE_BUILD_NUMBER }}", "${{ env.MISSING }}", "plain"},
+		BuildArgs:  map[string]string{"VERSION": "${{ env.FORGE_BUILD_NUMBER }}", "MODE": "release"},
+	}
+	env := map[string]string{"REGISTRY": "registry.example.com", "APP": "api", "FORGE_BUILD_NUMBER": "42"}
+
+	got := cfg.ExpandEnv(env)
+	want := Config{
+		Registry:   "registry.example.com",
+		Repository: "team/api",
+		Context:    "services/api",
+		Tags:       []string{"test-42", "${{ env.MISSING }}", "plain"},
+		BuildArgs:  map[string]string{"VERSION": "42", "MODE": "release"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExpandEnv() =\n  %+v\nwant\n  %+v", got, want)
+	}
+
+	// The original is untouched.
+	if cfg.Tags[0] != "test-${{ env.FORGE_BUILD_NUMBER }}" || cfg.BuildArgs["VERSION"] != "${{ env.FORGE_BUILD_NUMBER }}" {
+		t.Error("ExpandEnv modified the configuration it was called on")
+	}
+
+	// An unresolved placeholder is then caught by Validate.
+	if err := got.Validate(); err == nil || !strings.Contains(err.Error(), "not a valid tag") {
+		t.Errorf("Validate() after expansion = %v; want the unresolved tag reported", err)
+	}
+}

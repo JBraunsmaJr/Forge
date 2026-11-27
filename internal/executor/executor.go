@@ -17,6 +17,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/cache"
 	"github.com/JBraunsmaJr/forge/internal/catrust"
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
+	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
@@ -90,7 +91,9 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		}, nil
 	}
 
-	if e.Cache != nil && len(step.Inputs) > 0 && step.Type != "generator" {
+	// An image build is never skipped on a cache hit: later steps, possibly on
+	// other agents, pull the tags it pushes, and those tags differ per run.
+	if e.Cache != nil && len(step.Inputs) > 0 && step.Type != "generator" && step.Type != imagebuild.StepType {
 		taskHash, err := cache.ComputeTaskHash(step, e.WorkspaceDir)
 		if err == nil {
 
@@ -117,6 +120,11 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	logPath := filepath.Join(e.LogDir, step.ID+".jsonl")
 	if step.Type == "generator" {
 		return e.runGenerator(start, step, logPath)
+	}
+
+	// Image build: the agent runs the build itself, no job container.
+	if step.Type == imagebuild.StepType {
+		return e.runDockerBuild(ctx, start, step, logPath)
 	}
 
 	// Execute (regular task).

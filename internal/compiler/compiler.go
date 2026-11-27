@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
@@ -63,6 +64,7 @@ type JSONStep struct {
 	Matrix           map[string][]string `json:"matrix,omitempty"`
 	Release          jsonRelease         `json:"release,omitempty"`
 	DockerPublish    jsonDockerPublish   `json:"docker_publish,omitempty"`
+	DockerBuild      imagebuild.Config   `json:"docker_build,omitempty"`
 	DockerSocket     bool                `json:"docker_socket"`
 	Script           string              `json:"script,omitempty"`
 	Pipeline         string              `json:"pipeline,omitempty"`
@@ -427,6 +429,9 @@ func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep,
 	if js.DockerPublish.Repository == "" {
 		js.DockerPublish = template.DockerPublish
 	}
+	if js.DockerBuild.IsZero() {
+		js.DockerBuild = template.DockerBuild
+	}
 	if js.Script == "" {
 		js.Script = template.Script
 	}
@@ -505,6 +510,7 @@ type jsStepTemplate struct {
 	DockerSocket     bool              `json:"docker_socket"`
 	Release          jsonRelease       `json:"release,omitempty"`
 	DockerPublish    jsonDockerPublish `json:"docker_publish,omitempty"`
+	DockerBuild      imagebuild.Config `json:"docker_build,omitempty"`
 	Script           string            `json:"script,omitempty"`
 	Pipeline         string            `json:"pipeline,omitempty"`
 	Wait             *bool             `json:"wait,omitempty"`
@@ -556,6 +562,16 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		// mutation bleed into every other combo (and into js itself).
 		if len(js.DockerPublish.Tags) > 0 {
 			cloned.DockerPublish.Tags = append([]string(nil), js.DockerPublish.Tags...)
+		}
+		// The same applies to docker_build's tags and build arguments.
+		if len(js.DockerBuild.Tags) > 0 {
+			cloned.DockerBuild.Tags = append([]string(nil), js.DockerBuild.Tags...)
+		}
+		if len(js.DockerBuild.BuildArgs) > 0 {
+			cloned.DockerBuild.BuildArgs = make(map[string]string, len(js.DockerBuild.BuildArgs))
+			for k, v := range js.DockerBuild.BuildArgs {
+				cloned.DockerBuild.BuildArgs[k] = v
+			}
 		}
 
 		// Build ID and Name suffix
@@ -613,6 +629,18 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 			cloned.DockerPublish.Tags[j] = replacer(v)
 		}
 
+		cloned.DockerBuild.Registry = replacer(cloned.DockerBuild.Registry)
+		cloned.DockerBuild.Repository = replacer(cloned.DockerBuild.Repository)
+		cloned.DockerBuild.Context = replacer(cloned.DockerBuild.Context)
+		cloned.DockerBuild.Dockerfile = replacer(cloned.DockerBuild.Dockerfile)
+		cloned.DockerBuild.Target = replacer(cloned.DockerBuild.Target)
+		for j, v := range cloned.DockerBuild.Tags {
+			cloned.DockerBuild.Tags[j] = replacer(v)
+		}
+		for k, v := range cloned.DockerBuild.BuildArgs {
+			cloned.DockerBuild.BuildArgs[k] = replacer(v)
+		}
+
 		step, err := compileStep(cloned, baseIndex+i)
 		if err != nil {
 			return nil, err
@@ -668,7 +696,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		stepType = "task"
 	}
 
-	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" && stepType != "docker_publish" {
+	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" && stepType != "docker_publish" && stepType != imagebuild.StepType {
 		return nil, fmt.Errorf("image is required")
 	}
 
@@ -698,6 +726,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 	var pipelineRef *pipeline.PipelineRef
 	var release *pipeline.ReleaseConfig
 	var dockerPublish *pipeline.DockerPublishConfig
+	with := js.With
 
 	if stepType == "pipeline" {
 		wait := true // default: block until child completes.
@@ -768,6 +797,26 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		}
 		image = "_docker_publish_" // sentinel
 		command = nil
+	} else if stepType == imagebuild.StepType {
+		// Checked here so that forge validate and the pipeline editor report
+		// a malformed block. Tags and names may still hold ${{ env.* }}
+		// placeholders, so their final form is checked when the step runs.
+		if err := js.DockerBuild.ValidateRequired(); err != nil {
+			return nil, err
+		}
+		encoded, err := js.DockerBuild.Encode()
+		if err != nil {
+			return nil, err
+		}
+		// The configuration travels to the agent in the step's parameter
+		// map. Copy the map first: js.With may be shared with a template.
+		with = make(map[string]string, len(js.With)+1)
+		for k, v := range js.With {
+			with[k] = v
+		}
+		with[imagebuild.WithKey] = encoded
+		image = "_docker_build_" // sentinel: the agent builds, no container runs
+		command = nil
 	} else if len(command) == 0 && stepType != "approval" && js.Uses == "" {
 		return nil, fmt.Errorf("either 'run', 'command', or 'pipeline' is required")
 	}
@@ -799,7 +848,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		Secrets:           js.Secrets,
 		Type:              stepType,
 		Uses:              js.Uses,
-		With:              js.With,
+		With:              with,
 		DockerSocket:      js.DockerSocket,
 		ArtifactUploads:   uploads,
 		ArtifactDownloads: downloads,
