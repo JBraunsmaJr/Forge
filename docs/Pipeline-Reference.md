@@ -420,6 +420,16 @@ Supported functions:
 
 ---
 
+### How step images are pulled
+
+Before a step starts, the agent makes sure it has the step's image:
+
+- **An image the agent already has is used as it is.** The registry is not contacted, so steps whose images are cached on the agent keep running while a registry or mirror is down. The other side of this is that a tag which is moved to a new image, such as `latest`, is not refreshed on an agent that already has it; pin a version or a digest when that matters.
+- **A missing image is pulled, with retries.** A pull that fails for a reason that may pass (a timeout, a refused connection, a server error) is tried four times over about a minute. The attempts are shown in the step's log.
+- **A pull that cannot succeed fails at once.** An image that does not exist, or a registry that refuses the agent's credentials, is not retried.
+
+---
+
 ### Running a step only when files changed (`changes:`)
 
 A step with `changes:` runs only when the commits the run is for touched a file matching one of its patterns.

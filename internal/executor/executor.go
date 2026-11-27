@@ -161,6 +161,20 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
 	logger.Info("step starting", map[string]any{"image": step.Image})
 
+	// Make the image available before creating the container, so that a
+	// registry or mirror that is briefly unreachable does not fail the step.
+	if err := newImagePuller(logger).ensure(ctx, step.Image); err != nil {
+		logger.Error(err.Error(), map[string]any{"error": err.Error(), "image": step.Image})
+		forgelog.StepFooter(step.ID, false, time.Since(start))
+		return &pipeline.StepResult{
+			Step:     step,
+			Status:   pipeline.StatusFailed,
+			ExitCode: 1,
+			Duration: time.Since(start),
+			LogFile:  logPath,
+		}, err
+	}
+
 	var cmd *exec.Cmd
 	var containerID string
 
@@ -534,6 +548,18 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
 	logger.Info("generator step starting", map[string]any{"image": step.Image})
+
+	if err := newImagePuller(logger).ensure(context.Background(), step.Image); err != nil {
+		logger.Error(err.Error(), map[string]any{"error": err.Error(), "image": step.Image})
+		forgelog.StepFooter(step.ID, false, time.Since(start))
+		return &pipeline.StepResult{
+			Step:     step,
+			Status:   pipeline.StatusFailed,
+			ExitCode: 1,
+			Duration: time.Since(start),
+			LogFile:  logPath,
+		}, err
+	}
 
 	// Prepare generator input for stdin
 	input := api.GeneratorInput{
