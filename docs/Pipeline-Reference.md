@@ -209,17 +209,44 @@ The "task hash" for a step is computed from:
 
 #### Determinism and Environment Variables
 
-To ensure cache hits across different trigger events (e.g., a webhook push vs. a manual trigger), Forge excludes several non-deterministic environment variables from the task hash computation.
+A step is skipped when its task hash matches an earlier successful run, on any agent, for any commit. For that to work, the hash must not contain values that differ from run to run without changing what the step produces. Forge sorts the variables it sets into two groups.
 
-**Excluded variables:**
+**Never part of the hash.** These describe where and when the step runs:
+
 - `FORGE_EVENT`: The event type (e.g., `push`, `pull_request`, or empty for manual).
 - `FORGE_PR_NUMBER`: The pull request number.
 - `FORGE_API_TOKEN`: A short-lived token issued for this one job. It can download the job's own project source and nothing else; it is not the agent's token. See [job tokens](Roles.md#job-tokens).
 - `FORGE_SCHEDULER_URL`: The URL of the scheduler.
 - `FORGE_RUN_ID` / `FORGE_JOB_ID` / `FORGE_RUN_NAME`: Unique identifiers for the current execution.
 - `FORGE_REPO_URL` / `FORGE_REPO_NAME`: Repository metadata (which may differ in format between triggers).
+- `FORGE_AGENT_ID` / `FORGE_PROXY_AGENT_ID`: The agent that happens to run the step.
 
-All other environment variables, including `FORGE_COMMIT_SHA`, `FORGE_BRANCH`, and `FORGE_COMMIT_TAG`, are included in the hash. If your step depends on one of these variables changing, the cache will correctly miss.
+**Part of the hash only if the step mentions them.** These identify the commit or the run:
+
+- `FORGE_COMMIT_SHA`, `FORGE_COMMIT_TAG`, `FORGE_BRANCH`, `FORGE_REF`
+- `FORGE_BUILD_NUMBER`, `FORGE_BUILD_COUNTER`
+
+A step mentions a variable when its name appears in the step's `run` command, its `entrypoint`, a `with:` value, the value of another `env:` variable, or as a placeholder in its `image:`. A step that stamps a version into a binary depends on the build number and says so:
+
+```yaml
+- id: build
+  image: golang:1.26
+  inputs: ["**/*.go", "go.mod", "go.sum"]
+  run: go build -ldflags "-X main.version=$FORGE_BUILD_NUMBER" ./...
+```
+
+That step runs again for every build number. A lint step with the same inputs that never mentions the build number is skipped until a matching file changes.
+
+Forge cannot see a variable that is only read inside a script file. If `./build.sh` reads `$FORGE_COMMIT_SHA` on its own, pass it explicitly so the step mentions it:
+
+```yaml
+  run: ./build.sh "$FORGE_COMMIT_SHA"
+```
+
+All other environment variables, including resolved secrets, are always part of the hash.
+
+!!! warning "List every input"
+    Because a new commit no longer forces a step to run, `inputs` must name every file the step reads. A step with `inputs: ["src/**"]` that also reads `go.mod` is skipped when only `go.mod` changes. When in doubt, use a wider pattern.
 
 If `inputs` is not defined, caching is disabled for that step, and it will always re-run.
 
