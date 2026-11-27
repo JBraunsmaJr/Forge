@@ -2,7 +2,13 @@
 //
 // Call Run from a package's TestMain:
 //
-//	func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
+//	func TestMain(m *testing.M) {
+//		os.Exit(pgtest.Run(m, pgtest.WithSetup(migrate)))
+//	}
+//
+// The setup function receives the database URL and prepares the database,
+// typically by creating the schema. pgtest itself knows nothing about the
+// schema, so it can be used by any package.
 //
 // Run makes sure FORGE_DB_URL points at a usable database for the duration of
 // the package's tests:
@@ -66,11 +72,31 @@ type runner interface {
 	Run() int
 }
 
+// Option configures Run.
+type Option func(*config)
+
+type config struct {
+	setup func(databaseURL string) error
+}
+
+// WithSetup registers a function that Run calls once a database is available
+// and before any test runs. It is called for a database pgtest started and
+// for one supplied through FORGE_DB_URL alike, so it must be safe to run
+// against a database that is already set up. If it fails, no tests run.
+func WithSetup(setup func(databaseURL string) error) Option {
+	return func(c *config) { c.setup = setup }
+}
+
 // Run prepares a database as described in the package comment, runs the
 // tests, cleans up, and returns the exit code for os.Exit.
-func Run(m runner) int {
-	if os.Getenv(EnvDatabaseURL) != "" {
-		return m.Run()
+func Run(m runner, opts ...Option) int {
+	var cfg config
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	if existing := os.Getenv(EnvDatabaseURL); existing != "" {
+		return runWithDatabase(m, cfg, existing)
 	}
 	if os.Getenv(EnvNoContainers) != "" {
 		return runWithoutDatabase(m, EnvNoContainers+" is set")
@@ -95,6 +121,17 @@ func Run(m runner) int {
 	os.Setenv(EnvDatabaseURL, db.url)
 	defer os.Unsetenv(EnvDatabaseURL)
 
+	return runWithDatabase(m, cfg, db.url)
+}
+
+// runWithDatabase runs the setup function, if any, and then the tests.
+func runWithDatabase(m runner, cfg config, databaseURL string) int {
+	if cfg.setup != nil {
+		if err := cfg.setup(databaseURL); err != nil {
+			fmt.Fprintf(os.Stderr, "pgtest: preparing the test database failed: %v\n", err)
+			return 1
+		}
+	}
 	return m.Run()
 }
 

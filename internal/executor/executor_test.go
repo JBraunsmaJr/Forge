@@ -4,10 +4,15 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
 func TestBuildDockerArgs_PathInjection(t *testing.T) {
+	// The executor spells out the registry when the container CLI is Podman,
+	// so the expected image depends on the machine running the test.
+	wantImage := dockerutil.ResolveImage("alpine")
+
 	e := &Executor{
 		AgentID: "test-agent",
 	}
@@ -35,7 +40,7 @@ func TestBuildDockerArgs_PathInjection(t *testing.T) {
 				"--volume", ":/workspace:rw", // workspaceDir is empty in this test
 				"-e", "FORGE_AGENT_ID=test-agent",
 				"-e", "FORGE_PROXY_AGENT_ID=test-agent",
-				"alpine",
+				wantImage,
 				"sh", "-c", "export PATH=/workspace/.forge/bin:$PATH; echo hello",
 			},
 		},
@@ -59,7 +64,7 @@ func TestBuildDockerArgs_PathInjection(t *testing.T) {
 				"-e", "PATH=/workspace/.forge/bin:/usr/bin",
 				"-e", "FORGE_AGENT_ID=test-agent",
 				"-e", "FORGE_PROXY_AGENT_ID=test-agent",
-				"alpine",
+				wantImage,
 				"sh", "-c", "export PATH=/workspace/.forge/bin:$PATH; echo hello",
 			},
 		},
@@ -81,7 +86,7 @@ func TestBuildDockerArgs_PathInjection(t *testing.T) {
 				"--volume", ":/workspace:rw",
 				"-e", "FORGE_AGENT_ID=test-agent",
 				"-e", "FORGE_PROXY_AGENT_ID=test-agent",
-				"alpine",
+				wantImage,
 				"go", "version",
 			},
 		},

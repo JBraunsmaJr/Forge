@@ -1,6 +1,7 @@
 package pgtest
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -105,5 +106,60 @@ func TestRun_RequireDBIsSatisfiedByAnExistingURL(t *testing.T) {
 	}
 	if r.calls != 1 {
 		t.Errorf("tests ran %d time(s); want once", r.calls)
+	}
+}
+
+func TestRun_SetupRunsBeforeTheTests(t *testing.T) {
+	const existing = "postgres://example/existing"
+	t.Setenv(EnvDatabaseURL, existing)
+
+	r := &countingRunner{}
+	var setupURL string
+	var testsHadRunAtSetup bool
+	setup := func(databaseURL string) error {
+		setupURL = databaseURL
+		testsHadRunAtSetup = r.calls > 0
+		return nil
+	}
+
+	if code := Run(r, WithSetup(setup)); code != 7 {
+		t.Errorf("Run() = %d; want the tests' own exit code 7", code)
+	}
+	if setupURL != existing {
+		t.Errorf("setup received %q; want %q", setupURL, existing)
+	}
+	if testsHadRunAtSetup {
+		t.Error("the tests ran before setup")
+	}
+	if r.calls != 1 {
+		t.Errorf("tests ran %d time(s); want once", r.calls)
+	}
+}
+
+func TestRun_SetupFailureStopsTheRun(t *testing.T) {
+	t.Setenv(EnvDatabaseURL, "postgres://example/existing")
+
+	r := &countingRunner{}
+	setup := func(string) error { return errors.New("schema is broken") }
+
+	if code := Run(r, WithSetup(setup)); code == 0 || code == 7 {
+		t.Errorf("Run() = %d; want a failure of its own", code)
+	}
+	if r.calls != 0 {
+		t.Errorf("tests ran %d time(s) after setup failed; want none", r.calls)
+	}
+}
+
+func TestRun_SetupIsNotCalledWithoutADatabase(t *testing.T) {
+	t.Setenv(EnvDatabaseURL, "")
+	t.Setenv(EnvNoContainers, "1")
+	t.Setenv(EnvRequireDB, "")
+
+	called := false
+	setup := func(string) error { called = true; return nil }
+
+	Run(&countingRunner{}, WithSetup(setup))
+	if called {
+		t.Error("setup was called although no database was available")
 	}
 }
