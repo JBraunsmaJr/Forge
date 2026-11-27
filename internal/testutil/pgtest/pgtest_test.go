@@ -56,7 +56,19 @@ func (r *countingRunner) Run() int {
 	return 7
 }
 
+// isolateEnv clears every variable Run reads, for the duration of the test.
+// The tests below describe Run's behavior for one combination each; without
+// this, a variable set by the caller (make test-db sets FORGE_TEST_REQUIRE_DB)
+// would change which combination a test exercises.
+func isolateEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{EnvDatabaseURL, EnvNoContainers, EnvRequireDB, EnvImage} {
+		t.Setenv(name, "")
+	}
+}
+
 func TestRun_UsesAnExistingDatabaseURL(t *testing.T) {
+	isolateEnv(t)
 	const existing = "postgres://example/existing"
 	t.Setenv(EnvDatabaseURL, existing)
 
@@ -70,7 +82,7 @@ func TestRun_UsesAnExistingDatabaseURL(t *testing.T) {
 }
 
 func TestRun_NoContainersLeavesTheURLUnset(t *testing.T) {
-	t.Setenv(EnvDatabaseURL, "")
+	isolateEnv(t)
 	t.Setenv(EnvNoContainers, "1")
 
 	r := &countingRunner{}
@@ -83,7 +95,7 @@ func TestRun_NoContainersLeavesTheURLUnset(t *testing.T) {
 }
 
 func TestRun_RequireDBFailsWhenNoDatabaseIsAvailable(t *testing.T) {
-	t.Setenv(EnvDatabaseURL, "")
+	isolateEnv(t)
 	t.Setenv(EnvNoContainers, "1")
 	t.Setenv(EnvRequireDB, "1")
 
@@ -97,6 +109,7 @@ func TestRun_RequireDBFailsWhenNoDatabaseIsAvailable(t *testing.T) {
 }
 
 func TestRun_RequireDBIsSatisfiedByAnExistingURL(t *testing.T) {
+	isolateEnv(t)
 	t.Setenv(EnvDatabaseURL, "postgres://example/existing")
 	t.Setenv(EnvRequireDB, "1")
 
@@ -110,6 +123,7 @@ func TestRun_RequireDBIsSatisfiedByAnExistingURL(t *testing.T) {
 }
 
 func TestRun_SetupRunsBeforeTheTests(t *testing.T) {
+	isolateEnv(t)
 	const existing = "postgres://example/existing"
 	t.Setenv(EnvDatabaseURL, existing)
 
@@ -137,6 +151,7 @@ func TestRun_SetupRunsBeforeTheTests(t *testing.T) {
 }
 
 func TestRun_SetupFailureStopsTheRun(t *testing.T) {
+	isolateEnv(t)
 	t.Setenv(EnvDatabaseURL, "postgres://example/existing")
 
 	r := &countingRunner{}
@@ -151,9 +166,8 @@ func TestRun_SetupFailureStopsTheRun(t *testing.T) {
 }
 
 func TestRun_SetupIsNotCalledWithoutADatabase(t *testing.T) {
-	t.Setenv(EnvDatabaseURL, "")
+	isolateEnv(t)
 	t.Setenv(EnvNoContainers, "1")
-	t.Setenv(EnvRequireDB, "")
 
 	called := false
 	setup := func(string) error { called = true; return nil }
