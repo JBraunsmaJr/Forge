@@ -136,7 +136,7 @@ func start() (*database, error) {
 		"--env", "POSTGRES_PASSWORD="+dbPassword,
 		"--env", "POSTGRES_DB="+dbName,
 		"--publish", "127.0.0.1::5432",
-		image,
+		dockerutil.ResolveImage(image),
 	).Output()
 	if err != nil {
 		return nil, fmt.Errorf("starting %s: %w", image, describe(err))

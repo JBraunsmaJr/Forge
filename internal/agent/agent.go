@@ -1658,7 +1658,7 @@ func (a *Agent) handleDebugSession(ctx context.Context, spec *api.DebugJobSpec) 
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
-	args = append(args, spec.Image, "tail", "-f", "/dev/null")
+	args = append(args, dockerutil.ResolveImage(spec.Image), "tail", "-f", "/dev/null")
 
 	fmt.Printf("[agent %s] creating debug container for session %s with workdir %s\n",
 		a.id[:8], spec.SessionID[:8], workDir)

@@ -164,10 +164,10 @@ func runTransformer(t *api.PolicyTransformer, _ []api.StepDef, input api.Transfo
 		}
 		if len(t.Command) > 0 {
 			createArgs = append(createArgs, "--entrypoint", t.Command[0])
-			createArgs = append(createArgs, t.Image)
+			createArgs = append(createArgs, dockerutil.ResolveImage(t.Image))
 			createArgs = append(createArgs, t.Command[1:]...)
 		} else {
-			createArgs = append(createArgs, t.Image)
+			createArgs = append(createArgs, dockerutil.ResolveImage(t.Image))
 		}
 
 		createCmd := dockerutil.CommandContext(ctx, createArgs...)

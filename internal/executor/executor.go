@@ -451,7 +451,7 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 	args = append(args, "-e", "FORGE_AGENT_ID="+e.AgentID)
 	args = append(args, "-e", "FORGE_PROXY_AGENT_ID="+e.getLabelAgentID())
 
-	args = append(args, step.Image)
+	args = append(args, dockerutil.ResolveImage(step.Image))
 
 	cmd := step.Command
 	if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" {

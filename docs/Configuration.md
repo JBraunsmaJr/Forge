@@ -96,9 +96,16 @@ explicitly; the value is a command name or a path.
 | Variable                  | Default                              | Description                                                                                                 |
 |---------------------------|--------------------------------------|-------------------------------------------------------------------------------------------------------------|
 | `FORGE_CONTAINER_RUNTIME` | `docker` if installed, else `podman` | Container CLI used by agents, local runs, policy transformers, and the Docker-based autoscaler provisioner. |
+| `FORGE_DEFAULT_REGISTRY` | `docker.io` | Registry assumed for image names that do not include one, such as `alpine:3.20`. Used only with Podman. |
 
 Notes for Podman:
 
+- Docker assumes Docker Hub for an image name with no registry; Podman does
+  not, and fails with "short-name did not resolve" unless a search registry
+  is configured on the host. Forge therefore adds the registry itself under
+  Podman: `alpine:3.20` is pulled as `docker.io/library/alpine:3.20`. Set
+  `FORGE_DEFAULT_REGISTRY` to use an internal registry instead. Images that
+  already name a registry are left alone.
 - Steps that set `docker_socket: true` need Podman's Docker-compatible API
   socket. Enable it with `systemctl --user enable --now podman.socket`
   (rootless) or `systemctl enable --now podman.socket` (system). Forge looks
