@@ -443,6 +443,17 @@ In GitHub: **Settings → Webhooks → Add webhook**
 
 For testing without HTTPS, use the **Manual Trigger** button in the Web UI on the project page.
 
+### Pull and merge requests from forks
+
+A pull or merge request opened from a fork does not start a run. Its pipeline
+file is written by someone who cannot push to your repository, and running it
+would let them name your project's secrets in a step. Requests opened from a
+branch in the same repository run as usual.
+
+To run fork changes anyway, set `FORGE_ALLOW_FORK_RUNS=true` on the
+scheduler. Those runs have the same access as any other run, so only do this
+where every fork is trusted.
+
 ### Triggering from other systems
 
 Any system that can send an HTTP request can start a run through the generic

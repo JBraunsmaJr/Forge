@@ -106,6 +106,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if event != "push" && githubPRFromFork(body) && !forkRunsAllowed() {
+		fmt.Printf("[webhook] skipping pull request #%d on project %s: it comes from a fork (set %s to run fork changes)\n",
+			prNumber, proj.ID, envAllowForkRuns)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if len(proj.BranchFilter) > 0 && !matchesBranchFilter(branch, proj.BranchFilter) {
 		fmt.Printf("[webhook] skipping %s to branch %q (not in filter %v)\n",
 			event, branch, proj.BranchFilter)
@@ -246,6 +253,13 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if eventType == "merge_request" && gitlabMRFromFork(body) && !forkRunsAllowed() {
+		fmt.Printf("[webhook] skipping merge request !%d on project %s: it comes from a fork (set %s to run fork changes)\n",
+			prNumber, proj.ID, envAllowForkRuns)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
