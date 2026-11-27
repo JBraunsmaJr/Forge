@@ -85,6 +85,7 @@ Paths are relative to the workspace root. The script runs inside the container w
 | `timeout`    | string   | Maximum duration. Parsed as Go duration: `5m`, `1h30m`, `45s`. Default: 30 minutes.              |
 | `type`       | string   | Step type: `task` (default), `generator`, `pipeline`, or `approval`.                             |
 | `condition`  | string   | CEL expression that must be true for the step to run (e.g., `success()`, `failure()`).            |
+| `changes`    | string[] | File patterns. The step is skipped when none of the changed files matches. See [Running a step only when files changed](#running-a-step-only-when-files-changed-changes). |
 | `always_run` | bool     | Shorthand for `condition: always()`. Step runs even if dependencies fail.                        |
 | `matrix`     | map      | Parallel execution with multiple values. Expands into multiple steps.                            |
 
@@ -416,6 +417,61 @@ Supported functions:
   always_run: true  # shorthand for condition: always()
   run: rm -rf /tmp/build
 ```
+
+---
+
+### Running a step only when files changed (`changes:`)
+
+A step with `changes:` runs only when the commits the run is for touched a file matching one of its patterns.
+
+```yaml
+- id: build-api
+  image: golang:1.26
+  changes: ["services/api/**", "go.mod", "go.sum"]
+  run: go build ./services/api/...
+
+- id: build-docs
+  image: python:3.13
+  changes: ["docs/**", "mkdocs.yml"]
+  run: mkdocs build
+
+- id: release
+  image: alpine:3.20
+  depends_on: [build-api, build-docs]
+  run: ./scripts/release.sh
+```
+
+**Patterns** are relative to the repository root and matched one path segment at a time:
+
+| Pattern                 | Matches                                                        |
+|-------------------------|----------------------------------------------------------------|
+| `go.mod`                | Only `go.mod` in the repository root.                          |
+| `*.md`                  | Markdown files in the root, not in subdirectories.             |
+| `**/*.md`               | Markdown files anywhere.                                       |
+| `services/api/**`       | Everything under `services/api`.                               |
+| `services/api/`         | The same; a trailing slash means "everything below".           |
+| `services/*/Dockerfile` | A `Dockerfile` directly inside each directory under `services`. |
+
+In a matrix step, patterns support `${{ matrix.KEY }}`, for example `services/${{ matrix.service }}/**`. Malformed patterns are rejected by `forge validate`.
+
+**What the changed files are compared against:**
+
+| Trigger                     | Compared against                                                                 |
+|-----------------------------|----------------------------------------------------------------------------------|
+| Push to an existing branch  | The commit the branch pointed at before the push. All pushed commits count.       |
+| Pull or merge request       | The point where the request's branch left its target branch. Changes that landed on the target branch in the meantime do not count. |
+| Anything else               | Nothing; see below.                                                              |
+
+**When Forge cannot tell what changed, the step runs.** That is the case for the first push of a new branch, a tag push, a force push that removed the previous commit, a manually triggered or API-submitted run, the generic webhook, and `forge run` on your machine.
+
+**A skipped step counts as satisfied.** It is shown as skipped, with the reason as its log line, and steps that depend on it still run. In the example, a commit that only touches `docs/` skips `build-api`, and `release` still runs once `build-docs` has passed. Two consequences:
+
+- If a dependent should be skipped as well, give it its own `changes:` list.
+- A dependent that downloads an artifact from a skipped step fails, because the artifact was not produced in this run. Give such a step the same `changes:` list as the step it downloads from.
+
+**`changes:` and `inputs:` answer different questions.** `changes:` asks whether this push touched the files, and skips the step without starting it. `inputs:` asks whether these exact file contents have already passed before, on any commit, and skips the step on a cache hit. They can be used together. Note that `changes:` skips a step even if its last run failed, as long as the new commits do not touch its files.
+
+**Reruns repeat the decision.** A rerun is for the same commits, so the same steps are skipped. To run every step for a commit regardless of `changes:`, trigger the pipeline manually for that branch.
 
 ---
 

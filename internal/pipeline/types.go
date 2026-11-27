@@ -56,6 +56,10 @@ type Step struct {
 	DependsOn []string
 	// Inputs is a list of glob patterns that affect this step's cache key.
 	Inputs []string
+
+	// Changes lists the file patterns this step is interested in. When a
+	// run's changed files are known and none matches, the step is skipped.
+	Changes []string
 	// Secrets is a list of secret names to fetch from Vault before running.
 	Secrets []string
 	// RedactValues holds the actual secret values fetched at runtime.
@@ -192,6 +196,7 @@ func (s *Step) ToAPIStep(variables map[string]string) api.StepDef {
 		Env:               env,
 		DependsOn:         s.DependsOn,
 		Inputs:            s.Inputs,
+		Changes:           s.Changes,
 		Timeout:           s.Timeout,
 		SecretNames:       s.Secrets,
 		DockerSocket:      s.DockerSocket,

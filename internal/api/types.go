@@ -137,6 +137,14 @@ type StepDef struct {
 	AlwaysRun         bool                   `json:"always_run,omitempty"`
 	Split             *SplitConfig           `json:"split,omitempty"`
 	TestReport        string                 `json:"test_report,omitempty"`
+	// Changes lists the file patterns this step is interested in. When the
+	// changed files of a run are known and none matches, the step is
+	// skipped and its dependents run as if it had passed.
+	Changes []string `json:"changes,omitempty"`
+	// SkipReason is set by the scheduler when it skips a step before the
+	// run starts, and is stored as the step's only log line. It is never
+	// read from a request.
+	SkipReason string `json:"-"`
 }
 
 // SubmitRunResponse is returned after a successful pipeline submission.
@@ -611,6 +619,11 @@ type WebhookRunMeta struct {
 	CommitMsg string `json:"commit_message"`
 	Author    string `json:"author"`
 	PRNumber  int    `json:"pr_number,omitempty"`
+	// BaseSHA is the commit a push moved the branch from. BaseBranch is the
+	// branch a pull or merge request targets. At most one is set; they are
+	// what the run's changed files are computed against.
+	BaseSHA    string `json:"base_sha,omitempty"`
+	BaseBranch string `json:"base_branch,omitempty"`
 }
 
 // AppendLogsRequest is sent by the agent to stream log events during execution.

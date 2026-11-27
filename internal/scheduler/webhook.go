@@ -135,6 +135,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		Author:    author,
 		PRNumber:  prNumber,
 	}
+	meta.BaseSHA, meta.BaseBranch = githubChangeBase(event, body)
 
 	runID, err := s.triggerWebhookRun(proj, repoURL, branch, commitSHA, rawURL, scmToken, meta, false)
 	if err != nil {
@@ -278,6 +279,7 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 		Author:    author,
 		PRNumber:  prNumber,
 	}
+	meta.BaseSHA, meta.BaseBranch = gitlabChangeBase(eventType, body)
 
 	runID, err := s.triggerWebhookRun(proj, repoURL, branch, commitSHA, rawURL, scmToken, meta, false)
 	if err != nil {
@@ -459,6 +461,7 @@ func (s *Server) triggerWebhookRun(
 	}
 
 	steps = PruneSteps(steps, meta.Ref)
+	steps = s.skipUnchangedSteps(steps, repoURL, meta)
 
 	runName := fmt.Sprintf("%s @ %.8s [%s]", pipeline.Name, commitSHA, branch)
 

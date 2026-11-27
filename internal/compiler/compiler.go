@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/changes"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/imageref"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
@@ -52,6 +53,7 @@ type JSONStep struct {
 	Env              map[string]string   `json:"env"`
 	DependsOn        []string            `json:"depends_on"`
 	Inputs           []string            `json:"inputs"`
+	Changes          []string            `json:"changes,omitempty"`
 	Timeout          string              `json:"timeout"`
 	Secrets          []string            `json:"secrets"`
 	Type             string              `json:"type"` // "task" (default) | "generator"
@@ -465,6 +467,9 @@ func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep,
 	if len(js.Inputs) == 0 {
 		js.Inputs = template.Inputs
 	}
+	if len(js.Changes) == 0 {
+		js.Changes = template.Changes
+	}
 	if len(js.Secrets) == 0 {
 		js.Secrets = template.Secrets
 	}
@@ -498,6 +503,7 @@ type jsStepTemplate struct {
 	Env              map[string]string `json:"env"`
 	DependsOn        []string          `json:"depends_on"`
 	Inputs           []string          `json:"inputs"`
+	Changes          []string          `json:"changes,omitempty"`
 	Timeout          string            `json:"timeout"`
 	Secrets          []string          `json:"secrets"`
 	Type             string            `json:"type"`
@@ -560,6 +566,10 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		// mutation bleed into every other combo (and into js itself).
 		if len(js.DockerPublish.Tags) > 0 {
 			cloned.DockerPublish.Tags = append([]string(nil), js.DockerPublish.Tags...)
+		}
+		// And to the changes: patterns.
+		if len(js.Changes) > 0 {
+			cloned.Changes = append([]string(nil), js.Changes...)
 		}
 		// The same applies to docker_build's tags and build arguments.
 		if len(js.DockerBuild.Tags) > 0 {
@@ -625,6 +635,10 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		cloned.DockerPublish.Source = replacer(cloned.DockerPublish.Source)
 		for j, v := range cloned.DockerPublish.Tags {
 			cloned.DockerPublish.Tags[j] = replacer(v)
+		}
+
+		for j, v := range cloned.Changes {
+			cloned.Changes[j] = replacer(v)
 		}
 
 		cloned.DockerBuild.Registry = replacer(cloned.DockerBuild.Registry)
@@ -696,6 +710,10 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 
 	if image == "" && js.Uses == "" && stepType != "pipeline" && stepType != "approval" && stepType != "release" && stepType != "docker_publish" && stepType != imagebuild.StepType {
 		return nil, fmt.Errorf("image is required")
+	}
+
+	if err := changes.ValidatePatterns(js.Changes); err != nil {
+		return nil, err
 	}
 
 	// The image may hold ${{ env.NAME }} placeholders, for a step that runs
@@ -847,6 +865,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		Env:               js.Env,
 		DependsOn:         js.DependsOn,
 		Inputs:            js.Inputs,
+		Changes:           js.Changes,
 		Timeout:           timeout,
 		Secrets:           js.Secrets,
 		Type:              stepType,

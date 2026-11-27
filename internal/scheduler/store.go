@@ -162,6 +162,17 @@ func (s *Store) SubmitRun(p SubmitRunParams) (string, error) {
 			return "", fmt.Errorf("insert job %s: %w", step.ID, err)
 		}
 
+		// A step skipped before the run started never reaches an agent, so
+		// record why here; it is the only line its log will ever have.
+		if step.SkipReason != "" {
+			if _, err := tx.Exec(`
+				INSERT INTO job_logs (job_id, ts, level, message)
+				SELECT id, now(), 'INFO', $3::text FROM jobs WHERE run_id = $1 AND step_id = $2`,
+				runID, step.ID, step.SkipReason); err != nil {
+				return "", fmt.Errorf("record skip reason for %s: %w", step.ID, err)
+			}
+		}
+
 		// If this is a rerun and the job was already passed, copy its artifacts
 		if p.ParentRunID != "" && status == string(api.JobStatusPassed) {
 			_, err = tx.Exec(`
@@ -1908,7 +1919,8 @@ func (s *Store) RerunSteps(runID string) (RerunInfo, error) {
 		       COALESCE(release_config::text, 'null'),
 		       COALESCE(artifact_uploads::text, '[]'),
 		       COALESCE(artifact_downloads::text, '[]'),
-		       status, test_report, COALESCE(split::text, 'null')
+		       status, test_report, COALESCE(split::text, 'null'),
+		       COALESCE("with"::text, '{}')
 		FROM jobs WHERE run_id=$1 ORDER BY started_at NULLS FIRST, id`, runID)
 	if err != nil {
 		return RerunInfo{}, err
@@ -1916,7 +1928,7 @@ func (s *Store) RerunSteps(runID string) (RerunInfo, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var stepID, stepType, image, workDir, policySource, testReport, splitJSON string
+		var stepID, stepType, image, workDir, policySource, testReport, splitJSON, withJSON string
 		var pipelineRefJSON, releaseConfigJSON, artifactUploadsJSON, artifactDownloadsJSON, status string
 		var entrypointJSON, commandJSON, envJSON, inputsJSON, dependsJSON, secretsJSON []byte
 		var timeoutNS int64
@@ -1929,7 +1941,7 @@ func (s *Store) RerunSteps(runID string) (RerunInfo, error) {
 			&inputsJSON, &timeoutNS, &dependsJSON, &secretsJSON, &policySource,
 			&dockerSocket, &condition, &alwaysRun,
 			&pipelineRefJSON, &releaseConfigJSON, &artifactUploadsJSON, &artifactDownloadsJSON,
-			&status, &testReport, &splitJSON,
+			&status, &testReport, &splitJSON, &withJSON,
 		); err != nil {
 			continue
 		}
@@ -1959,6 +1971,11 @@ func (s *Store) RerunSteps(runID string) (RerunInfo, error) {
 		if splitJSON != "null" {
 			json.Unmarshal([]byte(splitJSON), &split)
 		}
+		// Step parameters carry a docker_build step's configuration and the
+		// marker of a step skipped by its changes: patterns, so a rerun
+		// needs them back.
+		var with map[string]string
+		json.Unmarshal([]byte(withJSON), &with)
 
 		info.Steps = append(info.Steps, api.StepDef{
 			ID:                stepID,
@@ -1983,6 +2000,7 @@ func (s *Store) RerunSteps(runID string) (RerunInfo, error) {
 			Status:            api.JobStatus(status),
 			TestReport:        testReport,
 			Split:             split,
+			With:              with,
 		})
 	}
 	return info, nil

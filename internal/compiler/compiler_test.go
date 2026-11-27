@@ -686,3 +686,49 @@ func TestCompile_ImageReferences(t *testing.T) {
 		}
 	}
 }
+
+func TestCompile_Changes(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "changes",
+		Steps: []JSONStep{
+			{ID: "lint", Image: "alpine:3.20", Run: "true"},
+			{ID: "package", Image: "alpine:3.20", Run: "true", Changes: []string{"services/api/**", "go.mod"}},
+			{
+				ID: "build", Image: "alpine:3.20", Run: "true",
+				Matrix:  map[string][]string{"service": {"api", "web"}},
+				Changes: []string{"services/${{ matrix.service }}/**", "shared/**"},
+			},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	got := make(map[string][]string)
+	for _, s := range p.Steps {
+		got[strings.Join(s.Changes, ",")] = append(got[strings.Join(s.Changes, ",")], s.ID)
+		// The patterns must survive the conversion the scheduler receives.
+		if api := s.ToAPIStep(nil); strings.Join(api.Changes, ",") != strings.Join(s.Changes, ",") {
+			t.Errorf("step %s: changes lost in ToAPIStep: %v", s.ID, api.Changes)
+		}
+	}
+	for _, want := range []string{"", "services/api/**,go.mod", "services/api/**,shared/**", "services/web/**,shared/**"} {
+		if len(got[want]) != 1 {
+			t.Errorf("want exactly one step with changes %q; got %v", want, got)
+		}
+	}
+}
+
+func TestCompile_Changes_RejectsBadPatterns(t *testing.T) {
+	for _, pattern := range []string{"", "/services/api/**", "../other/**", "services/**.go"} {
+		path := writeTempPipeline(t, jsonPipeline{
+			Name:  "changes-invalid",
+			Steps: []JSONStep{{ID: "build", Image: "alpine:3.20", Run: "true", Changes: []string{pattern}}},
+		})
+		if _, err := Compile(path); err == nil || !strings.Contains(err.Error(), "changes:") {
+			t.Errorf("pattern %q: Compile = %v; want a changes: error", pattern, err)
+		}
+	}
+}

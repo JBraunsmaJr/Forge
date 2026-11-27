@@ -25,6 +25,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/artifacts"
 	"github.com/JBraunsmaJr/forge/internal/cache"
+	"github.com/JBraunsmaJr/forge/internal/changes"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/gitcache"
 	"github.com/JBraunsmaJr/forge/internal/pb"
@@ -2298,6 +2299,7 @@ func (s *Server) handleRerun(w http.ResponseWriter, r *http.Request) {
 	for i := range info.Steps {
 		info.Steps[i].Status = ""
 	}
+	changes.PreserveSkips(info.Steps)
 
 	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
@@ -2330,6 +2332,7 @@ func (s *Server) handleRerunFailed(w http.ResponseWriter, r *http.Request) {
 			info.Steps[i].Status = "" // Rerun
 		}
 	}
+	changes.PreserveSkips(info.Steps)
 
 	newRunID, err := s.store.SubmitRun(rerunParams(info, runID))
 	if err != nil {
