@@ -11,7 +11,7 @@ UI_DIST := internal/scheduler/web/dist
 
 .DEFAULT_GOAL := help
 
-.PHONY: help ui build-go build dev-ui vet test test-race test-security check baseline clean
+.PHONY: help ui build-go build dev-ui vet test test-race test-db test-security check baseline clean
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -40,6 +40,14 @@ test: ## Run the unit tests
 test-race: export INTEGRATION_SKIP = 1
 test-race: ## Run the unit tests with the race detector
 	go test -count=1 -race ./...
+
+# Database tests skip themselves when no PostgreSQL is available. This target
+# fails instead, so a run cannot pass with those tests silently skipped. Use
+# it in CI.
+test-db: export INTEGRATION_SKIP = 1
+test-db: export FORGE_TEST_REQUIRE_DB = 1
+test-db: ## Run the unit tests and fail if the database tests cannot run
+	go test -count=1 ./...
 
 # The security suite guards the gaps listed in docs/Threat-Model.md. It is
 # part of `make test`; this target runs it on its own, with test names shown.

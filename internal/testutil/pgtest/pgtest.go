@@ -15,6 +15,10 @@
 //   - Otherwise FORGE_DB_URL stays unset and database tests skip themselves.
 //
 // Set FORGE_TEST_NO_CONTAINERS=1 to forbid starting a container.
+//
+// Skipping is convenient on a laptop and dangerous in CI, where a passing run
+// with every database test skipped looks the same as a real pass. Set
+// FORGE_TEST_REQUIRE_DB=1 to turn "no database" into a failure.
 package pgtest
 
 import (
@@ -36,6 +40,10 @@ const (
 	// EnvNoContainers forbids pgtest from starting a container when set to
 	// a non-empty value.
 	EnvNoContainers = "FORGE_TEST_NO_CONTAINERS"
+
+	// EnvRequireDB makes Run fail, rather than let database tests skip, when
+	// no database can be provided. Set it to a non-empty value in CI.
+	EnvRequireDB = "FORGE_TEST_REQUIRE_DB"
 
 	// EnvImage overrides the PostgreSQL image, for example to pull from an
 	// internal mirror.
@@ -65,17 +73,19 @@ func Run(m runner) int {
 		return m.Run()
 	}
 	if os.Getenv(EnvNoContainers) != "" {
-		return m.Run()
+		return runWithoutDatabase(m, EnvNoContainers+" is set")
 	}
-	if _, err := exec.LookPath(dockerutil.Runtime()); err != nil {
-		fmt.Fprintf(os.Stderr, "pgtest: no container CLI found; database tests will be skipped\n")
-		return m.Run()
+	cli := dockerutil.Runtime()
+	if _, err := exec.LookPath(cli); err != nil {
+		return runWithoutDatabase(m, fmt.Sprintf(
+			"no container CLI found on PATH (looked for docker and podman; set %s to name another)",
+			dockerutil.EnvContainerRuntime))
 	}
 
 	db, err := start()
 	if err != nil {
 		// A broken harness must not look like a passing run with skips.
-		fmt.Fprintf(os.Stderr, "pgtest: could not start PostgreSQL: %v\n", err)
+		fmt.Fprintf(os.Stderr, "pgtest: could not start PostgreSQL with %s: %v\n", cli, err)
 		fmt.Fprintf(os.Stderr, "pgtest: set %s to use an existing database, or %s=1 to skip database tests\n",
 			EnvDatabaseURL, EnvNoContainers)
 		return 1
@@ -85,6 +95,19 @@ func Run(m runner) int {
 	os.Setenv(EnvDatabaseURL, db.url)
 	defer os.Unsetenv(EnvDatabaseURL)
 
+	return m.Run()
+}
+
+// runWithoutDatabase runs the tests with no database, so database tests skip
+// themselves, unless a database is required, in which case it fails without
+// running anything. reason says why no database is available.
+func runWithoutDatabase(m runner, reason string) int {
+	if os.Getenv(EnvRequireDB) != "" {
+		fmt.Fprintf(os.Stderr, "pgtest: %s is set but no database is available: %s\n", EnvRequireDB, reason)
+		fmt.Fprintf(os.Stderr, "pgtest: set %s to a PostgreSQL URL, or install docker or podman\n", EnvDatabaseURL)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "pgtest: database tests will be skipped: %s\n", reason)
 	return m.Run()
 }
 

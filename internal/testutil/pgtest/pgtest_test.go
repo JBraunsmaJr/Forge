@@ -80,3 +80,30 @@ func TestRun_NoContainersLeavesTheURLUnset(t *testing.T) {
 		t.Errorf("tests ran %d time(s) with %s=%q; want once with it unset", r.calls, EnvDatabaseURL, r.seenURL)
 	}
 }
+
+func TestRun_RequireDBFailsWhenNoDatabaseIsAvailable(t *testing.T) {
+	t.Setenv(EnvDatabaseURL, "")
+	t.Setenv(EnvNoContainers, "1")
+	t.Setenv(EnvRequireDB, "1")
+
+	r := &countingRunner{}
+	if code := Run(r); code == 0 || code == 7 {
+		t.Errorf("Run() = %d; want a failure of its own", code)
+	}
+	if r.calls != 0 {
+		t.Errorf("tests ran %d time(s); want none when a required database is missing", r.calls)
+	}
+}
+
+func TestRun_RequireDBIsSatisfiedByAnExistingURL(t *testing.T) {
+	t.Setenv(EnvDatabaseURL, "postgres://example/existing")
+	t.Setenv(EnvRequireDB, "1")
+
+	r := &countingRunner{}
+	if code := Run(r); code != 7 {
+		t.Errorf("Run() = %d; want the tests' own exit code 7", code)
+	}
+	if r.calls != 1 {
+		t.Errorf("tests ran %d time(s); want once", r.calls)
+	}
+}

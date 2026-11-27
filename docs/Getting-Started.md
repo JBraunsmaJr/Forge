@@ -106,6 +106,8 @@ site — every command below pulls from `github.com` or builds from source.
     afterwards. To use a database you already have, set `FORGE_DB_URL`. With
     no container CLI and no `FORGE_DB_URL`, those tests are skipped. Set
     `FORGE_TEST_POSTGRES_IMAGE` to pull the image from an internal mirror.
+    Because skipped tests still report success, CI should run
+    `make test-db`, which fails when the database tests cannot run.
 
 ### Self-hosted core (Docker)
 
