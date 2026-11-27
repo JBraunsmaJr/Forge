@@ -86,6 +86,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/jobs/{id}/approve", s.handleApproveJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/deny", s.handleDenyJob)
 	mux.HandleFunc("POST /api/v1/jobs/{id}/waiting", s.handleJobWaiting)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/child-run", agentRoute(s.handleStartChildRun))
 	mux.HandleFunc("POST /api/v1/test-reports", agentRoute(s.handleRecordTestReport))
 	mux.HandleFunc("GET /api/v1/projects/{id}/flaky-tests", s.projectScoped(s.handleGetFlakyTests))
 	mux.HandleFunc("GET /api/v1/projects/{id}/health", s.projectScoped(s.handleGetProjectHealth))

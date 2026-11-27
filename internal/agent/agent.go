@@ -31,6 +31,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
+	"github.com/JBraunsmaJr/forge/internal/childrun"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	"github.com/JBraunsmaJr/forge/internal/executor"
@@ -2591,6 +2592,12 @@ func (a *Agent) downloadFile(downloadURL, dest string) error {
 }
 
 func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobWorkspace, jobBaseDir string) error {
+	// A step that names another project starts that project's pipeline
+	// through the scheduler instead of compiling a file from this workspace.
+	if target, ok := childrun.FromWith(spec.With); ok {
+		return a.executeProjectPipelineStep(ctx, spec, target, jobBaseDir)
+	}
+
 	ref := spec.PipelineRef
 	if ref == nil || ref.Path == "" {
 		if jobBaseDir != "" {
@@ -2686,6 +2693,14 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 		return a.reportComplete(spec, 0, time.Since(start).Milliseconds(), logs, "", false)
 	}
 
+	return a.awaitChildRun(ctx, spec, ref, runResp.RunID, start, logs)
+}
+
+// awaitChildRun waits for a child run to finish, copies the artifacts the
+// step asked to receive from it, and reports the step's result. It is shared
+// by pipeline steps that run a file from their own workspace and those that
+// start another project's pipeline.
+func (a *Agent) awaitChildRun(ctx context.Context, spec *api.JobSpec, ref *api.PipelineRef, childRunID string, start time.Time, logs []api.LogEvent) error {
 	/*
 		Release the concurrency slot while waiting for the child pipeline to finish.
 		This prevents deadlocks if the child pipeline jobs have affinity to this agent
@@ -2697,7 +2712,7 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	<-a.semaphore
 
 	// Poll until the child run finishes.
-	finalStatus, pollLogs := a.waitForChildRun(ctx, runResp.RunID)
+	finalStatus, pollLogs := a.waitForChildRun(ctx, childRunID)
 	logs = append(logs, pollLogs...)
 
 	// Re-acquire the slot and flip waiting off BEFORE reporting completion.
@@ -2709,14 +2724,14 @@ func (a *Agent) executePipelineStep(ctx context.Context, spec *api.JobSpec, jobW
 	exitCode := 0
 	if finalStatus != "passed" {
 		exitCode = 1
-		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("child run %s: %s", runResp.RunID[:8], finalStatus))...)
+		logs = append(logs, pipelineLog("ERROR", fmt.Sprintf("child run %s: %s", childRunID[:8], finalStatus))...)
 	} else {
-		logs = append(logs, pipelineLog("INFO", fmt.Sprintf("child run %s: passed", runResp.RunID[:8]))...)
+		logs = append(logs, pipelineLog("INFO", fmt.Sprintf("child run %s: passed", childRunID[:8]))...)
 	}
 
 	// Copy artifacts delcared in artifacts_receive from child run into parent run
 	for _, name := range ref.ArtifactsReceive {
-		if err := a.bridgeArtifact(ctx, runResp.RunID, spec.RunID, spec.JobID, name); err != nil {
+		if err := a.bridgeArtifact(ctx, childRunID, spec.RunID, spec.JobID, name); err != nil {
 			logs = append(logs, pipelineLog("WARN", fmt.Sprintf("artifact %q bridge failed: %v", name, err))...)
 		} else {
 			logs = append(logs, pipelineLog("INFO", fmt.Sprintf("artifact %q copied from child run", name))...)

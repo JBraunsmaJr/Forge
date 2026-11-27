@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JBraunsmaJr/forge/internal/childrun"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
@@ -729,6 +730,67 @@ func TestCompile_Changes_RejectsBadPatterns(t *testing.T) {
 		})
 		if _, err := Compile(path); err == nil || !strings.Contains(err.Error(), "changes:") {
 			t.Errorf("pattern %q: Compile = %v; want a changes: error", pattern, err)
+		}
+	}
+}
+
+func TestCompile_PipelineStep_AnotherProject(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "cross-project",
+		Steps: []JSONStep{
+			{
+				ID:               "build-sdk",
+				Type:             "pipeline",
+				Project:          "sdk",
+				Ref:              "${{ env.FORGE_BRANCH }}",
+				FallbackRef:      "main",
+				Variables:        map[string]string{"RELEASE": "1.2"},
+				ArtifactsReceive: []string{"sdk-wheel"},
+			},
+			{ID: "local-child", Type: "pipeline", Pipeline: ".forge/deploy.yml"},
+		},
+	})
+
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	target, ok := childrun.FromWith(p.Steps[0].With)
+	if !ok {
+		t.Fatalf("step %s carries no target: %v", p.Steps[0].ID, p.Steps[0].With)
+	}
+	want := childrun.Target{Project: "sdk", Ref: "${{ env.FORGE_BRANCH }}", FallbackRef: "main"}
+	if target != want {
+		t.Errorf("target = %+v; want %+v", target, want)
+	}
+	ref := p.Steps[0].PipelineRef
+	if ref == nil || !ref.Wait || ref.Variables["RELEASE"] != "1.2" || len(ref.ArtifactsReceive) != 1 {
+		t.Errorf("PipelineRef = %+v; want wait, variables, and artifacts carried", ref)
+	}
+
+	// A pipeline file in the same repository is unaffected.
+	if _, ok := childrun.FromWith(p.Steps[1].With); ok {
+		t.Error("a local pipeline step was given a cross-project target")
+	}
+	if p.Steps[1].PipelineRef == nil || p.Steps[1].PipelineRef.Path != ".forge/deploy.yml" {
+		t.Errorf("local pipeline step = %+v", p.Steps[1].PipelineRef)
+	}
+}
+
+func TestCompile_PipelineStep_AnotherProject_Rejects(t *testing.T) {
+	cases := map[string]JSONStep{
+		"not both":             {ID: "x", Type: "pipeline", Project: "sdk", Pipeline: ".forge/deploy.yml"},
+		"valid project name":   {ID: "x", Type: "pipeline", Project: "team/sdk"},
+		"valid branch or tag":  {ID: "x", Type: "pipeline", Project: "sdk", Ref: "--upload-pack=x"},
+		"only together":        {ID: "x", Type: "pipeline", Pipeline: ".forge/deploy.yml", Ref: "main"},
+		"reserved":             {ID: "x", Type: "pipeline", Project: "sdk", Variables: map[string]string{"FORGE_COMMIT_SHA": "x"}},
+		"environment variable": {ID: "x", Type: "pipeline", Project: "sdk", Variables: map[string]string{"BAD-NAME": "x"}},
+	}
+	for want, step := range cases {
+		path := writeTempPipeline(t, jsonPipeline{Name: "cross-project-invalid", Steps: []JSONStep{step}})
+		if _, err := Compile(path); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Compile = %v; want an error mentioning %q", err, want)
 		}
 	}
 }

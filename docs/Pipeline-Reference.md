@@ -541,10 +541,56 @@ A pipeline step compiles and submits another pipeline as a child run. The agent 
 | Field               | Type     | Description                                                                                  |
 |---------------------|----------|----------------------------------------------------------------------------------------------|
 | `pipeline`          | string   | Path to pipeline file, relative to workspace root.                                           |
+| `project`           | string   | Another project to start instead of a file. See [Starting another project's pipeline](#starting-another-projects-pipeline). |
 | `wait`              | bool     | If true (default), block until child run reaches a terminal state.                           |
 | `variables`         | map      | Env vars injected into every step of the child pipeline, overriding the step's own env.      |
 | `artifacts_send`    | string[] | Artifact names from the parent run copied to the child run's context before it starts.       |
 | `artifacts_receive` | string[] | Artifact names from the child run copied back into the parent run after the child completes. |
+
+#### Starting another project's pipeline
+
+A pipeline step can also start the pipeline of another Forge project, in another repository, and wait for it. Name the project instead of a file:
+
+```yaml
+- id: build-sdk
+  type: pipeline
+  project: sdk                       # another project in the same organization
+  ref: "${{ env.FORGE_BRANCH }}"     # optional: branch or tag in that project's repository
+  fallback_ref: main                 # optional: used when ref does not exist there
+  variables:
+    RELEASE_LINE: "1.2"
+  artifacts_receive:
+    - sdk-wheel
+
+- id: release
+  type: release
+  depends_on: [build-sdk]
+  release:
+    tag: "v${{ env.FORGE_BUILD_NUMBER }}"
+    artifacts: [app-wheel, sdk-wheel]
+```
+
+| Field               | Type     | Description |
+|---------------------|----------|-------------|
+| `project`           | string   | Name or ID of a project in the same organization. Use either `project` or `pipeline`, not both. |
+| `ref`               | string   | Branch or tag in that project's repository. Defaults to the branch or tag the parent run is for, so both repositories line up. Supports `${{ env.VAR }}`. |
+| `fallback_ref`      | string   | Branch or tag to run when `ref` does not exist in that repository, typically its default branch. Without it the step fails. |
+| `wait`              | bool     | As for a pipeline file: wait for the child run (default) or start it and move on. |
+| `variables`         | map      | Set in the environment of every step of the child run, overriding the step's own values. Values support `${{ env.VAR }}`. Names starting with `FORGE_` are reserved and rejected. |
+| `artifacts_send`    | string[] | Artifacts of the parent run made available to the child run. |
+| `artifacts_receive` | string[] | Artifacts of the child run copied into the parent run when it finishes. |
+
+What the child run is:
+
+- It runs the pipeline file configured for that project, from that project's repository at the chosen branch or tag, on any available agent. The parent cannot supply a different pipeline file.
+- It uses that project's own secrets and the organization's policies.
+- **It has the parent's build number.** `FORGE_BUILD_NUMBER` is the same in both runs, which is what lets a release step collect artifacts from several repositories under one version.
+- It is shown as a child of the parent run and is canceled when the parent is canceled. If it fails, the step fails.
+- Every step runs: `changes:` has nothing to compare against in a child run.
+
+The step's own `timeout` covers the whole wait, so set it longer than the child pipeline can take.
+
+Limits: the project must belong to the same organization as the parent run; child runs can nest at most five levels deep, which stops two projects that start each other from looping.
 
 ### `type: release`
 

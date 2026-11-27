@@ -14,6 +14,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/changes"
+	"github.com/JBraunsmaJr/forge/internal/childrun"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/imageref"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
@@ -68,7 +69,10 @@ type JSONStep struct {
 	DockerSocket     bool                `json:"docker_socket"`
 	Script           string              `json:"script,omitempty"`
 	Pipeline         string              `json:"pipeline,omitempty"`
-	Wait             *bool               `json:"wait,omitempty"` // pointer: nil = default (true)
+	Project          string              `json:"project,omitempty"`      // type: pipeline, another project's pipeline
+	Ref              string              `json:"ref,omitempty"`          // branch or tag of that project
+	FallbackRef      string              `json:"fallback_ref,omitempty"` // used when ref does not exist there
+	Wait             *bool               `json:"wait,omitempty"`         // pointer: nil = default (true)
 	Variables        map[string]string   `json:"variables,omitempty"`
 	ArtifactsSend    []string            `json:"artifacts_send,omitempty"`
 	ArtifactsReceive []string            `json:"artifacts_receive,omitempty"`
@@ -438,6 +442,15 @@ func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep,
 	if js.Pipeline == "" {
 		js.Pipeline = template.Pipeline
 	}
+	if js.Project == "" {
+		js.Project = template.Project
+	}
+	if js.Ref == "" {
+		js.Ref = template.Ref
+	}
+	if js.FallbackRef == "" {
+		js.FallbackRef = template.FallbackRef
+	}
 	if js.Wait == nil {
 		js.Wait = template.Wait
 	}
@@ -517,6 +530,9 @@ type jsStepTemplate struct {
 	DockerBuild      imagebuild.Config `json:"docker_build,omitempty"`
 	Script           string            `json:"script,omitempty"`
 	Pipeline         string            `json:"pipeline,omitempty"`
+	Project          string            `json:"project,omitempty"`
+	Ref              string            `json:"ref,omitempty"`
+	FallbackRef      string            `json:"fallback_ref,omitempty"`
 	Wait             *bool             `json:"wait,omitempty"`
 	Variables        map[string]string `json:"variables,omitempty"`
 	ArtifactsSend    []string          `json:"artifacts_send,omitempty"`
@@ -636,6 +652,10 @@ func expandMatrixStep(js JSONStep, baseIndex int) ([]*pipeline.Step, error) {
 		for j, v := range cloned.DockerPublish.Tags {
 			cloned.DockerPublish.Tags[j] = replacer(v)
 		}
+
+		cloned.Project = replacer(cloned.Project)
+		cloned.Ref = replacer(cloned.Ref)
+		cloned.FallbackRef = replacer(cloned.FallbackRef)
 
 		for j, v := range cloned.Changes {
 			cloned.Changes[j] = replacer(v)
@@ -760,6 +780,24 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 			Variables:        js.Variables,
 			ArtifactsSend:    js.ArtifactsSend,
 			ArtifactsReceive: js.ArtifactsReceive,
+		}
+		switch {
+		case js.Project != "" && js.Pipeline != "":
+			return nil, fmt.Errorf("pipeline step: set either 'pipeline' (a file in this repository) or 'project' (another project), not both")
+		case js.Project != "":
+			// Another project's pipeline. The target travels to the agent
+			// in the step's parameter map; ref may hold ${{ env.NAME }}
+			// placeholders, which the agent resolves when the step runs.
+			target := childrun.Target{Project: js.Project, Ref: js.Ref, FallbackRef: js.FallbackRef}
+			if err := target.Validate(true); err != nil {
+				return nil, err
+			}
+			if err := childrun.ValidateVariables(js.Variables); err != nil {
+				return nil, fmt.Errorf("pipeline step: %w", err)
+			}
+			with = target.AddTo(js.With)
+		case js.Ref != "" || js.FallbackRef != "":
+			return nil, fmt.Errorf("pipeline step: 'ref' and 'fallback_ref' apply only together with 'project'")
 		}
 		// Pipeline steps don't need an image or command.
 		image = "_pipeline_" // sentinel - never used to pull an image.

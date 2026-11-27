@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/childrun"
 	"github.com/JBraunsmaJr/forge/internal/compiler"
 	policyengine "github.com/JBraunsmaJr/forge/internal/policy"
 	"github.com/JBraunsmaJr/forge/internal/scm"
@@ -426,6 +427,9 @@ func (s *Server) triggerWebhookRun(
 	for i, s := range pipeline.Steps {
 		steps[i] = s.ToAPIStep(nil)
 		injectSCMMetadata(steps[i].Env, meta)
+		if meta.Parent != nil {
+			childrun.ApplyVariables(steps[i].Env, meta.Parent.Variables)
+		}
 	}
 
 	if proj.OrgID != "" {
@@ -470,6 +474,13 @@ func (s *Server) triggerWebhookRun(
 		appliedStepIDs = append(appliedStepIDs, s.ID)
 	}
 
+	// A run started by a pipeline step of another project is linked to it:
+	// it shares the parent's build number and is canceled with it.
+	var parentLink api.ParentRunLink
+	if meta.Parent != nil {
+		parentLink = *meta.Parent
+	}
+
 	submittedID, err := s.store.SubmitRun(SubmitRunParams{
 		RunID: runID,
 		Name:  runName,
@@ -483,6 +494,9 @@ func (s *Server) triggerWebhookRun(
 		SCMProvider:    meta.Provider,
 		Steps:          steps,
 		AppliedStepIDs: appliedStepIDs,
+		ParentRunID:    parentLink.RunID,
+		ParentJobID:    parentLink.JobID,
+		ArtifactsSend:  parentLink.ArtifactsSend,
 	})
 	if err != nil {
 		return "", fmt.Errorf("submitting run: %w", err)

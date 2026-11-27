@@ -624,6 +624,46 @@ type WebhookRunMeta struct {
 	// what the run's changed files are computed against.
 	BaseSHA    string `json:"base_sha,omitempty"`
 	BaseBranch string `json:"base_branch,omitempty"`
+	// Parent is set when the run is started by a pipeline step of another
+	// project's run. It is filled in by the scheduler, never read from a
+	// request.
+	Parent *ParentRunLink `json:"-"`
+}
+
+// ParentRunLink ties a child run to the pipeline step that started it.
+type ParentRunLink struct {
+	RunID string
+	JobID string
+	// Variables are set in the environment of every step of the child run.
+	Variables map[string]string
+	// ArtifactsSend names artifacts of the parent run made available to the
+	// child run.
+	ArtifactsSend []string
+}
+
+// ChildRunRequest asks the scheduler to start another project's pipeline as
+// a child of a running pipeline step. An agent sends it for the job named in
+// the URL; the parent run is derived from that job, not from the request.
+type ChildRunRequest struct {
+	// Project is the name or ID of a project in the parent run's
+	// organization.
+	Project string `json:"project"`
+	// Ref is a branch or tag in that project's repository. Empty means the
+	// parent run's own branch or tag.
+	Ref string `json:"ref,omitempty"`
+	// FallbackRef is used when Ref does not exist in that repository.
+	FallbackRef   string            `json:"fallback_ref,omitempty"`
+	Variables     map[string]string `json:"variables,omitempty"`
+	ArtifactsSend []string          `json:"artifacts_send,omitempty"`
+}
+
+// ChildRunResponse reports the child run that was started, or the one that
+// already existed for this job.
+type ChildRunResponse struct {
+	RunID     string `json:"run_id"`
+	Project   string `json:"project"`
+	Ref       string `json:"ref"`
+	CommitSHA string `json:"commit_sha"`
 }
 
 // AppendLogsRequest is sent by the agent to stream log events during execution.

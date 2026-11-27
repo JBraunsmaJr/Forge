@@ -100,6 +100,15 @@ graph LR
 8. **Job to scheduler.** A job's credential cannot read or change anything
    outside its own run.
 
+**Between projects.** A pipeline step may start the pipeline of another
+project, but only one in the same organization as its own run; the
+organization is the boundary between teams. The scheduler derives the parent
+run from the job that asks, not from the request. The child runs the pipeline
+file that project has configured, from its own repository, with its own
+secrets. The parent chooses the branch or tag and passes variables, and
+cannot set variables reserved for Forge. Nesting is limited, so two projects
+that start each other cannot loop.
+
 ---
 
 ## Security objectives

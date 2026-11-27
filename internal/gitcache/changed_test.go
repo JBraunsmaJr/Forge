@@ -191,3 +191,41 @@ func TestChanged_RepositoryNotCached(t *testing.T) {
 		t.Error("ChangedSince on an uncached repository succeeded")
 	}
 }
+
+func TestResolveBranchOrTag(t *testing.T) {
+	repo := newTestRepo(t)
+	first := repo.commit(map[string]string{"README.md": "one"})
+	repo.git("tag", "v1.0.0")                                       // lightweight tag
+	repo.git("tag", "--annotate", "--message", "release", "v1.1.0") // annotated tag
+	repo.git("checkout", "--quiet", "-b", "release/1.2")
+	second := repo.commit(map[string]string{"README.md": "two"})
+	repo.git("tag", "both") // a tag ...
+	repo.git("checkout", "--quiet", "main")
+	repo.git("branch", "both") // ... and a branch of the same name, on another commit
+	cache := repo.mirror()
+
+	cases := []struct {
+		name, wantRef, wantCommit string
+	}{
+		{"main", "refs/heads/main", first},
+		{"release/1.2", "refs/heads/release/1.2", second},
+		{"v1.0.0", "refs/tags/v1.0.0", first},
+		{"v1.1.0", "refs/tags/v1.1.0", first}, // peeled to the commit, not the tag object
+		{"refs/heads/release/1.2", "refs/heads/release/1.2", second},
+		{"refs/tags/v1.0.0", "refs/tags/v1.0.0", first},
+		{"both", "refs/heads/both", first}, // the branch wins
+		{"refs/tags/both", "refs/tags/both", second},
+	}
+	for _, tc := range cases {
+		ref, commit, err := cache.ResolveBranchOrTag(repo.dir, tc.name)
+		if err != nil || ref != tc.wantRef || commit != tc.wantCommit {
+			t.Errorf("ResolveBranchOrTag(%q) = %q, %q, %v; want %q, %q", tc.name, ref, commit, err, tc.wantRef, tc.wantCommit)
+		}
+	}
+
+	for _, name := range []string{"", "no-such-branch", "refs/remotes/origin/main", "refs/", first, "HEAD"} {
+		if _, _, err := cache.ResolveBranchOrTag(repo.dir, name); !errors.Is(err, ErrRefNotFound) {
+			t.Errorf("ResolveBranchOrTag(%q) = %v; want ErrRefNotFound", name, err)
+		}
+	}
+}
