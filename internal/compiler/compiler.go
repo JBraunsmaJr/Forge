@@ -8,17 +8,15 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
+	"github.com/JBraunsmaJr/forge/internal/imageref"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
-
-var imageRegex = regexp.MustCompile(`^[a-zA-Z0-9\.\-\/]+(:[a-zA-Z0-9\.\-]+)?$`)
 
 // scriptInterpreter returns the interpreter for a script file based on its extension.
 func scriptInterpreter(path string) string {
@@ -700,8 +698,13 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		return nil, fmt.Errorf("image is required")
 	}
 
-	if image != "" && !imageRegex.MatchString(image) {
-		return nil, fmt.Errorf("invalid image name: %q", image)
+	// The image may hold ${{ env.NAME }} placeholders, for a step that runs
+	// an image built earlier in the same run. They are resolved, and the
+	// result checked again, when the step runs.
+	if image != "" {
+		if err := imageref.ValidateTemplate(image); err != nil {
+			return nil, err
+		}
 	}
 
 	// Parse artifact upload declarations

@@ -36,6 +36,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/executor"
 	"github.com/JBraunsmaJr/forge/internal/glob"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
+	"github.com/JBraunsmaJr/forge/internal/imageref"
 	"github.com/JBraunsmaJr/forge/internal/pb"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 	"github.com/JBraunsmaJr/forge/internal/secrets"
@@ -1004,6 +1005,19 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 			Message:   err.Error(),
 		}}, "", false)
 	}
+
+	// Resolve ${{ env.NAME }} placeholders in the image here, before the
+	// cache key is computed, so the key that is looked up and the key that
+	// is stored are the same.
+	resolvedImage, err := imageref.Resolve(step.Image, step.Env)
+	if err != nil {
+		return a.reportComplete(spec, 1, 0, []api.LogEvent{{
+			Timestamp: time.Now(),
+			Level:     "ERROR",
+			Message:   err.Error(),
+		}}, "", false)
+	}
+	step.Image = resolvedImage
 
 	/*
 		Default WorkDir to /workspace if not set

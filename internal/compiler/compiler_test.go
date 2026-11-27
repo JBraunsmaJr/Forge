@@ -642,3 +642,47 @@ func TestCompile_MatrixExpansion_DockerBuild(t *testing.T) {
 		t.Errorf("services built = %v; want api and worker", seen)
 	}
 }
+
+func TestCompile_ImageReferences(t *testing.T) {
+	accepted := []string{
+		"alpine:3.20",
+		"docker.io/library/alpine:3.20",
+		"ghcr.io/my-org/my_app:v1",
+		"localhost:5000/team/api:1.0",
+		"registry.example.com/team/api:test-${{ env.FORGE_BUILD_NUMBER }}",
+		"localhost:5000/team/api:test-${{ env.FORGE_BUILD_NUMBER }}",
+		"alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	for _, image := range accepted {
+		path := writeTempPipeline(t, jsonPipeline{
+			Name:  "image-reference",
+			Steps: []JSONStep{{ID: "test", Image: image, Run: "true"}},
+		})
+		p, err := Compile(path)
+		if err != nil {
+			t.Errorf("image %q: Compile failed: %v", image, err)
+			continue
+		}
+		// Placeholders are kept for the agent, which has the run's values.
+		if p.Steps[0].Image != image {
+			t.Errorf("image %q compiled to %q; want it unchanged", image, p.Steps[0].Image)
+		}
+	}
+
+	rejected := []string{
+		"--privileged",
+		"alpine --privileged",
+		"alpine:3.20;id",
+		"alpine:${{ secrets.TAG }}",
+		"alpine:$(id)",
+	}
+	for _, image := range rejected {
+		path := writeTempPipeline(t, jsonPipeline{
+			Name:  "image-reference",
+			Steps: []JSONStep{{ID: "test", Image: image, Run: "true"}},
+		})
+		if _, err := Compile(path); err == nil || !strings.Contains(err.Error(), "invalid image name") {
+			t.Errorf("image %q: Compile = %v; want an invalid image name error", image, err)
+		}
+	}
+}

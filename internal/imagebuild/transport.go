@@ -3,7 +3,8 @@ package imagebuild
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
+
+	"github.com/JBraunsmaJr/forge/internal/placeholder"
 )
 
 // StepType is the pipeline step type that builds and pushes an image.
@@ -36,23 +37,12 @@ func Decode(encoded string) (Config, error) {
 	return c, nil
 }
 
-// envPlaceholder matches ${{ env.NAME }}, with optional spaces inside.
-var envPlaceholder = regexp.MustCompile(`\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
-
 // ExpandEnv returns a copy of the configuration with every ${{ env.NAME }}
 // placeholder replaced by the value of NAME in env. A placeholder that names
 // a variable not in env is left as written, so that Validate reports it
 // instead of the build silently using an empty value.
 func (c Config) ExpandEnv(env map[string]string) Config {
-	expand := func(value string) string {
-		return envPlaceholder.ReplaceAllStringFunc(value, func(match string) string {
-			name := envPlaceholder.FindStringSubmatch(match)[1]
-			if resolved, ok := env[name]; ok {
-				return resolved
-			}
-			return match
-		})
-	}
+	expand := func(value string) string { return placeholder.ExpandEnv(value, env) }
 
 	out := Config{
 		Registry:   expand(c.Registry),

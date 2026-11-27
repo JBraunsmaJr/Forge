@@ -18,6 +18,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/catrust"
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
+	"github.com/JBraunsmaJr/forge/internal/imageref"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
@@ -90,6 +91,15 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 			Duration: time.Since(start),
 		}, nil
 	}
+
+	// Resolve ${{ env.NAME }} placeholders in the image before anything uses
+	// it, so the cache key, the logs, and the container all see the same
+	// reference. This is a no-op when the agent has already resolved it.
+	image, err := imageref.Resolve(step.Image, step.Env)
+	if err != nil {
+		return e.failBeforeStart(start, step, err)
+	}
+	step.Image = image
 
 	// An image build is never skipped on a cache hit: later steps, possibly on
 	// other agents, pull the tags it pushes, and those tags differ per run.
@@ -331,6 +341,28 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 		LogFile:  logPath,
 		CacheHit: false,
 	}, err
+}
+
+// failBeforeStart reports a step that could not be started because its
+// definition is unusable. The reason goes to the step's log so it is shown
+// wherever the step's output is.
+func (e *Executor) failBeforeStart(start time.Time, step *pipeline.Step, reason error) (*pipeline.StepResult, error) {
+	logPath := filepath.Join(e.LogDir, step.ID+".jsonl")
+	result := &pipeline.StepResult{
+		Step:     step,
+		Status:   pipeline.StatusFailed,
+		ExitCode: 1,
+		Duration: time.Since(start),
+	}
+
+	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
+	if logger, err := forgelog.NewLogger(step.ID, logPath); err == nil {
+		logger.Error(reason.Error())
+		logger.Close()
+		result.LogFile = logPath
+	}
+	forgelog.StepFooter(step.ID, false, time.Since(start))
+	return result, reason
 }
 
 // RunPipeline executes all steps in dependency order.

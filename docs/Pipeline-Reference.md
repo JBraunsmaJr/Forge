@@ -31,7 +31,7 @@ steps:
 | Field   | Type   | Description                                                                      |
 |---------|--------|----------------------------------------------------------------------------------|
 | `id`    | string | Unique step identifier. Used in `depends_on` references and shown in the Web UI. |
-| `image` | string | Docker image to run this step in. Not required for `type: pipeline` or `type: approval` steps. |
+| `image` | string | Container image to run this step in. May contain `${{ env.VAR }}`; see [Running an image built earlier in the run](#running-an-image-built-earlier-in-the-run). Not required for `type: pipeline`, `type: approval`, `type: docker_build`, or `type: docker_publish` steps. |
 | `uses`  | string | Path to a step template file. Reuses definition from another file.               |
 
 At least one of `run`, `command`, or `script` is required for non-pipeline steps.
@@ -110,7 +110,7 @@ Every run is assigned a build number: a stable, configurable identifier availabl
 | `FORGE_BUILD_NUMBER`   | The rendered build number, e.g. `2026-08.14` or `2.4.87`.                |
 | `FORGE_BUILD_COUNTER`  | The raw monotonic counter the build number was rendered from, e.g. `14`. |
 
-Both are resolvable anywhere `${{ env.* }}` already works (`release:`, `matrix:`, `docker_build:` and `docker_publish:` blocks, and `env:`/`secrets:` steps), and are set on every step in the run — including steps expanded from a `matrix:` block, which all share their parent run's one build number.
+Both are resolvable anywhere `${{ env.* }}` already works (a step's `image:`, `release:`, `matrix:`, `docker_build:` and `docker_publish:` blocks, and `env:`/`secrets:` steps), and are set on every step in the run — including steps expanded from a `matrix:` block, which all share their parent run's one build number.
 
 **Local execution.** Running `forge run` with no scheduler/project context sets `FORGE_BUILD_NUMBER=local` and `FORGE_BUILD_COUNTER=0` so pipelines referencing these variables don't fail outside CI. `local` is not a value any configured format can ever render, so it's always distinguishable from a real, scheduler-assigned build number.
 
@@ -536,6 +536,28 @@ Every field supports `${{ env.VAR }}` and, in a matrix step, `${{ matrix.KEY }}`
 **Validation.** Missing required fields, and a `context` or `dockerfile` that points outside the workspace, are rejected by `forge validate` and the pipeline editor. Names and tags are checked again when the step runs, after placeholders are resolved. A placeholder that names a variable the step does not have fails the step instead of producing an empty tag.
 
 **Authentication.** List `REGISTRY_USERNAME` and `REGISTRY_PASSWORD` under `secrets:`, the same two names `docker_publish` uses. The agent writes them to a private file outside the workspace for the duration of the step and removes it afterwards; they are never passed on a command line. Omit both for a registry that accepts anonymous pushes. Giving only one of the two fails the step.
+
+#### Running an image built earlier in the run
+
+A later step runs the image by naming the same per-run tag in its `image:`:
+
+```yaml
+- id: build-image
+  type: docker_build
+  docker_build:
+    registry: registry.example.com
+    repository: team/api
+    tags: ["test-${{ env.FORGE_BUILD_NUMBER }}"]
+
+- id: integration-tests
+  image: "registry.example.com/team/api:test-${{ env.FORGE_BUILD_NUMBER }}"
+  depends_on: [build-image]
+  run: pytest tests/integration
+```
+
+The placeholder is resolved on the agent just before the step starts, from the step's environment (`env:` values and the variables Forge sets, not `secrets:`). The resolved reference is validated before it is used: a variable the step does not have, or a value that does not form a valid image reference, fails the step with the reason in its log.
+
+The agent that runs the later step pulls the image if it does not have it. For a registry that requires authentication to pull, the container engine on every agent host must be logged in to it; Forge does not pass the build step's credentials to other steps.
 
 **Caching.** A `docker_build` step is never skipped on a Forge cache hit, even if it declares `inputs`, because the tags it pushes differ per run and later steps depend on them. Unchanged layers are still reused through the container engine's own layer cache on the agent.
 

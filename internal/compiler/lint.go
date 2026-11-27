@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/JBraunsmaJr/forge/internal/imageref"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
 )
 
@@ -399,7 +400,7 @@ func checkRawSteps(report *LintReport, steps []JSONStep, workspaceDir string) {
 		}
 
 		if img := js.Image; img != "" {
-			if strings.HasSuffix(img, ":latest") || !strings.Contains(img, ":") {
+			if !imageref.Pinned(img) {
 				report.warnf(label, "image %q is not pinned to a specific version — builds won't be reproducible", img)
 			}
 		}
