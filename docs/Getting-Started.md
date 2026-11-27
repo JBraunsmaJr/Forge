@@ -101,6 +101,12 @@ site — every command below pulls from `github.com` or builds from source.
     `go test ./...` work on a fresh clone. A binary built that way serves a
     short notice in place of the UI until you run `make build`.
 
+    Tests that need PostgreSQL start their own throwaway database container
+    with `docker` or `podman`, whichever is installed, and remove it
+    afterwards. To use a database you already have, set `FORGE_DB_URL`. With
+    no container CLI and no `FORGE_DB_URL`, those tests are skipped. Set
+    `FORGE_TEST_POSTGRES_IMAGE` to pull the image from an internal mirror.
+
 ### Self-hosted core (Docker)
 
 Deploy the scheduler and its dependencies (Postgres, Vault, MinIO) to a server:
