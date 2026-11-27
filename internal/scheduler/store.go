@@ -453,7 +453,7 @@ func (s *Store) LeaseNext(agentID string) (*api.JobSpec, bool) {
 					WHEN runs.preferred_agent_id IS NULL THEN 1
 					ELSE 2
 				END ASC,
-				jobs.id ASC
+				jobs.seq ASC
 			LIMIT  1
 			FOR UPDATE SKIP LOCKED
 		)
@@ -757,13 +757,20 @@ func (s *Store) Heartbeat(jobID, leaseID, agentID string) error {
 	return nil
 }
 
-// ActiveAgentsCount returns the number of unique agents that heartbeated in the last 2 minutes.
+// staleJobAfter is how long a running or waiting job may go without a
+// heartbeat before its agent is presumed lost. Past this, ReclaimStaleJobs
+// returns the job to the queue for another agent.
+const staleJobAfter = 2 * time.Minute
+
+// ActiveAgentsCount returns the number of unique agents that heartbeated
+// within the last staleJobAfter.
 func (s *Store) ActiveAgentsCount() (int, error) {
 	var count int
 	err := s.db.QueryRow(`
-		SELECT COUNT(DISTINCT agent_id) FROM jobs 
-		WHERE (status = 'running' OR status = 'waiting') AND heartbeat_at > NOW() - INTERVAL '2 minutes'
-	`).Scan(&count)
+		SELECT COUNT(DISTINCT agent_id) FROM jobs
+		WHERE (status = 'running' OR status = 'waiting')
+		AND   heartbeat_at > NOW() - make_interval(secs => $1)
+	`, staleJobAfter.Seconds()).Scan(&count)
 	return count, err
 }
 
@@ -804,7 +811,7 @@ func (s *Store) ReclaimStaleJobs() int {
 		SET    status = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
 		       lease_id = '', agent_id = ''
 		WHERE  (status = 'running' OR status = 'waiting')
-		AND    heartbeat_at < NOW() - INTERVAL '2 minutes'`)
+		AND    heartbeat_at < NOW() - make_interval(secs => $1)`, staleJobAfter.Seconds())
 	if err != nil {
 		return 0
 	}

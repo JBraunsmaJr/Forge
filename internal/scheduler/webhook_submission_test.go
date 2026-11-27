@@ -20,7 +20,16 @@ func TestSubmitWebhookRun_EmptyWorkspace(t *testing.T) {
 
 	runID := "run-webhook-1"
 
-	st.db.Exec(`INSERT INTO orgs (id, name) VALUES ($1, $2)`, proj.OrgID, "Test Org")
+	// A run's build number is counted per project, so the project must exist.
+	if _, err := st.db.Exec(`INSERT INTO orgs (id, name) VALUES ($1, $2)`, proj.OrgID, "Test Org"); err != nil {
+		t.Fatalf("inserting the org: %v", err)
+	}
+	if _, err := st.db.Exec(
+		`INSERT INTO projects (id, org_id, name, repo_url, webhook_secret) VALUES ($1, $2, $3, $4, $5)`,
+		proj.ID, proj.OrgID, "Test Project", "https://example.com/org/repo.git", "test-secret",
+	); err != nil {
+		t.Fatalf("inserting the project: %v", err)
+	}
 
 	id, err := st.SubmitRun(SubmitRunParams{
 		RunID:       runID,

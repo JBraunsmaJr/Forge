@@ -164,7 +164,7 @@ To prevent an agent or a job from interfering with other jobs or the host system
 
 ### Heartbeat and failure recovery
 
-If an agent crashes mid-job, the scheduler detects the missing heartbeat after 30 seconds and resets the job to `queued` for another agent to claim.
+If an agent crashes mid-job, the scheduler detects the missing heartbeat after two minutes and resets the job to `queued` for another agent to claim.
 
 ---
 

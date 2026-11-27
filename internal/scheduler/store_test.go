@@ -26,10 +26,21 @@ func openTestDB(t *testing.T) *Store {
 		db.Exec(`DELETE FROM jobs`)
 		db.Exec(`DELETE FROM runs`)
 		db.Exec(`DELETE FROM policies`)
+		db.Exec(`DELETE FROM projects`)
 		db.Exec(`DELETE FROM orgs`)
 		db.Close()
 	})
 	return NewStore(db)
+}
+
+// ageHeartbeat backdates a job's heartbeat far enough that the scheduler
+// treats its agent as lost.
+func ageHeartbeat(t *testing.T, s *Store, jobID string) {
+	t.Helper()
+	stale := time.Now().Add(-2 * staleJobAfter)
+	if _, err := s.db.Exec(`UPDATE jobs SET heartbeat_at = $2 WHERE id = $1`, jobID, stale); err != nil {
+		t.Fatalf("aging the heartbeat of job %s: %v", jobID, err)
+	}
 }
 
 func makeStep(id string, deps ...string) api.StepDef {
@@ -251,8 +262,7 @@ func TestReclaimStaleJobs(t *testing.T) {
 	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
-	// Age the heartbeat so the job looks stale.
-	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() - INTERVAL '60 seconds' WHERE id = $1`, spec.JobID)
+	ageHeartbeat(t, s, spec.JobID)
 
 	reclaimed := s.ReclaimStaleJobs()
 	if reclaimed != 1 {
@@ -377,7 +387,7 @@ func TestComplete_StaleLeaseIgnored(t *testing.T) {
 	s.SubmitRun(SubmitRunParams{Name: "p", WorkspaceDir: "/ws", Steps: []api.StepDef{makeStep("x")}})
 	spec, _ := s.LeaseNext("agent-1")
 
-	s.db.Exec(`UPDATE jobs SET heartbeat_at = NOW() - INTERVAL '60 seconds' WHERE id = $1`, spec.JobID)
+	ageHeartbeat(t, s, spec.JobID)
 	s.ReclaimStaleJobs()
 	s.LeaseNext("agent-2")
 

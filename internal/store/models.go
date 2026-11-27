@@ -208,6 +208,11 @@ type Job struct {
 	TestReport          string `gorm:"not null;default:''"`
 	Split               datatypes.JSON
 	With                datatypes.JSON `gorm:"column:with;not null;default:'{}'"`
+
+	// Seq is a counter assigned by the database when the row is inserted.
+	// Job IDs are random, so the queue is ordered by Seq to hand jobs out
+	// first in, first out. It is never set by application code.
+	Seq uint64 `gorm:"autoIncrement;not null;index:jobs_seq_idx"`
 }
 
 // TestFileDuration represents the test_file_durations table.
