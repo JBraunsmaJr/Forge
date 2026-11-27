@@ -97,14 +97,52 @@ With that set:
 - Point the project's webhook at `/api/v1/webhook/gitlab/<project-id>` as
   for gitlab.com.
 
-If the instance uses a certificate from an internal authority, the scheduler
-must trust it. Until Forge manages certificates itself, mount the CA bundle
-into the scheduler container and set both `SSL_CERT_FILE` (used by Forge's
-own HTTP calls) and `GIT_SSL_CAINFO` (used by `git`) to its path.
+If the instance uses a certificate from an internal authority, set
+`FORGE_CA_BUNDLE` on the scheduler and the agents. See
+[internal certificate authorities](#internal-certificate-authorities).
 
 Remote templates (`uses:`) assume github.com when the reference names no
 host. To use a template from a self-hosted instance, start the reference
 with the host: `gitlab.example.com/group/templates/build.yml@main`.
+
+### Internal certificate authorities
+
+In a network that terminates TLS with its own certificate authority, point
+`FORGE_CA_BUNDLE` at a PEM file holding the CA certificates. Set it on the
+scheduler, on every agent, and on the autoscaler if you run one:
+
+```bash
+FORGE_CA_BUNDLE=/etc/forge/enclave-ca.pem
+```
+
+| Variable          | Default | Description                                                                                       |
+|-------------------|---------|---------------------------------------------------------------------------------------------------|
+| `FORGE_CA_BUNDLE` | unset   | Path to a PEM file of extra CA certificates to trust, in addition to the system's own trust store. |
+
+At startup Forge combines that file with the system trust store into one
+bundle and uses it for everything it does itself: API calls to GitLab or
+GitHub, sign-in, registry access, the agent's connection to the scheduler,
+and every `git` command. Nothing needs to be installed into the operating
+system's trust store or baked into an image.
+
+Job containers get the same bundle. The agent places it in each step's
+workspace at `/workspace/.forge/certs/ca-bundle.pem` and sets
+`SSL_CERT_FILE`, `GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`,
+`PIP_CERT`, `NODE_EXTRA_CA_CERTS`, and `AWS_CA_BUNDLE` to that path, so that
+Go, git, curl, Python, pip, Node.js, and the AWS tools trust your CA without
+any change to the pipeline. A step that sets one of those variables itself
+keeps its own value.
+
+Things to know:
+
+- A bundle that is set but missing, or that holds no valid certificate, stops
+  the process at startup with an error.
+- Tools that read none of those variables, such as a JVM with its own
+  keystore, still need the certificate installed in the image.
+- Pulling images is done by Docker or Podman on the agent host, which has its
+  own trust configuration. `FORGE_CA_BUNDLE` does not affect it.
+- This applies on Linux. On macOS and Windows, Go uses the operating
+  system's trust store and ignores the bundle; `git` still uses it.
 
 ### Agent authentication
 

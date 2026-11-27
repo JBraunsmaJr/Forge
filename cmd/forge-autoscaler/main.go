@@ -13,11 +13,18 @@ import (
 	"net/http"
 
 	"github.com/JBraunsmaJr/forge/internal/autoscaler"
+	"github.com/JBraunsmaJr/forge/internal/catrust"
 	"github.com/JBraunsmaJr/forge/internal/provisioner"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
+	// Trust the CAs in FORGE_CA_BUNDLE before any TLS connection is made.
+	if _, err := catrust.Install(); err != nil {
+		fmt.Fprintf(os.Stderr, "forge-autoscaler: cannot load CA certificates: %v\n", err)
+		os.Exit(1)
+	}
+
 	schedulerURL := os.Getenv("FORGE_SCHEDULER_URL")
 	if schedulerURL == "" {
 		schedulerURL = "http://localhost:8080"

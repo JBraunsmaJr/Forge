@@ -15,6 +15,7 @@ import (
 
 	"github.com/JBraunsmaJr/forge/internal/api"
 	"github.com/JBraunsmaJr/forge/internal/cache"
+	"github.com/JBraunsmaJr/forge/internal/catrust"
 	"github.com/JBraunsmaJr/forge/internal/dockerutil"
 	forgelog "github.com/JBraunsmaJr/forge/internal/log"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
@@ -144,6 +145,8 @@ func (e *Executor) RunStep(ctx context.Context, step *pipeline.Step) (*pipeline.
 
 	var cmd *exec.Cmd
 	var containerID string
+
+	e.stageCABundle()
 
 	if e.UseCopy {
 		// 1. Create container
@@ -445,6 +448,15 @@ func (e *Executor) buildDockerArgs(step *pipeline.Step, workspaceDir string, use
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, val))
 	}
 
+	// Point the step's tools at the CA bundle staged in its workspace, unless
+	// the step chose a value itself. Nothing is added when no extra CA
+	// certificates are configured.
+	for _, v := range catrust.ContainerEnv(e.WorkspaceDir) {
+		if _, chosen := step.Env[v.Name]; !chosen {
+			args = append(args, "-e", v.Name+"="+v.Value)
+		}
+	}
+
 	// Always inject the current agent's ID so steps (like integration tests)
 	// can label their own Docker resources correctly for the proxy.
 	// We also inject FORGE_PROXY_AGENT_ID so child agents know what label to use.
@@ -498,6 +510,8 @@ func (e *Executor) runGenerator(start time.Time, step *pipeline.Step, logPath st
 
 	var cmdGen *exec.Cmd
 	var containerID string
+
+	e.stageCABundle()
 
 	if e.UseCopy {
 		args := e.buildDockerArgs(step, "", true)
