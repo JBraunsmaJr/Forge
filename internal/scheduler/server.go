@@ -1750,11 +1750,33 @@ func (s *Server) reportSCMStatus(detail *api.RunDetail) {
 		return
 	}
 
-	targetURL := fmt.Sprintf("%s/runs/%s", s.baseURL, detail.RunID)
-	if err := scm.PostStatus(detail.SCMProvider, proj.RepoURL, detail.CommitSHA, scmToken, state, targetURL, description, "forge/ci"); err != nil {
-		fmt.Printf("[scm] failed to report %s status for run %s: %v\n", state, detail.RunID[:8], err)
+	final := scm.CommitStatus{
+		Provider:    detail.SCMProvider,
+		RepoURL:     proj.RepoURL,
+		CommitSHA:   detail.CommitSHA,
+		Ref:         s.store.RunStatusRef(detail.RunID),
+		State:       state,
+		TargetURL:   fmt.Sprintf("%s/runs/%s", s.baseURL, detail.RunID),
+		Description: description,
+	}
+
+	// A final status that never arrives leaves a merge request blocked, so
+	// keep trying through a short outage of the Git host.
+	ctx, cancel := context.WithTimeout(context.Background(), finalStatusDeadline)
+	defer cancel()
+	if err := scm.ReportStatus(ctx, final, scmToken, scm.FinalStatusRetry); err != nil {
+		fmt.Printf("[scm] giving up reporting %s status for run %s: %v\n", state, detail.RunID, err)
+
+		// Forget the attempt, so a later update of this run tries again.
+		s.scmStatusMu.Lock()
+		delete(s.scmStatusReported, detail.RunID)
+		s.scmStatusMu.Unlock()
 	}
 }
+
+// finalStatusDeadline bounds one delivery of a run's final commit status,
+// including its retries.
+const finalStatusDeadline = 20 * time.Minute
 
 func (s *Server) publishJobLogs(jobID string, events []api.LogEvent) {
 	for _, e := range events {

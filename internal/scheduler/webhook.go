@@ -1,10 +1,12 @@
 package scheduler
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -510,7 +512,18 @@ func (s *Server) triggerWebhookRun(
 	// Report pending status to SCM
 	targetURL := fmt.Sprintf("%s/runs/%s", s.baseURL, submittedID)
 	description := "Forge CI — pipeline started"
-	if err := scm.PostStatus(meta.Provider, repoURL, commitSHA, scmToken, "pending", targetURL, description, "forge/ci"); err != nil {
+	// One attempt only: a retry that arrives late could overwrite the run's
+	// final status.
+	pending := scm.CommitStatus{
+		Provider:    meta.Provider,
+		RepoURL:     repoURL,
+		CommitSHA:   commitSHA,
+		Ref:         statusRef(meta),
+		State:       scm.StatePending,
+		TargetURL:   targetURL,
+		Description: description,
+	}
+	if err := scm.ReportStatus(context.Background(), pending, scmToken, scm.NoRetry); err != nil && !errors.Is(err, scm.ErrNoToken) {
 		fmt.Printf("[webhook] failed to post pending status to %s: %v\n", meta.Provider, err)
 	}
 
@@ -592,6 +605,17 @@ func matchesBranchFilter(branch string, filters []string) bool {
 		}
 	}
 	return false
+}
+
+// statusRef returns the branch or tag a run's commit status belongs to: the
+// branch when the event has one (for a pull or merge request, its source
+// branch), otherwise the ref. It must agree with Store.RunStatusRef, so the
+// pending and the final status land on the same entry.
+func statusRef(meta api.WebhookRunMeta) string {
+	if meta.Branch != "" {
+		return meta.Branch
+	}
+	return meta.Ref
 }
 
 func injectSCMMetadata(env map[string]string, meta api.WebhookRunMeta) {

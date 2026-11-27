@@ -117,6 +117,7 @@ nav:
       - Debug sessions: Debugging.md
       - Secrets: Secrets.md
       - Policy engine: Policies.md
+      - Merge gating: Merge-Gating.md
       - Cloud autoscaling: Cloud-Autoscaling.md
       - HTTPS and reverse proxies: HTTPS.md
 
