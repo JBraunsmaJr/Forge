@@ -20,6 +20,26 @@ Pipeline authors write what they need. Security teams ensure compliance through 
 
 ---
 
+## Which Org's Policies Apply
+
+A run gets the policies of the org it belongs to. Forge works that out on the
+server; it does not trust an org named in the request:
+
+1. If the run names a project, the org is the one that owns the project. A
+   request that names a different org is rejected.
+2. If the caller's token is scoped to an org or a project, the run must fall
+   inside that scope. A request that names no org gets the token's org.
+3. Only an installation-wide token may name the org freely.
+
+Remote templates (`uses:`) are expanded before policies run, so a transformer
+sees the steps that will actually execute.
+
+!!! warning "Current limits"
+    Steps that a generator emits at run time are not passed through
+    policies. A run submitted with an installation-wide token that names
+    neither an org nor a project gets no policies. Give teams org-scoped
+    tokens so that neither case arises by accident.
+
 ## Policy Types
 
 ### Transformer Policies (recommended)

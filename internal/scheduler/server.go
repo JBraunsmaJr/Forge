@@ -1401,16 +1401,52 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	/*
-		Policy injection.
+	// The org a run belongs to decides which policies it gets, so it is
+	// derived from the project and the caller's token rather than trusted
+	// from the request. See resolveRunScope.
+	rec, _ := r.Context().Value(contextKeyToken).(*tokenRecord)
+	scope, scopeErr := resolveRunScope(rec, req.OrgID, req.ProjectID, s.projectOrg)
+	if scopeErr != nil {
+		writeError(w, scopeErr.Status, scopeErr.Message)
+		return
+	}
+	req.OrgID, req.ProjectID = scope.OrgID, scope.ProjectID
 
-		if an OrgID was provided, load that org's policies and inject
-		mandatory steps before queuing. This happens server-side so users
-		cannot bypass it by emitting steps from the pipeline.json.
-	*/
+	// AppliedStepIDs tells the policy engine which policy steps a parent run
+	// already ran, so a child pipeline does not repeat them. Only an agent
+	// submits child pipelines; from anyone else the list would be a way to
+	// claim that policy steps had run.
+	if rec.Role != roleAgent {
+		req.AppliedStepIDs = nil
+	}
+
 	steps := req.Steps
 	appliedStepIDs := req.AppliedStepIDs
 
+	// Resolve remote templates (uses:) before policies are applied, so that
+	// policy transformers and forbid_override checks see the steps that will
+	// actually run rather than a reference to them.
+	var scmToken string
+	if req.ProjectID != "" {
+		_, _, token, ok := s.projects.GetProject(req.ProjectID)
+		if ok {
+			scmToken = token
+		}
+	}
+	resolvedSteps, err := s.resolveRemoteSteps(steps, scmToken, make(map[string]bool))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to resolve remote templates: %v", err))
+		return
+	}
+	steps = resolvedSteps
+
+	/*
+		Policy injection.
+
+		Load the run's org policies and inject mandatory steps before
+		queuing. This happens server-side, on the org resolved above, so a
+		submitter cannot avoid it by leaving the org out of the request.
+	*/
 	if req.OrgID != "" {
 		policies, ok := s.orgs.GetPolicies(req.OrgID)
 		if !ok {
@@ -1460,20 +1496,12 @@ func (s *Server) handleSubmitRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Resolve remote templates (uses:)
-	var scmToken string
-	if req.ProjectID != "" {
-		_, _, token, ok := s.projects.GetProject(req.ProjectID)
-		if ok {
-			scmToken = token
-		}
-	}
-	resolvedSteps, err := s.resolveRemoteSteps(steps, scmToken, make(map[string]bool))
+	// Policies may themselves add steps that reference remote templates.
+	steps, err = s.resolveRemoteSteps(steps, scmToken, make(map[string]bool))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to resolve remote templates: %v", err))
 		return
 	}
-	steps = resolvedSteps
 
 	if err := validateSteps(steps); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pipeline: %v", err))
