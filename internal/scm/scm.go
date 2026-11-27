@@ -40,7 +40,7 @@ func postGitHubStatus(repoURL, sha, token, state, targetURL, description, contex
 		return fmt.Errorf("could not parse repo path from %s", repoURL)
 	}
 
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/statuses/%s", repoPath, sha)
+	apiURL := fmt.Sprintf("%s/repos/%s/statuses/%s", gitHubAPIBaseForRepo(repoURL), repoPath, sha)
 
 	payload := map[string]string{
 		"state":       state,
@@ -133,7 +133,7 @@ func CreateRelease(provider, repoURL, token, tag, name, body string) (string, st
 
 func createGitHubRelease(repoURL, token, tag, name, body string) (string, string, error) {
 	repoPath := getRepoPath(repoURL)
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases", repoPath)
+	apiURL := fmt.Sprintf("%s/repos/%s/releases", gitHubAPIBaseForRepo(repoURL), repoPath)
 
 	payload := map[string]any{
 		"tag_name": tag,

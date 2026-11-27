@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JBraunsmaJr/forge/internal/scm"
 )
 
 type Cache struct {
@@ -57,17 +59,25 @@ func (c *Cache) RepoDir(repoURL string) string {
 	return filepath.Join(c.dir, hex.EncodeToString(hash[:]))
 }
 
+// authURL returns repoURL with the token embedded as HTTP basic credentials,
+// in the form the repository's provider expects. The token is added only for
+// an HTTPS URL whose host is a known GitHub or GitLab instance (the public
+// services, or one configured with FORGE_GITHUB_URL or FORGE_GITLAB_URL), so
+// that a token is never sent to a host that merely resembles one.
 func (c *Cache) authURL(repoURL, token string) string {
-	if token == "" {
+	if token == "" || !strings.HasPrefix(repoURL, "https://") {
 		return repoURL
 	}
-	if strings.Contains(repoURL, "github.com") {
-		return strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", token), 1)
+	var username string
+	switch scm.ProviderForRepo(repoURL) {
+	case scm.ProviderGitHub:
+		username = "x-access-token"
+	case scm.ProviderGitLab:
+		username = "oauth2"
+	default:
+		return repoURL
 	}
-	if strings.Contains(repoURL, "gitlab.com") {
-		return strings.Replace(repoURL, "https://", fmt.Sprintf("https://oauth2:%s@", token), 1)
-	}
-	return repoURL
+	return strings.Replace(repoURL, "https://", fmt.Sprintf("https://%s:%s@", username, token), 1)
 }
 
 func (c *Cache) Sync(repoURL, token string) error {

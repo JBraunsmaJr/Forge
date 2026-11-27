@@ -765,11 +765,8 @@ func (s *Server) executeRelease(ctx context.Context, job *api.JobSpec) {
 
 	provider := run.SCMProvider
 	if provider == "" || provider == "generic" {
-		if strings.Contains(proj.RepoURL, "github.com") {
-			provider = "github"
-		} else if strings.Contains(proj.RepoURL, "gitlab.com") {
-			provider = "gitlab"
-		} else {
+		provider = scm.ProviderForRepo(proj.RepoURL)
+		if provider == "" {
 			s.logError(job, "Unknown SCM provider — cannot create release")
 			s.store.Complete(job.JobID, job.LeaseID, 1, 0, nil, nil, false, false)
 			s.publishRunDetail(job.RunID)

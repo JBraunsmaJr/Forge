@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/JBraunsmaJr/forge/internal/api"
+	"github.com/JBraunsmaJr/forge/internal/scm"
 )
 
 func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
@@ -26,8 +27,8 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		redirectURI := fmt.Sprintf("%s/api/v1/auth/callback/github", s.getPublicURL())
-		authURL = fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&redirect_uri=%s&scope=user:email&state=%s",
-			url.QueryEscape(clientID), url.QueryEscape(redirectURI), url.QueryEscape(state))
+		authURL = fmt.Sprintf("%s/login/oauth/authorize?client_id=%s&redirect_uri=%s&scope=user:email&state=%s",
+			scm.GitHubURL(), url.QueryEscape(clientID), url.QueryEscape(redirectURI), url.QueryEscape(state))
 
 	case "gitlab":
 		clientID := os.Getenv("FORGE_GITLAB_CLIENT_ID")
@@ -36,8 +37,8 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		redirectURI := fmt.Sprintf("%s/api/v1/auth/callback/gitlab", s.getPublicURL())
-		authURL = fmt.Sprintf("https://gitlab.com/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=read_user&state=%s",
-			url.QueryEscape(clientID), url.QueryEscape(redirectURI), url.QueryEscape(state))
+		authURL = fmt.Sprintf("%s/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&scope=read_user&state=%s",
+			scm.GitLabURL(), url.QueryEscape(clientID), url.QueryEscape(redirectURI), url.QueryEscape(state))
 
 	default:
 		writeError(w, http.StatusBadRequest, "unsupported provider")
@@ -123,7 +124,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request, co
 		"code":          code,
 	}
 	body, _ := json.Marshal(tokenReq)
-	req, _ := http.NewRequest("POST", "https://github.com/login/oauth/access_token", bytes.NewBuffer(body))
+	req, _ := http.NewRequest("POST", scm.GitHubURL()+"/login/oauth/access_token", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -145,7 +146,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request, co
 		return "", "", ""
 	}
 
-	req, _ = http.NewRequest("GET", "https://api.github.com/user", nil)
+	req, _ = http.NewRequest("GET", scm.GitHubAPIURL()+"/user", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
 	req.Header.Set("Accept", "application/json")
 
@@ -194,7 +195,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request, co
 	data.Set("grant_type", "authorization_code")
 	data.Set("redirect_uri", redirectURI)
 
-	resp, err := http.PostForm("https://gitlab.com/oauth/token", data)
+	resp, err := http.PostForm(scm.GitLabURL()+"/oauth/token", data)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to exchange code: "+err.Error())
 		return "", "", ""
@@ -212,7 +213,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request, co
 		return "", "", ""
 	}
 
-	req, _ := http.NewRequest("GET", "https://gitlab.com/api/v4/user", nil)
+	req, _ := http.NewRequest("GET", scm.GitLabURL()+"/api/v4/user", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
 
 	resp, err = http.DefaultClient.Do(req)
@@ -238,7 +239,7 @@ func (s *Server) handleGitLabCallback(w http.ResponseWriter, r *http.Request, co
 }
 
 func (s *Server) fetchGitHubEmail(token string) string {
-	req, _ := http.NewRequest("GET", "https://api.github.com/user/emails", nil)
+	req, _ := http.NewRequest("GET", scm.GitHubAPIURL()+"/user/emails", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 

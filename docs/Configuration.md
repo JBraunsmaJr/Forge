@@ -16,6 +16,8 @@ All Forge components are configured via environment variables. There are no conf
 | `FORGE_GRPC_TLS_KEY`           | —                        | Path to the PEM private key for `FORGE_GRPC_TLS_CERT`. Setting only one of the two is a startup error. |
 | `FORGE_JOB_TOKEN_KEY` | generated at startup | Key that signs per-job tokens, 32 characters or more. Set it so that tokens of running jobs survive a scheduler restart. A value that is too short disables job tokens and logs a warning. |
 | `FORGE_ALLOW_FORK_RUNS` | unset | Set to `true` to let pull and merge requests from forks start runs. Those runs are not restricted and can use the project's secrets, so leave this unset unless every fork is trusted. |
+| `FORGE_GITLAB_URL` | `https://gitlab.com` | Base URL of a self-managed GitLab instance, for example `https://gitlab.example.com`. Repositories on that host are cloned with GitLab credentials, and GitLab sign-in uses it. gitlab.com stays recognized as well. |
+| `FORGE_GITHUB_URL` | `https://github.com` | Base URL of a GitHub Enterprise Server instance. Repositories on that host are cloned with GitHub credentials, and GitHub sign-in and API calls use it. github.com stays recognized as well. |
 | `FORGE_ARTIFACT_STORE`         | `local`                  | Artifact backend: `local` or `s3`.                                                                                                                                                                       |
 | `FORGE_ARTIFACT_DIR`           | `/data/artifacts`        | Directory for local artifact storage.                                                                                                                                                                    |
 | `FORGE_S3_ENDPOINT`            | —                        | S3-compatible endpoint URL. Leave empty for AWS S3. Example: `http://minio:9000`.                                                                                                                        |
@@ -69,6 +71,40 @@ The agent connects to the scheduler via gRPC. The connection details are determi
     - `https://forge.example.com:8443` -> `forge.example.com:8443` (Secure gRPC)
 
 Forge uses gRPC keepalives (10s pings) to maintain connections through proxies and load balancers.
+
+### Self-hosted GitLab and GitHub
+
+Forge sends a project's access token only to a host it knows to be GitLab or
+GitHub: gitlab.com, github.com, and the instances named by `FORGE_GITLAB_URL`
+and `FORGE_GITHUB_URL`. The host must match exactly. For a repository on any
+other host the token is not sent, and a private repository there cannot be
+cloned.
+
+For a self-managed GitLab:
+
+```bash
+FORGE_GITLAB_URL=https://gitlab.example.com
+```
+
+With that set:
+
+- Projects whose repository is on that host are cloned with the project's
+  access token.
+- Commit statuses and releases are sent to that instance's API. (These are
+  derived from the repository URL and work without the setting.)
+- GitLab sign-in sends users to that instance. Create the OAuth application
+  there and set `FORGE_GITLAB_CLIENT_ID` and `FORGE_GITLAB_CLIENT_SECRET`.
+- Point the project's webhook at `/api/v1/webhook/gitlab/<project-id>` as
+  for gitlab.com.
+
+If the instance uses a certificate from an internal authority, the scheduler
+must trust it. Until Forge manages certificates itself, mount the CA bundle
+into the scheduler container and set both `SSL_CERT_FILE` (used by Forge's
+own HTTP calls) and `GIT_SSL_CAINFO` (used by `git`) to its path.
+
+Remote templates (`uses:`) assume github.com when the reference names no
+host. To use a template from a self-hosted instance, start the reference
+with the host: `gitlab.example.com/group/templates/build.yml@main`.
 
 ### Agent authentication
 
