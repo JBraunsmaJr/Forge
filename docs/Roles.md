@@ -82,6 +82,34 @@ refused with `403 Forbidden`.
 
 ---
 
+## Job Tokens
+
+Code in a pipeline step is only as trusted as whoever can push to the
+repository, so a step never receives the agent's token. When the scheduler
+dispatches a job, it issues a token for that one job and places it in the
+step's `FORGE_API_TOKEN`.
+
+A job token:
+
+- can download the source of the job's own project, which the automatic
+  checkout step uses;
+- cannot call any other API endpoint, including ones a viewer may call;
+- expires 24 hours after it is issued, and is masked in the job's logs;
+- is not stored, listed, or revocable. It is verified by its signature.
+
+The signing key is generated when the scheduler starts. Set
+`FORGE_JOB_TOKEN_KEY` (32 characters or more) to keep tokens valid across a
+scheduler restart. Logs, artifacts, cache entries, and test reports are sent
+by the agent on the job's behalf and do not need the job's token.
+
+!!! note "Upgrading"
+    Upgrade the scheduler and its agents together. An older agent overwrites
+    the job token with its own, and a newer agent paired with an older
+    scheduler gives jobs no token at all, which makes the automatic checkout
+    step fail.
+
+---
+
 ## Assigning Roles
 
 Roles are assigned when creating an API token.

@@ -57,7 +57,8 @@ type Server struct {
 	projects    *ProjectStore
 	debug       *DebugStore
 	tokens      *tokenStore
-	authn       tokenVerifier // optional override for request authentication; nil means tokens
+	authn       tokenVerifier   // optional override for request authentication; nil means tokens
+	jobTokens   *jobTokenSigner // mints and verifies per-job tokens; nil disables them
 	cas         cache.Storer
 	artifacts   artifacts.ArtifactStorer
 	broker      *SSEBroker
@@ -147,6 +148,16 @@ func NewServer(addr string, db *sql.DB, gdb *gorm.DB, baseURL string) *Server {
 		fmt.Printf("[scheduler] failed to initialize OIDC provider: %v\n", err)
 	}
 
+	jobTokens, err := jobTokenSignerFromEnv()
+	if err != nil {
+		// Run without job tokens rather than with a weak key: jobs then get
+		// no API credential at all, which fails safe.
+		fmt.Printf("[scheduler] WARNING: job tokens are disabled: %v\n", err)
+		jobTokens = nil
+	} else if os.Getenv(envJobTokenKey) == "" {
+		fmt.Printf("[scheduler] %s is not set; using a generated job token key. Tokens for running jobs will not survive a scheduler restart.\n", envJobTokenKey)
+	}
+
 	return &Server{
 		db:          db,
 		gdb:         gdb,
@@ -166,6 +177,7 @@ func NewServer(addr string, db *sql.DB, gdb *gorm.DB, baseURL string) *Server {
 		addr:        addr,
 		agents:      newAgentRegistry(),
 		oidc:        oidc,
+		jobTokens:   jobTokens,
 
 		scmStatusReported: make(map[string]string),
 	}
@@ -1543,6 +1555,7 @@ func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
 	ok := s.agents.LeaseNext(req.AgentID, func() (*api.JobSpec, bool) {
 		return s.store.LeaseNext(req.AgentID)
 	}, func(spec *api.JobSpec) error {
+		s.attachJobToken(spec)
 		if s.oidc != nil {
 			token, err := s.oidc.GenerateToken(spec.RunID, spec.JobID, spec.OrgID, spec.RepoURL)
 			if err == nil {

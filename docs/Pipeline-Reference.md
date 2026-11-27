@@ -214,7 +214,7 @@ To ensure cache hits across different trigger events (e.g., a webhook push vs. a
 **Excluded variables:**
 - `FORGE_EVENT`: The event type (e.g., `push`, `pull_request`, or empty for manual).
 - `FORGE_PR_NUMBER`: The pull request number.
-- `FORGE_API_TOKEN`: The authentication token used by the agent.
+- `FORGE_API_TOKEN`: A short-lived token issued for this one job. It can download the job's own project source and nothing else; it is not the agent's token. See [job tokens](Roles.md#job-tokens).
 - `FORGE_SCHEDULER_URL`: The URL of the scheduler.
 - `FORGE_RUN_ID` / `FORGE_JOB_ID` / `FORGE_RUN_NAME`: Unique identifiers for the current execution.
 - `FORGE_REPO_URL` / `FORGE_REPO_NAME`: Repository metadata (which may differ in format between triggers).

@@ -1017,13 +1017,20 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 	}
 
 	/*
-		Inject FORGE_API_TOKEN, and FORGE_SCHEDULER_URL so steps
-		can communicate with the scheduler as needed (e.g. for the injected checkout step).
+		Inject FORGE_SCHEDULER_URL so steps can communicate with the scheduler
+		as needed (e.g. for the injected checkout step).
+
+		FORGE_API_TOKEN is NOT set here. The scheduler places a token scoped to
+		this one job in the spec's environment. The agent's own token must
+		never enter a job container: it can lease and complete any job.
 	*/
 	if step.Env == nil {
 		step.Env = make(map[string]string)
 	}
-	step.Env["FORGE_API_TOKEN"] = a.apiToken
+	if jobToken := step.Env[jobTokenEnvVar]; jobToken != "" {
+		// Keep the token out of the job's log output.
+		step.RedactValues = append(step.RedactValues, jobToken)
+	}
 	step.Env["FORGE_SCHEDULER_URL"] = a.schedulerURL
 	step.Env["FORGE_AGENT_ID"] = a.id
 	step.Env["FORGE_JOB_ID"] = spec.JobID

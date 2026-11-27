@@ -225,6 +225,7 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 				return s.scheduler.store.LeaseNext(agentID)
 			}, func(spec *api.JobSpec) error {
 				s.scheduler.publishRunDetail(spec.RunID)
+				s.scheduler.attachJobToken(spec)
 
 				pbSpec := &pb.JobSpec{
 					JobId:          spec.JobID,

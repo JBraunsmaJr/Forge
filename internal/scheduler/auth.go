@@ -84,6 +84,10 @@ type tokenRecord struct {
 	Role      string
 	OrgID     string
 	ProjectID string
+
+	// RunID and JobID are set only for job tokens (Role == roleJob).
+	RunID string
+	JobID string
 }
 
 // Verify looks up a raw token by its hash. Returns (nil, false) if not found or expired.
@@ -187,6 +191,15 @@ func (s *Server) verifier() tokenVerifier {
 	return s.tokens
 }
 
+// authenticate resolves a raw token to its record. Job tokens are verified
+// by signature; every other token is looked up through the tokenVerifier.
+func (s *Server) authenticate(rawToken string) (*tokenRecord, bool) {
+	if isJobToken(rawToken) {
+		return s.jobTokens.Verify(rawToken)
+	}
+	return s.verifier().Verify(rawToken)
+}
+
 type contextKeyType string
 
 const contextKeyToken = contextKeyType("forge_token")
@@ -218,7 +231,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		rec, ok := s.verifier().Verify(raw)
+		rec, ok := s.authenticate(raw)
 		if !ok {
 			ip := r.RemoteAddr
 			if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
@@ -239,6 +252,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			fmt.Fprintf(w, `{"error":"invalid or revoked token"}`)
+			return
+		}
+
+		// A job token is confined to the few calls a pipeline step needs.
+		if rec.Role == roleJob && !jobTokenMayAccess(rec, r) {
+			writeError(w, http.StatusForbidden, "job tokens cannot access this endpoint")
 			return
 		}
 

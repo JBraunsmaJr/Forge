@@ -52,7 +52,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/webhook/generic/{id}", s.handleGenericWebhook)
 
 	// Source serving - used by agents.
-	mux.HandleFunc("GET /api/v1/source/{id}", s.handleServeSource)
+	mux.HandleFunc("GET /api/v1/source/{id}", s.projectScoped(s.handleServeSource))
 
 	// Distributed Cache
 	mux.HandleFunc("GET /api/v1/cache/{hash}", s.handleCacheLookup)

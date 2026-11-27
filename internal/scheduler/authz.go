@@ -8,6 +8,10 @@ const (
 	roleOperator = "operator"
 	roleViewer   = "viewer"
 	roleAgent    = "agent"
+
+	// roleJob is carried only by job tokens, never by a stored API token. It
+	// ranks below every other role and is confined by jobTokenMayAccess.
+	roleJob = "job"
 )
 
 // Route guards.
