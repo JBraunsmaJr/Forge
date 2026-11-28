@@ -1174,7 +1174,7 @@ func (a *Agent) execute(ctx context.Context, spec *api.JobSpec) error {
 		a.streamJobLogs(spec.JobID, spec.LeaseID, logCh)
 	}()
 
-	result, err := exec.RunStep(stepCtx, step)
+	result, err := exec.RunStepWithRetry(stepCtx, step)
 	elapsed := time.Since(start)
 
 	timedOut := false

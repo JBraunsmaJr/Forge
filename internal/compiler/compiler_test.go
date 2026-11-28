@@ -11,6 +11,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/childrun"
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
+	"github.com/JBraunsmaJr/forge/internal/stepretry"
 )
 
 // writeTempPipeline writes a pipeline JSON to a temp file and returns its path.
@@ -791,6 +792,53 @@ func TestCompile_PipelineStep_AnotherProject_Rejects(t *testing.T) {
 		path := writeTempPipeline(t, jsonPipeline{Name: "cross-project-invalid", Steps: []JSONStep{step}})
 		if _, err := Compile(path); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Compile = %v; want an error mentioning %q", err, want)
+		}
+	}
+}
+
+func TestCompile_Retry(t *testing.T) {
+	path := writeTempPipeline(t, jsonPipeline{
+		Name: "retry",
+		Steps: []JSONStep{
+			{ID: "install", Image: "alpine:3.20", Run: "true", Retry: 2, With: map[string]string{"own": "kept"}},
+			{ID: "lint", Image: "alpine:3.20", Run: "true"},
+			{ID: "image", Type: "docker_build", Retry: 1,
+				DockerBuild: imagebuild.Config{Registry: "registry.example.com", Repository: "team/api", Tags: []string{"v1"}}},
+		},
+	})
+	p, err := Compile(path)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	want := map[string]int{"install": 2, "lint": 0, "image": 1}
+	for _, s := range p.Steps {
+		if got := stepretry.FromWith(s.With); got != want[s.ID] {
+			t.Errorf("step %s: %d retries; want %d", s.ID, got, want[s.ID])
+		}
+		// The setting must survive the conversion the scheduler receives.
+		if got := stepretry.FromWith(s.ToAPIStep(nil).With); got != want[s.ID] {
+			t.Errorf("step %s: %d retries after ToAPIStep; want %d", s.ID, got, want[s.ID])
+		}
+	}
+	if p.Steps[0].With["own"] != "kept" {
+		t.Error("the step's own parameters were dropped")
+	}
+	if _, err := imagebuild.Decode(p.Steps[2].With[imagebuild.WithKey]); err != nil {
+		t.Errorf("the image build configuration was lost next to retry: %v", err)
+	}
+}
+
+func TestCompile_Retry_Rejects(t *testing.T) {
+	cases := map[string]JSONStep{
+		"between 0 and":  {ID: "x", Image: "alpine:3.20", Run: "true", Retry: 6},
+		"between 0 and ": {ID: "x", Image: "alpine:3.20", Run: "true", Retry: -1},
+		"not supported":  {ID: "x", Type: "pipeline", Pipeline: ".forge/deploy.yml", Retry: 1},
+	}
+	for want, step := range cases {
+		path := writeTempPipeline(t, jsonPipeline{Name: "retry-invalid", Steps: []JSONStep{step}})
+		if _, err := Compile(path); err == nil || !strings.Contains(err.Error(), strings.TrimSpace(want)) {
+			t.Errorf("retry %d on %q: Compile = %v; want an error mentioning %q", step.Retry, step.Type, err, strings.TrimSpace(want))
 		}
 	}
 }

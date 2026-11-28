@@ -367,6 +367,7 @@ func (e *Executor) failBeforeStart(start time.Time, step *pipeline.Step, reason 
 		Status:   pipeline.StatusFailed,
 		ExitCode: 1,
 		Duration: time.Since(start),
+		NoRetry:  true,
 	}
 
 	forgelog.StepHeader(step.ID, step.Image, strings.Join(step.Command, " "))
@@ -396,7 +397,7 @@ func (e *Executor) RunPipeline(ctx context.Context, p *pipeline.Pipeline) (*pipe
 		}
 
 		stepCtx, cancel := context.WithTimeout(ctx, step.Timeout)
-		result, err := e.RunStep(stepCtx, step)
+		result, err := e.RunStepWithRetry(stepCtx, step)
 		cancel()
 
 		if err != nil {

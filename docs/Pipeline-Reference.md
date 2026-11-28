@@ -86,6 +86,7 @@ Paths are relative to the workspace root. The script runs inside the container w
 | `type`       | string   | Step type: `task` (default), `generator`, `pipeline`, or `approval`.                             |
 | `condition`  | string   | CEL expression that must be true for the step to run (e.g., `success()`, `failure()`).            |
 | `changes`    | string[] | File patterns. The step is skipped when none of the changed files matches. See [Running a step only when files changed](#running-a-step-only-when-files-changed-changes). |
+| `retry`      | int      | How many more times to run the step if it fails, from 0 (default) to 5. See [Retrying a failed step](#retrying-a-failed-step-retry). |
 | `always_run` | bool     | Shorthand for `condition: always()`. Step runs even if dependencies fail.                        |
 | `matrix`     | map      | Parallel execution with multiple values. Expands into multiple steps.                            |
 
@@ -417,6 +418,33 @@ Supported functions:
   always_run: true  # shorthand for condition: always()
   run: rm -rf /tmp/build
 ```
+
+---
+
+### Retrying a failed step (`retry:`)
+
+A step with `retry:` is run again when it fails, up to the given number of extra attempts. Use it for steps that depend on something outside the pipeline that fails now and then: a package mirror, a registry, a remote service.
+
+```yaml
+- id: install
+  image: python:3.13
+  retry: 2            # up to three attempts in total
+  timeout: 20m
+  run: pip install -r requirements.txt
+```
+
+- **Opt-in, per step.** Without `retry:` a step runs once. Retrying everything would hide real failures and delay the report of a broken build.
+- **Waits grow between attempts:** 10 seconds, 30 seconds, then a minute each, so a short outage is ridden out instead of every attempt failing within seconds.
+- **The step's `timeout` covers all attempts together.** A step cannot run longer by being retried, so allow for the attempts and the waits when setting it.
+- **Every attempt is in the step's log,** in order, with a line between them saying which attempt failed.
+- **The step passes if any attempt passes.** Steps that depend on it see one result.
+- **Some failures are not retried:** a step definition the agent cannot use, such as an image reference that does not resolve, fails at once.
+
+Each attempt starts a new container. The workspace is the same one, so files a failed attempt left behind may still be there; a step that is retried should be safe to run twice.
+
+`retry:` is available on ordinary steps, generator steps, and `docker_build`. It is rejected on `pipeline`, `approval`, `release`, and `docker_publish` steps.
+
+Do not use it to get a flaky test suite to pass: a test that fails one time in three is a defect to fix, and `retry:` only makes it slower to notice.
 
 ---
 

@@ -18,6 +18,7 @@ import (
 	"github.com/JBraunsmaJr/forge/internal/imagebuild"
 	"github.com/JBraunsmaJr/forge/internal/imageref"
 	"github.com/JBraunsmaJr/forge/internal/pipeline"
+	"github.com/JBraunsmaJr/forge/internal/stepretry"
 )
 
 // scriptInterpreter returns the interpreter for a script file based on its extension.
@@ -56,6 +57,7 @@ type JSONStep struct {
 	Inputs           []string            `json:"inputs"`
 	Changes          []string            `json:"changes,omitempty"`
 	Timeout          string              `json:"timeout"`
+	Retry            int                 `json:"retry,omitempty"` // extra attempts after a failure
 	Secrets          []string            `json:"secrets"`
 	Type             string              `json:"type"` // "task" (default) | "generator"
 	Uses             string              `json:"uses,omitempty"`
@@ -442,6 +444,9 @@ func ResolveTemplateData(js JSONStep, data []byte, filename string) ([]JSONStep,
 	if js.Pipeline == "" {
 		js.Pipeline = template.Pipeline
 	}
+	if js.Retry == 0 {
+		js.Retry = template.Retry
+	}
 	if js.Project == "" {
 		js.Project = template.Project
 	}
@@ -518,6 +523,7 @@ type jsStepTemplate struct {
 	Inputs           []string          `json:"inputs"`
 	Changes          []string          `json:"changes,omitempty"`
 	Timeout          string            `json:"timeout"`
+	Retry            int               `json:"retry,omitempty"`
 	Secrets          []string          `json:"secrets"`
 	Type             string            `json:"type"`
 	Uses             string            `json:"uses,omitempty"`
@@ -735,6 +741,9 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 	if err := changes.ValidatePatterns(js.Changes); err != nil {
 		return nil, err
 	}
+	if err := stepretry.Validate(js.Retry, stepType); err != nil {
+		return nil, err
+	}
 
 	// The image may hold ${{ env.NAME }} placeholders, for a step that runs
 	// an image built earlier in the same run. They are resolved, and the
@@ -908,7 +917,7 @@ func compileStep(js JSONStep, index int) (*pipeline.Step, error) {
 		Secrets:           js.Secrets,
 		Type:              stepType,
 		Uses:              js.Uses,
-		With:              with,
+		With:              stepretry.AddTo(with, js.Retry),
 		DockerSocket:      js.DockerSocket,
 		ArtifactUploads:   uploads,
 		ArtifactDownloads: downloads,

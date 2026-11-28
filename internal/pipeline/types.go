@@ -269,6 +269,11 @@ type StepResult struct {
 	// GeneratedStepsJSON is set by generator steps — it's the raw JSON
 	// array of new step definitions emitted to stdout.
 	GeneratedStepsJSON []byte
+
+	// NoRetry marks a failure that running the step again cannot fix, such
+	// as a step definition the agent cannot use. A step's `retry:` setting
+	// does not apply to it.
+	NoRetry bool
 }
 
 // Validate checks the pipeline for internal consistency, including cycle detection.
