@@ -164,7 +164,17 @@ To prevent an agent or a job from interfering with other jobs or the host system
 
 ### Heartbeat and failure recovery
 
-If an agent crashes mid-job, the scheduler detects the missing heartbeat after two minutes and resets the job to `queued` for another agent to claim.
+An agent sends a heartbeat for every job it is running, every ten seconds. What happens when they stop:
+
+- **The agent is gone** (crashed, host deleted, network cut). After two minutes without a heartbeat the scheduler takes the job back and returns it to the queue, where another agent picks it up under a new lease. The step's log gets a line saying so. Steps that already passed are not run again.
+- **The agent was only cut off** and comes back. Its next heartbeat is answered with "stop": it no longer holds the job, cancels its copy, and any result it sends is ignored. Only one agent's result ever counts.
+- **The job keeps losing its agent.** A job is handed to at most three agents. If the third is lost as well, the step fails with an explanation, and the steps depending on it are resolved as for any failed step. Without the limit, a step that takes its host down, for example by exhausting memory, would work its way through the whole fleet.
+- **The scheduler restarts.** No agent can send a heartbeat while it is down, so for the first two and a half minutes after a start it takes no job back, giving agents time to reconnect and report in. Jobs that were running keep running.
+- **The scheduler cannot record a heartbeat** because of trouble of its own, such as a database error. The agent is not told to stop; a healthy job is never canceled for the scheduler's problem.
+
+The same applies to an agent that is shut down gracefully but killed before its jobs finish, which is what happens when a host is removed from a scale set: the jobs it was running are picked up elsewhere within about two minutes.
+
+This is separate from a step's own [`retry:`](Pipeline-Reference.md#retrying-a-failed-step-retry) setting. `retry:` reruns a step that ran and failed, on the same agent. Recovery from a lost agent needs no setting and applies to every step.
 
 ---
 

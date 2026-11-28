@@ -209,6 +209,11 @@ type Job struct {
 	Split               datatypes.JSON
 	With                datatypes.JSON `gorm:"column:with;not null;default:'{}'"`
 
+	// ReclaimCount is how many times the job was taken back from an agent
+	// that stopped responding. It bounds how often a job is handed out
+	// again, so a step that crashes its agent cannot circulate forever.
+	ReclaimCount int `gorm:"not null;default:0"`
+
 	// Seq is a counter assigned by the database when the row is inserted.
 	// Job IDs are random, so the queue is ordered by Seq to hand jobs out
 	// first in, first out. It is never set by application code.

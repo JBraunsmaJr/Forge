@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -433,12 +434,19 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) heartbeatMonitor(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+
+	// While the scheduler was down no agent could send a heartbeat, so right
+	// after a restart every running job looks abandoned. Give the agents
+	// time to reconnect and report in before taking any job back.
+	started := time.Now()
+
 	for {
 		select {
 		case <-ticker.C:
-			if n := s.store.ReclaimStaleJobs(); n > 0 {
-				fmt.Printf("[scheduler] reclaimed %d stale job(s)\n", n)
+			if !reclaimAllowed(started, time.Now()) {
+				continue
 			}
+			s.store.ReclaimStaleJobs()
 		case <-ctx.Done():
 			return
 		}
@@ -1613,7 +1621,13 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.Heartbeat(r.PathValue("id"), req.LeaseID, req.AgentID); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+		// 409 tells the agent it no longer holds the job; anything else is
+		// the scheduler's own trouble and the agent should carry on.
+		if errors.Is(err, errLeaseLost) {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "heartbeat could not be recorded")
+		}
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

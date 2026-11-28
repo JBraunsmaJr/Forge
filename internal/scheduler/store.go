@@ -763,7 +763,7 @@ func (s *Store) Heartbeat(jobID, leaseID, agentID string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("lease mismatch or job not running")
+		return errLeaseLost
 	}
 	return nil
 }
@@ -812,25 +812,6 @@ func (s *Store) QueuedJobsCount() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE status = 'queued'`).Scan(&count)
 	return count, err
-}
-
-// ReclaimStaleJobs resets running jobs whose heartbeat has expired.
-// Called by the heartbeat monitor goroutine every 15 seconds.
-func (s *Store) ReclaimStaleJobs() int {
-	res, err := s.db.Exec(`
-		UPDATE jobs
-		SET    status = CASE WHEN step_type = 'release' THEN 'release' ELSE 'queued' END,
-		       lease_id = '', agent_id = ''
-		WHERE  (status = 'running' OR status = 'waiting')
-		AND    heartbeat_at < NOW() - make_interval(secs => $1)`, staleJobAfter.Seconds())
-	if err != nil {
-		return 0
-	}
-	n, _ := res.RowsAffected()
-	if n > 0 {
-		fmt.Printf("[scheduler] reclaimed %d stale job(s)\n", n)
-	}
-	return int(n)
 }
 
 // Complete marks a job done, stores its logs, adds any emitted steps,

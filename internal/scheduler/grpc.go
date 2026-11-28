@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -117,7 +118,13 @@ func (s *grpcServer) Session(stream pb.AgentService_SessionServer) error {
 					continue // Agent-wide status heartbeat
 				}
 				err := s.scheduler.store.Heartbeat(m.Heartbeat.JobId, m.Heartbeat.LeaseId, agentID)
-				stop := err != nil
+				// Tell the agent to stop only when it no longer holds the
+				// job. Any other error is the scheduler's own trouble (a
+				// database hiccup, say) and must not cancel a healthy job.
+				stop := errors.Is(err, errLeaseLost)
+				if err != nil && !stop {
+					log.Printf("[grpc] heartbeat for job %s could not be recorded: %v", shortID(m.Heartbeat.JobId), err)
+				}
 				out <- &pb.SchedulerMessage{
 					Payload: &pb.SchedulerMessage_HeartbeatAck{
 						HeartbeatAck: &pb.HeartbeatAck{
